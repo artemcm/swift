@@ -42,6 +42,7 @@ class SwiftPM(product.Product):
             self.source_dir, 'Utilities', 'bootstrap')
         toolchain_path = self.install_toolchain_path()
         swiftc = os.path.join(toolchain_path, "bin", "swiftc")
+        swift_frontend = os.path.join(toolchain_path, "bin", "swift-frontend")
 
         # FIXME: We require llbuild build directory in order to build. Is
         # there a better way to get this?
@@ -56,6 +57,7 @@ class SwiftPM(product.Product):
 
         helper_cmd += [
             "--swiftc-path", swiftc,
+            "--swift-frontend-path", swift_frontend,
             "--clang-path", self.toolchain.cc,
             "--cmake-path", self.toolchain.cmake,
             "--ninja-path", self.toolchain.ninja,
