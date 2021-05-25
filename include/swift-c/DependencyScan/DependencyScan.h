@@ -337,6 +337,17 @@ swiftscan_batch_scan_result_create(swiftscan_scanner_t scanner,
 SWIFTSCAN_PUBLIC swiftscan_import_set_t swiftscan_import_set_create(
     swiftscan_scanner_t scanner, swiftscan_scan_invocation_t invocation);
 
+//=== Scanner Cache Operations --------------------------------------------===//
+SWIFTSCAN_PUBLIC void
+swiftscan_scanner_cache_serialize(swiftscan_scanner_t scanner,
+                                  const char * path);
+
+SWIFTSCAN_PUBLIC bool
+swiftscan_scanner_cache_load(swiftscan_scanner_t scanner,
+                             const char * path);
+
+//===----------------------------------------------------------------------===//
+
 SWIFTSCAN_END_DECLS
 
 #endif // SWIFT_C_DEPENDENCY_SCAN_H
