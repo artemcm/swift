@@ -232,6 +232,7 @@ void ClangImporter::recordModuleDependencies(
     while(It != allArgs.end()) {
       StringRef arg = *It;
       // Remove the -target arguments because we should use the target triple
+      // specified with `-clang-target` on the scanner invocation, or
       // from the depending Swift modules.
       if (arg == "-target") {
         It += 2;
@@ -254,10 +255,21 @@ void ClangImporter::recordModuleDependencies(
       swiftArgs.push_back(clangArg);
     }
 
-    // Swift frontend action: -emit-pcm
+    // If the scanner is invoked with '-clang-target', ensure this is the target
+    // used to build this PCM.
+    llvm::Triple triple = Impl.SwiftContext.LangOpts.Target;
+    if (Impl.SwiftContext.LangOpts.ClangTarget.hasValue()) {
+      triple = Impl.SwiftContext.LangOpts.ClangTarget.getValue();
+    }
     swiftArgs.push_back("-emit-pcm");
     swiftArgs.push_back("-module-name");
     swiftArgs.push_back(clangModuleDep.ModuleName);
+
+    // Swift frontend action: -emit-pcm
+    swiftArgs.push_back("-Xcc");
+    swiftArgs.push_back("-target");
+    swiftArgs.push_back("-Xcc");
+    swiftArgs.push_back(triple.str());
 
     // Pass down search paths to the -emit-module action.
     // Unlike building Swift modules, we need to include all search paths to

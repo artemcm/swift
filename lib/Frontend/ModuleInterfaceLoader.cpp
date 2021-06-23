@@ -1647,12 +1647,9 @@ InterfaceSubContextDelegateImpl::runInSubCompilerInstance(StringRef moduleName,
   }
   info.BuildArguments = BuildArgs;
   info.Hash = CacheHash;
-  auto target =  *(std::find(BuildArgs.rbegin(), BuildArgs.rend(), "-target") - 1);
   auto langVersion = *(std::find(BuildArgs.rbegin(), BuildArgs.rend(),
                                  "-swift-version") - 1);
-  std::array<StringRef, 6> ExtraPCMArgs = {
-    // PCMs should use the target triple the interface will be using to build
-    "-Xcc", "-target", "-Xcc", target,
+  std::array<StringRef, 2> ExtraPCMArgs = {
     // PCMs should use the effective Swift language version for apinotes.
     "-Xcc", ArgSaver.save((llvm::Twine("-fapinotes-swift-version=") + langVersion).str())
   };
