@@ -18,12 +18,21 @@
 #include "swift/DriverTool/DriverTool.h"
 #include "swift/DependencyScan/DependencyScanImpl.h"
 #include "swift/DependencyScan/DependencyScanningTool.h"
+#include "swift/StaticMirror/BinaryScanningTool.h"
 #include "swift/DependencyScan/StringUtils.h"
 #include "swift/Option/Options.h"
 
 using namespace swift::dependencies;
+using namespace swift::static_mirror;
 
 DEFINE_SIMPLE_CONVERSION_FUNCTIONS(DependencyScanningTool, swiftscan_scanner_t)
+
+inline BinaryScanningTool *unwrap_static_mirror(swiftscan_static_mirror_t P) {
+  return reinterpret_cast<BinaryScanningTool*>(P);
+}
+inline swiftscan_static_mirror_t wrap_static_mirror(const BinaryScanningTool *P) {
+  return reinterpret_cast<swiftscan_static_mirror_t>(const_cast<BinaryScanningTool*>(P));
+}
 
 //=== Private Cleanup Functions -------------------------------------------===//
 
@@ -533,6 +542,36 @@ swiftscan_compiler_supported_features_query() {
   allFeatures.emplace_back("emit-abi-descriptor");
   return create_set(allFeatures);
 }
+
+//=== Static Mirror Scan Functions ---------------------------------------===//
+
+swiftscan_static_mirror_t swiftscan_static_mirror_create(int num_binaries,
+                                                         const char **binary_paths) {
+  INITIALIZE_LLVM();
+  std::vector<std::string> inputBinaryPaths;
+  for (unsigned SI = 0, SE = num_binaries; SI < SE; ++SI)
+    inputBinaryPaths.push_back(binary_paths[SI]);
+
+  return wrap_static_mirror(new BinaryScanningTool(inputBinaryPaths, "arm64"));
+}
+
+void swiftscan_static_mirror_dispose(swiftscan_static_mirror_t c_static_mirror) {
+  delete unwrap_static_mirror(c_static_mirror);
+}
+
+swiftscan_string_set_t *
+swiftscan_static_mirror_query_conformances(swiftscan_static_mirror_t static_mirror,
+                                           int num_protocols,
+                                           const char **protocol_names) {
+  std::vector<std::string> protocols;
+  for (unsigned SI = 0, SE = num_protocols; SI < SE; ++SI)
+    protocols.push_back(protocol_names[SI]);
+  BinaryScanningTool *tool = unwrap_static_mirror(static_mirror);
+  auto conformances = tool->collectConformances(protocols);
+  return create_set(conformances);
+}
+
+//=== Experimental Compiler Invocation Functions ------------------------===//
 
 int invoke_swift_compiler(int argc, const char **argv) {
   return swift::mainEntry(argc, argv);

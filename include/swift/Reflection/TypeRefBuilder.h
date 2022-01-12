@@ -194,6 +194,7 @@ public:
 };
 using CaptureSection = ReflectionSection<CaptureDescriptorIterator>;
 using GenericSection = ReflectionSection<const void *>;
+using ConformanceSecion = ReflectionSection<ProtocolConformanceDescriptor>;
 
 struct ReflectionInfo {
   FieldSection Field;

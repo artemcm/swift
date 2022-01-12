@@ -368,10 +368,28 @@ swiftscan_scanner_cache_load(swiftscan_scanner_t scanner,
 SWIFTSCAN_PUBLIC void
 swiftscan_scanner_cache_reset(swiftscan_scanner_t scanner);
 
+//=== Static Mirror Scan Operations ---------------------------------------===//
+
+/// Container of the configuration state for binary static mirror scanning
+typedef void *swiftscan_static_mirror_t;
+
+/// Create an \c swiftscan_static_mirror_t instance.
+/// The returned \c swiftscan_static_mirror_t is owned by the caller and must be disposed
+/// of using \c swiftscan_static_mirror_dispose .
+SWIFTSCAN_PUBLIC swiftscan_static_mirror_t swiftscan_static_mirror_create(int, const char **);
+SWIFTSCAN_PUBLIC void swiftscan_static_mirror_dispose(swiftscan_static_mirror_t);
+
+/// Identify and collect all types conforming to any of the protocol names specified as arguments
+SWIFTSCAN_PUBLIC swiftscan_string_set_t *
+swiftscan_static_mirror_query_conformances(swiftscan_static_mirror_t, int, const char **);
+
+//=== Experimental compiler invocation operations -------------------------===//
+
 /// An entry point to invoke the compiler via a library call.
 SWIFTSCAN_PUBLIC int invoke_swift_compiler(int argc, const char **argv);
 
 //===----------------------------------------------------------------------===//
+
 
 SWIFTSCAN_END_DECLS
 
