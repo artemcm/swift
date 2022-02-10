@@ -589,7 +589,7 @@ Example invocations:
             )
             builder.run()
 
-        if not args.no_install:
+        if dstroot is not None:
             lipo = os.path.join(SWIFT_SOURCE_ROOT, "swift", "utils", "recursive-lipo")
             shell.call(
                 [lipo, "-v", "--destination", os.path.join(dstroot, "./" + prefix)]
