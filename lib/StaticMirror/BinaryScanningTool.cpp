@@ -78,5 +78,26 @@ BinaryScanningTool::collectConformances(const std::vector<std::string> &protocol
   }
 }
 
+reflection::TempTypeInfo BinaryScanningTool::collectTypeInfo(const std::string &mangledTypeName) {
+  switch (PointerSize) {
+    case 4:
+      // FIXME: This could/should be configurable.
+#if SWIFT_OBJC_INTEROP
+      return Context->Builder.collectTypeInfo<WithObjCInterop, 4>(mangledTypeName);
+#else
+      return Context->Builder.collectTypeInfo<NoObjCInterop, 4>(mangledTypeName);
+#endif
+    case 8:
+#if SWIFT_OBJC_INTEROP
+      return Context->Builder.collectTypeInfo<WithObjCInterop, 4>(mangledTypeName);
+#else
+      return Context->Builder.collectTypeInfo<NoObjCInterop, 8>(mangledTypeName);
+#endif
+    default:
+      fputs("unsupported word size in object file\n", stderr);
+      abort();
+  }
+}
+
 } // end namespace static_mirror
 } // end namespace swift

@@ -46,6 +46,10 @@ public:
   reflection::ConformanceCollectionResult
   collectConformances(const std::vector<std::string> &protocolNames);
 
+  /// Collect information about a given type
+  reflection::TempTypeInfo
+  collectTypeInfo(const std::string &mangledTypeName);
+
 private:
   // Note: binaryOrError and objectOrError own the memory for our ObjectFile;
   // once they go out of scope, we can no longer do anything.

@@ -30,6 +30,10 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 
+// Artem Prototype:
+#include "swift/StaticMirror/BinaryScanningTool.h"
+
+
 #if defined(_WIN32)
 #include <io.h>
 #else
@@ -128,6 +132,35 @@ static int doDumpReflectionSections(ArrayRef<std::string> BinaryFilenames,
       // FIXME: This could/should be configurable.
 #if SWIFT_OBJC_INTEROP
       builder.dumpAllSections<WithObjCInterop, 8>(stream);
+      llvm::dbgs() << "+====================================================+\n";
+      { // Artem prototype
+        auto scannerTool = swift::static_mirror::BinaryScanningTool(BinaryFilenames, Arch.str());
+        auto conformanceCollectionResult = scannerTool.collectConformances({"test.MyTestProto"});
+        std::vector<std::string> mangledTypeNames;
+        for (auto &c : conformanceCollectionResult.Conformances) {
+          llvm::dbgs() << c.TypeName << " : " << c.ProtocolName << "\n";
+          mangledTypeNames.push_back(c.MangledTypeName);
+        }
+        llvm::dbgs() << "+-------------------------\n";
+        for (const auto &name : mangledTypeNames) {
+          auto typeInfo = scannerTool.collectTypeInfo(name);
+          llvm::dbgs() << ">> " << typeInfo.TypeName << " (" << typeInfo.MangledTypeName << ")\n";
+
+          if (!typeInfo.AssociatedTypeMap.empty()) {
+            llvm::dbgs() << "    Associated Types:\n";
+            for (auto& it: typeInfo.AssociatedTypeMap) {
+              llvm::dbgs() << "        " << it.first << " = " << it.second << "\n";
+            }
+          }
+          if (!typeInfo.Properties.empty()) {
+            llvm::dbgs() << "    Properties:\n";
+            for (auto& it: typeInfo.Properties) {
+              llvm::dbgs() << "        " << it.Label << " : " << it.MangledTypeName << "\n";
+            }
+          }
+        }
+      }
+      llvm::dbgs() << "+====================================================+\n";
 #else
       builder.dumpAllSections<NoObjCInterop, 8>(stream);
 #endif

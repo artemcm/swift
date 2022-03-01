@@ -297,6 +297,37 @@ struct ConformanceCollectionResult {
   std::vector<std::string> Errors;
 };
 
+struct TempTypeProperty {
+  bool IsCollection;
+  bool IsOptional;
+  std::string Label;
+  std::string MangledTypeName;
+  // TODO: Property Wrappers
+
+  TempTypeProperty(bool isCollection,
+                   bool isOptional,
+                   const std::string &label,
+                   const std::string &mangledTypeName)
+    : IsCollection(isCollection), IsOptional(isOptional),
+      Label(label), MangledTypeName(mangledTypeName) {}
+};
+
+struct TempTypeInfo {
+  std::string TypeName;
+  std::string MangledTypeName;
+  std::vector<std::pair<std::string, std::string>> AssociatedTypeMap;
+  std::vector<TempTypeProperty> Properties;
+
+  TempTypeInfo(const std::string &TypeName,
+               const std::string &MangledTypeName,
+               const std::vector<std::pair<std::string, std::string>> &AssociatedTypeMap,
+               const std::vector<TempTypeProperty> &Properties)
+    : TypeName(TypeName), MangledTypeName(MangledTypeName),
+      AssociatedTypeMap(AssociatedTypeMap), Properties(Properties) {}
+};
+
+
+
 /// An implementation of MetadataReader's BuilderType concept for
 /// building TypeRefs, and parsing field metadata from any images
 /// it has been made aware of.
@@ -1331,6 +1362,90 @@ public:
       }
     }
     return result;
+  }
+
+  template <template <typename Runtime> class ObjCInteropKind,
+            unsigned PointerSize>
+  TempTypeInfo collectTypeInfo(const std::string &queryMangledTypeName) {
+    std::string queriedFullyQualifiedTypeName = "";
+    std::vector<std::pair<std::string, std::string>> associatedTypes;
+    std::vector<TempTypeProperty> properties;
+
+    // First, gather the fully-qualified name from the Fields section
+    for (const auto &section : ReflectionInfos) {
+      for (auto descriptor : section.Field) {
+        auto TypeRef = readTypeRef(descriptor, descriptor->MangledTypeName);
+        auto TypeName = nodeToString(demangleTypeRef(TypeRef));
+        auto OptionalMangledTypeName = normalizeReflectionName(TypeRef);
+        clearNodeFactory();
+        if (OptionalMangledTypeName.hasValue()) {
+          auto mangledTypeName = OptionalMangledTypeName.getValue().insert(0, "$s");
+          if (mangledTypeName == queryMangledTypeName) {
+            queriedFullyQualifiedTypeName = TypeName;
+          }
+        }
+      }
+    }
+
+    // Examine the Associated Type section to gather this type's associated types
+    for (const auto &sections : ReflectionInfos) {
+      for (auto descriptor : sections.AssociatedType) {
+        auto TypeRef = readTypeRef(descriptor, descriptor->ConformingTypeName);
+        auto TypeName = nodeToString(demangleTypeRef(TypeRef));
+        auto OptionalMangledTypeName = normalizeReflectionName(TypeRef);
+        clearNodeFactory();
+        if (OptionalMangledTypeName.hasValue()) {
+          auto mangledTypeName = OptionalMangledTypeName.getValue().insert(0, "$s");
+          if (mangledTypeName == queryMangledTypeName) {
+            for (const auto &associatedTypeRef : *descriptor.getLocalBuffer()) {
+              auto associatedType = descriptor.getField(associatedTypeRef);
+              std::string typeName =
+                  getTypeRefString(readTypeRef(associatedType, associatedType->Name))
+                      .str();
+              std::string mangledTypeName = std::string(associatedType->SubstitutedTypeName);
+              associatedTypes.push_back(std::make_pair(typeName, mangledTypeName.insert(0, "$s")));
+            }
+          }
+        }
+      }
+    }
+
+    // Examine the Fields section to gather info about this type's properties
+    for (const auto &sections : ReflectionInfos) {
+      for (auto descriptor : sections.Field) {
+        auto TypeRef = readTypeRef(descriptor, descriptor->MangledTypeName);
+        auto TypeName = nodeToString(demangleTypeRef(TypeRef));
+        auto OptionalMangledTypeName = normalizeReflectionName(TypeRef);
+        clearNodeFactory();
+        if (OptionalMangledTypeName.hasValue()) {
+          auto mangledTypeName = OptionalMangledTypeName.getValue().insert(0, "$s");
+          if (mangledTypeName == queryMangledTypeName) {
+            for (auto &fieldRef : *descriptor.getLocalBuffer()) {
+              auto field = descriptor.getField(fieldRef);
+              auto fieldNameRef = getTypeRefString(readTypeRef(field, field->FieldName));
+              auto fieldName = std::string(fieldNameRef.data(), fieldNameRef.size());
+              std::string mangledTypeName;
+              if (field->hasMangledTypeName()) {
+                auto OptionalFieldMangledTypeName = normalizeReflectionName(readTypeRef(field, field->MangledTypeName));
+                if (OptionalFieldMangledTypeName.hasValue()) {
+                  mangledTypeName = OptionalFieldMangledTypeName.getValue().insert(0, "$s");
+                } else {
+                  mangledTypeName = "$$$-Unknown";
+                }
+              } else {
+                mangledTypeName = "$$$-Unknown";
+              }
+              properties.push_back(TempTypeProperty(false, false, fieldName, mangledTypeName));
+            }
+          }
+        }
+      }
+    }
+
+    return TempTypeInfo(queriedFullyQualifiedTypeName,
+                        queryMangledTypeName,
+                        associatedTypes,
+                        properties);
   }
 
   template <template <typename Runtime> class ObjCInteropKind,

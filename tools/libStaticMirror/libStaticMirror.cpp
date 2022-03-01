@@ -18,7 +18,6 @@
 #include "swift/StaticMirror/BinaryScanningTool.h"
 #include "swift/StaticMirror/BinaryScanImpl.h"
 #include "swift/DependencyScan/StringUtils.h"
-//#include "swift/Option/Options.h"
 
 // FIXME: Code duplication with StringUtils.cpp
 namespace swift {
