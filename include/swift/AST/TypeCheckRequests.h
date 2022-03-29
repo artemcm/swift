@@ -1538,6 +1538,27 @@ public:
   bool isCached() const { return true; }
 };
 
+/// Request to obtain a list of stored properties with compile-time-known values
+///
+/// AC-TODO: More description
+class CompileTimePropertyValuesRequest :
+    public SimpleRequest<CompileTimePropertyValuesRequest,
+                         ArrayRef<StringRef>(NominalTypeDecl *),
+                         RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+private:
+  friend SimpleRequest;
+
+  // Evaluation.
+  ArrayRef<StringRef>
+  evaluate(Evaluator &evaluator, NominalTypeDecl *decl) const;
+
+public:
+  bool isCached() const { return true; }
+};
+
 /// Request to obtain a list of stored properties in a nominal type,
 /// together with any missing members corresponding to stored
 /// properties that could not be deserialized.

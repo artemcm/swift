@@ -2381,6 +2381,11 @@ public:
     TypeChecker::checkDeclCircularity(SD);
 
     TypeChecker::checkConformancesInContext(SD);
+
+    // AC Prototype
+    (void) evaluateOrDefault(SD->getASTContext().evaluator,
+                             CompileTimePropertyValuesRequest{SD}, {});
+    // END AC Prototype
   }
 
   /// Check whether the given properties can be @NSManaged in this class.

@@ -173,6 +173,48 @@ StoredPropertiesRequest::evaluate(Evaluator &evaluator,
   return decl->getASTContext().AllocateCopy(results);
 }
 
+ArrayRef<StringRef>
+CompileTimePropertyValuesRequest::evaluate(Evaluator &evaluator,
+                                           NominalTypeDecl *decl) const {
+  llvm::dbgs() << "<<< Hello, Compile-Time Property Value World. >>>\n";
+  if (!hasStoredProperties(decl))
+      return {""};
+
+  SmallVector<VarDecl *, 4> results;
+
+  // Unless we're in a source file we don't have to do anything
+  // special to lower lazy properties and property wrappers.
+  if (isa<SourceFile>(decl->getModuleScopeContext()))
+    computeLoweredStoredProperties(decl);
+
+  for (auto *member : decl->getMembers()) {
+    if (auto *var = dyn_cast<VarDecl>(member)) {
+      llvm::dbgs() << (var->isCompileTimeConst() ? "@const " : "");
+      llvm::dbgs() << (var->isLet() ? "let " : "var ");
+      llvm::dbgs() << var->getName() << " : ";
+      llvm::dbgs() << var->getType().getString();
+      if (var->hasInitialValue()) {
+        llvm::dbgs() << " = ";
+        if (auto *PBD = var->getParentPatternBinding()) {
+          const auto i = PBD->getPatternEntryIndexForVarDecl(var);
+          if (const auto strLitExpr = dyn_cast<StringLiteralExpr>(PBD->getInit(i))) {
+            llvm::dbgs() << strLitExpr->getValue();
+          } else if (const auto intLitExpr = dyn_cast<IntegerLiteralExpr>(PBD->getInit(i))) {
+            intLitExpr->getValue().dump();
+          }
+        }
+      } else {
+        llvm::dbgs() << ";\n";
+      }
+    }
+    llvm::dbgs() << "\n";
+  }
+
+  //decl->getDeclaredType()
+
+  return {""};
+}
+
 ArrayRef<Decl *>
 StoredPropertiesAndMissingMembersRequest::evaluate(Evaluator &evaluator,
                                                    NominalTypeDecl *decl) const {
