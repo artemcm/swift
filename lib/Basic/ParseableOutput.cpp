@@ -13,6 +13,7 @@
 #include "swift/Basic/ParseableOutput.h"
 #include "swift/Basic/FileTypes.h"
 #include "swift/Basic/JSONSerialization.h"
+#include "swift/Basic/StringExtras.h"
 #include "swift/Basic/TaskQueue.h"
 #include "swift/Driver/Action.h"
 #include "swift/Driver/Job.h"
@@ -194,7 +195,8 @@ static void emitMessage(raw_ostream &os, Message &msg) {
   yout << msg;
   BufferStream.flush();
   os << JSONString.length() << '\n';
-  os << JSONString << '\n';
+  writeEscaped(JSONString, os);
+  os << '\n';
 }
 
 /// Emits a "began" message to the given stream.
