@@ -327,6 +327,8 @@ public:
     Setter,
     ModifyCoroutine,
     ReadCoroutine,
+    Addressor,
+    MutableAddressor,
   };
 
 private:
@@ -548,6 +550,8 @@ public:
     Setter,
     ReadCoroutine,
     ModifyCoroutine,
+    Addressor,
+    MutableAddressor,
     AssociatedTypeAccessFunction,
     AssociatedConformanceAccessFunction,
   };

@@ -1760,6 +1760,8 @@ isRedundantAccessorOverrideAvailabilityDiagnostic(ValueDecl *override,
   switch (overrideFn->getAccessorKind()) {
   case AccessorKind::Get:
   case AccessorKind::Set:
+  case AccessorKind::Address:
+  case AccessorKind::MutableAddress:
     break;
 
   case AccessorKind::Read:
@@ -2224,6 +2226,8 @@ OverriddenDeclsRequest::evaluate(Evaluator &evaluator, ValueDecl *decl) const {
       switch (kind) {
       case AccessorKind::Get:
       case AccessorKind::Read:
+      case AccessorKind::Address:
+      case AccessorKind::MutableAddress:
         break;
 
       case AccessorKind::Modify:

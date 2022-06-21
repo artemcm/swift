@@ -5016,12 +5016,12 @@ public:
 
   /// Does this storage require a 'get' accessor in its opaque-accessors set?
   bool requiresOpaqueGetter() const {
-    return getOpaqueReadOwnership() != OpaqueReadOwnership::Borrowed;
+    return getOpaqueReadOwnership() != OpaqueReadOwnership::Borrowed && !isCompileTimeConst();
   }
 
   /// Does this storage require a 'read' accessor in its opaque-accessors set?
   bool requiresOpaqueReadCoroutine() const {
-    return getOpaqueReadOwnership() != OpaqueReadOwnership::Owned;
+    return getOpaqueReadOwnership() != OpaqueReadOwnership::Owned && !isCompileTimeConst();
   }
 
   /// Does this storage require a 'set' accessor in its opaque-accessors set?
@@ -5029,6 +5029,12 @@ public:
 
   /// Does this storage require a 'modify' accessor in its opaque-accessors set?
   bool requiresOpaqueModifyCoroutine() const;
+
+  /// Does this storage requried an opaque addressor accessor?
+  bool requiresOpaqueAddressor() const { return isCompileTimeConst(); }
+
+  /// Does this storage requried an opaque addressor accessor and is mutable?
+  bool requiresOpaqueMutableAddressor() const { return false; }
 
   /// Does this storage have any explicit observers (willSet or didSet) attached
   /// to it?

@@ -2282,6 +2282,11 @@ SynthesizeAccessorRequest::evaluate(Evaluator &evaluator,
   case AccessorKind::Modify:
     return createModifyCoroutinePrototype(storage, ctx);
 
+    case AccessorKind::Address:
+    case AccessorKind::MutableAddress:
+      // ACTODO: Synthesize here.
+      return nullptr;
+
 #define OPAQUE_ACCESSOR(ID, KEYWORD)
 #define ACCESSOR(ID) \
   case AccessorKind::ID:
@@ -2302,6 +2307,10 @@ RequiresOpaqueAccessorsRequest::evaluate(Evaluator &evaluator,
 
   // Computed properties always require opaque accessors.
   if (!var->getImplInfo().isSimpleStored())
+    return true;
+
+  // Compile-time-known values always require opaque accessors.
+  if (!var->isCompileTimeConst())
     return true;
 
   // The backing storage for a lazy property does require opaque accessors.

@@ -85,19 +85,19 @@
 /// IMMUTABLE_ADDRESSOR(ID, KEYWORD)
 ///   The given keyword corresponds to an immutable addressor of the given kind.
 ///
-///   DEfaults to ANY_ADDRESSOR(ID, KEYWORD).
+///   Defaults to ANY_ADDRESSOR(ID, KEYWORD).
 #ifndef IMMUTABLE_ADDRESSOR
 #define IMMUTABLE_ADDRESSOR(ID, KEYWORD) \
-  ANY_ADDRESSOR(ID, KEYWORD)
+  OPAQUE_ACCESSOR(ID, KEYWORD)
 #endif
 
 /// MUTABLE_ADDRESSOR(ID, KEYWORD)
 ///   The given keyword corresponds to a mutable addressor of the given kind.
 ///
-///   DEfaults to ANY_ADDRESSOR(ID, KEYWORD).
+///   Defaults to ANY_ADDRESSOR(ID, KEYWORD).
 #ifndef MUTABLE_ADDRESSOR
 #define MUTABLE_ADDRESSOR(ID, KEYWORD) \
-  ANY_ADDRESSOR(ID, KEYWORD)
+  OPAQUE_ACCESSOR(ID, KEYWORD)
 #endif
 
 // Suppress entries for accessors which can't be written in source code.

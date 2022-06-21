@@ -2347,6 +2347,10 @@ bool AbstractStorageDecl::requiresOpaqueAccessor(AccessorKind kind) const {
     return requiresOpaqueReadCoroutine();
   case AccessorKind::Modify:
     return requiresOpaqueModifyCoroutine();
+  case AccessorKind::Address:
+    return requiresOpaqueAddressor();
+  case AccessorKind::MutableAddress:
+    return requiresOpaqueMutableAddressor();
 
   // Other accessors are never part of the opaque-accessors set.
 #define OPAQUE_ACCESSOR(ID, KEYWORD)
@@ -2454,6 +2458,9 @@ void AbstractStorageDecl::visitExpectedOpaqueAccessors(
                         llvm::function_ref<void (AccessorKind)> visit) const {
   if (!requiresOpaqueAccessors())
     return;
+
+  if (requiresOpaqueAddressor())
+    visit(AccessorKind::Address);
 
   if (requiresOpaqueGetter())
     visit(AccessorKind::Get);

@@ -324,6 +324,15 @@ static ValueDecl *getStandinForAccessor(AbstractStorageDecl *witness,
       return addressor;
     break;
 
+    case AccessorKind::Address:
+      if (auto addressor = witness->getParsedAccessor(AccessorKind::Address))
+        return addressor;
+      break;
+    case AccessorKind::MutableAddress:
+      if (auto addressor = witness->getParsedAccessor(AccessorKind::MutableAddress))
+        return addressor;
+      break;
+
 #define OPAQUE_ACCESSOR(ID, KEYWORD)
 #define ACCESSOR(ID) \
   case AccessorKind::ID:
