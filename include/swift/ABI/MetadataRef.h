@@ -295,12 +295,10 @@ class RelativeTargetProtocolDescriptorPointer {
 public:
   /// Retrieve a reference to the protocol.
   TargetProtocolDescriptorRef<Runtime> getProtocol() const {
-#if SWIFT_OBJC_INTEROP
-    if (isObjC()) {
+    if (Runtime::ObjCInterop && isObjC()) {
       return TargetProtocolDescriptorRef<Runtime>::forObjC(
           const_cast<Protocol *>(objcPointer.getPointer()));
     }
-#endif
 
     return TargetProtocolDescriptorRef<Runtime>::forSwift(
         reinterpret_cast<
@@ -310,11 +308,10 @@ public:
 
   /// Retrieve a reference to the protocol.
   int32_t getUnresolvedProtocolAddress() const {
-#if SWIFT_OBJC_INTEROP
-    if (isObjC()) {
+    if (Runtime::ObjCInterop && isObjC()) {
       return objcPointer.getUnresolvedOffset();
     }
-#endif
+
     return swiftPointer.getUnresolvedOffset();
   }
 
