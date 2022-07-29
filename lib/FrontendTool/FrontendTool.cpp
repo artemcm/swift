@@ -115,11 +115,12 @@ static void emitMakeDependenciesIfNeeded(DiagnosticEngine &diags,
 static void
 emitLoadedModuleTraceForAllPrimariesIfNeeded(ModuleDecl *mainModule,
                                              DependencyTracker *depTracker,
-                                             const FrontendOptions &opts) {
+                                             const FrontendOptions &opts,
+                                             llvm::vfs::FileSystem &fileSystem) {
   opts.InputsAndOutputs.forEachInputProducingSupplementaryOutput(
       [&](const InputFile &input) -> bool {
         return swift::emitLoadedModuleTraceIfNeeded(mainModule, depTracker,
-                                                    opts, input);
+                                                    opts, input, fileSystem);
       });
 }
 
@@ -1051,7 +1052,8 @@ static void performEndOfPipelineActions(CompilerInstance &Instance) {
   // We don't want to unnecessarily delay getting any errors back to the user.
   if (!ctx.hadError()) {
     emitLoadedModuleTraceForAllPrimariesIfNeeded(
-        Instance.getMainModule(), Instance.getDependencyTracker(), opts);
+        Instance.getMainModule(), Instance.getDependencyTracker(), opts,
+        Instance.getFileSystem());
 
     dumpAPIIfNeeded(Instance);
   }

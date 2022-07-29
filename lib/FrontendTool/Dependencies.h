@@ -13,6 +13,12 @@
 #ifndef SWIFT_FRONTENDTOOL_DEPENDENCIES_H
 #define SWIFT_FRONTENDTOOL_DEPENDENCIES_H
 
+namespace llvm {
+namespace vfs {
+class FileSystem;
+}
+}
+
 namespace swift {
 
 class ASTContext;
@@ -31,7 +37,8 @@ bool emitMakeDependenciesIfNeeded(DiagnosticEngine &diags,
 bool emitLoadedModuleTraceIfNeeded(ModuleDecl *mainModule,
                                    DependencyTracker *depTracker,
                                    const FrontendOptions &opts,
-                                   const InputFile &input);
+                                   const InputFile &input,
+                                   llvm::vfs::FileSystem &fileSystem);
 
 } // end namespace swift
 

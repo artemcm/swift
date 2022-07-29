@@ -556,6 +556,7 @@ static void computeSwiftModuleTraceInfo(
     const SmallPtrSetImpl<ModuleDecl *> &abiDependencies,
     const llvm::DenseMap<StringRef, ModuleDecl *> &pathToModuleDecl,
     const DependencyTracker &depTracker, StringRef prebuiltCachePath,
+    llvm::vfs::FileSystem &fileSystem,
     std::vector<SwiftModuleTraceInfo> &traceInfo) {
   using namespace llvm::sys;
 
@@ -570,7 +571,10 @@ static void computeSwiftModuleTraceInfo(
   SmallVector<std::string, 16> dependencies{deps.begin(), deps.end()};
   auto incrDeps = depTracker.getIncrementalDependencyPaths();
   dependencies.append(incrDeps.begin(), incrDeps.end());
-  for (const auto &depPath : dependencies) {
+  for (const auto &unresolvedDepPath : dependencies) {
+    llvm::SmallString<128> depPath;
+    if (auto err = fileSystem.getRealPath(unresolvedDepPath, depPath))
+      depPath = unresolvedDepPath;
 
     // Decide if this is a swiftmodule based on the extension of the raw
     // dependency path, as the true file may have a different one.
@@ -693,7 +697,8 @@ static void computeSwiftModuleTraceInfo(
 bool swift::emitLoadedModuleTraceIfNeeded(ModuleDecl *mainModule,
                                           DependencyTracker *depTracker,
                                           const FrontendOptions &opts,
-                                          const InputFile &input) {
+                                          const InputFile &input,
+                                          llvm::vfs::FileSystem &fileSystem) {
   ASTContext &ctxt = mainModule->getASTContext();
   assert(!ctxt.hadError() &&
          "We should've already exited earlier if there was an error.");
@@ -731,7 +736,8 @@ bool swift::emitLoadedModuleTraceIfNeeded(ModuleDecl *mainModule,
 
   std::vector<SwiftModuleTraceInfo> swiftModules;
   computeSwiftModuleTraceInfo(abiDependencies, pathToModuleDecl, *depTracker,
-                              opts.PrebuiltModuleCachePath, swiftModules);
+                              opts.PrebuiltModuleCachePath,
+                              fileSystem, swiftModules);
 
   LoadedModuleTraceFormat trace = {
       /*version=*/LoadedModuleTraceFormat::CurrentVersion,
