@@ -984,6 +984,21 @@ ClangImporter::getClangArguments(ASTContext &ctx) {
   return invocationArgStrs;
 }
 
+/// Gather all -Xclang flags from a Clang driver command-line
+static void extractClangFrontendInvocationArgs(const ArrayRef<std::string> invocationArgStrs,
+                                               std::vector<const char *> &clangFrontendArgs) {
+  clangFrontendArgs.push_back(invocationArgStrs.front().c_str());
+  clangFrontendArgs.push_back("-cc1");
+  auto argIter = invocationArgStrs.begin();
+  while ((argIter = std::find_if(argIter, invocationArgStrs.end(),
+                                 [](std::string arg) {
+                                   return arg == "-Xclang";
+                                 })) != invocationArgStrs.end()) {
+    clangFrontendArgs.push_back((argIter + 1)->c_str());
+    argIter++;
+  }
+}
+
 std::unique_ptr<clang::CompilerInvocation> ClangImporter::createClangInvocation(
     ClangImporter *importer, const ClangImporterOptions &importerOpts,
     llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS,
@@ -993,27 +1008,64 @@ std::unique_ptr<clang::CompilerInvocation> ClangImporter::createClangInvocation(
   invocationArgs.reserve(invocationArgStrs.size());
   for (auto &argStr : invocationArgStrs)
     invocationArgs.push_back(argStr.c_str());
-  // Set up a temporary diagnostic client to report errors from parsing the
-  // command line, which may be important for Swift clients if, for example,
-  // they're using -Xcc options. Unfortunately this diagnostic engine has to
-  // use the default options because the /actual/ options haven't been parsed
-  // yet.
-  //
-  // The long-term client for Clang diagnostics is set up below, after the
-  // clang::CompilerInstance is created.
-  llvm::IntrusiveRefCntPtr<clang::DiagnosticOptions> tempDiagOpts{
-    new clang::DiagnosticOptions
+
+  auto dumpArgumentList = [](const std::vector<const char *> &args) {
+    llvm::errs() << "'";
+    llvm::interleave(args, [](StringRef arg) { llvm::errs() << arg; },
+        [] { llvm::errs() << "' '"; });
+    llvm::errs() << "'\n";
   };
 
-  ClangDiagnosticConsumer tempDiagClient{importer->Impl, *tempDiagOpts,
-                                         importerOpts.DumpClangDiagnostics};
-  llvm::IntrusiveRefCntPtr<clang::DiagnosticsEngine> tempClangDiags =
-      clang::CompilerInstance::createDiagnostics(tempDiagOpts.get(),
-                                                 &tempDiagClient,
-                                                 /*owned*/false);
+  llvm::IntrusiveRefCntPtr<clang::DiagnosticsEngine> clangDiags;
+  std::unique_ptr<clang::CompilerInvocation> CI;
+  if (importerOpts.DirectClangCC1ModuleBuild) {
+    // In this mode, we bypass createInvocationFromCommandLine, which goes
+    // through the Clang driver, and use strictly cc1 arguments to instantiate a
+    // clang Instance directly, assuming that the set of '-Xclang <X>' flags is
+    // fully sufficient to do so.
+    std::vector<const char *> clangFrontendArgs;
+    extractClangFrontendInvocationArgs(invocationArgStrs, clangFrontendArgs);
+    if (importerOpts.DumpClangDiagnostics)
+      dumpArgumentList(clangFrontendArgs);
 
-  auto CI = clang::createInvocationFromCommandLine(
-      invocationArgs, tempClangDiags, VFS, false, CC1Args);
+    // Because we are bypassing the Clang driver, we must populate
+    // the diagnostic options here explicitly.
+    std::unique_ptr<clang::DiagnosticOptions> clangDiagOpts =
+        clang::CreateAndPopulateDiagOpts(clangFrontendArgs);
+    ClangDiagnosticConsumer diagClient{importer->Impl, *clangDiagOpts,
+                                       importerOpts.DumpClangDiagnostics};
+    clangDiags = clang::CompilerInstance::createDiagnostics(
+        clangDiagOpts.release(), &diagClient,
+        /*owned*/ false);
+
+    // Finally, use the CC1 command-line and the diagnostic engine
+    // to instantiate our Invocation.
+    CI = std::make_unique<clang::CompilerInvocation>();
+    clang::CompilerInvocation::CreateFromArgs(
+        *CI, clangFrontendArgs, *clangDiags, clangFrontendArgs[0]);
+  } else {
+    if (importerOpts.DumpClangDiagnostics)
+      dumpArgumentList(invocationArgs);
+
+    // Set up a temporary diagnostic client to report errors from parsing the
+    // command line, which may be important for Swift clients if, for example,
+    // they're using -Xcc options. Unfortunately this diagnostic engine has to
+    // use the default options because the /actual/ options haven't been parsed
+    // yet.
+    //
+    // The long-term client for Clang diagnostics is set up below, after the
+    // clang::CompilerInstance is created.
+    llvm::IntrusiveRefCntPtr<clang::DiagnosticOptions> tempDiagOpts{
+        new clang::DiagnosticOptions};
+
+    ClangDiagnosticConsumer tempDiagClient{importer->Impl, *tempDiagOpts,
+                                           importerOpts.DumpClangDiagnostics};
+    clangDiags = clang::CompilerInstance::createDiagnostics(tempDiagOpts.get(),
+                                                            &tempDiagClient,
+                                                            /*owned*/ false);
+    CI = clang::createInvocationFromCommandLine(invocationArgs, clangDiags, VFS,
+                                                false, CC1Args);
+  }
 
   if (!CI) {
     return CI;
@@ -1030,8 +1082,9 @@ std::unique_ptr<clang::CompilerInvocation> ClangImporter::createClangInvocation(
   // rdar://77516546 is tracking that the clang importer should be more
   // resilient and provide a module even if there were building it.
   auto TempVFS = clang::createVFSFromCompilerInvocation(
-      *CI, *tempClangDiags,
+      *CI, *clangDiags,
       VFS ? VFS : importer->Impl.SwiftContext.SourceMgr.getFileSystem());
+
   std::vector<std::string> FilteredModuleMapFiles;
   for (auto ModuleMapFile : CI->getFrontendOpts().ModuleMapFiles) {
     if (TempVFS->exists(ModuleMapFile)) {
@@ -1055,15 +1108,6 @@ ClangImporter::create(ASTContext &ctx,
   auto &importerOpts = ctx.ClangImporterOpts;
   importer->Impl.ClangArgs = getClangArguments(ctx);
   ArrayRef<std::string> invocationArgStrs = importer->Impl.ClangArgs;
-  if (importerOpts.DumpClangDiagnostics) {
-    llvm::errs() << "'";
-    llvm::interleave(
-        invocationArgStrs, [](StringRef arg) { llvm::errs() << arg; },
-        [] { llvm::errs() << "' '"; });
-    llvm::errs() << "'\n";
-  }
-
-
 
   if (isPCHFilenameExtension(importerOpts.BridgingHeader)) {
     importer->Impl.setSinglePCHImport(importerOpts.BridgingHeader);
