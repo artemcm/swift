@@ -225,24 +225,25 @@ void ModuleDependencies::addBridgingModuleDependency(
   }
 }
 
-GlobalModuleDependenciesCache::GlobalModuleDependenciesCache()
-  : clangScanningService(
-                         clang::tooling::dependencies::ScanningMode::DependencyDirectivesScan,
+SwiftDependencyScanningService::SwiftDependencyScanningService()
+  : ClangScanningService(clang::tooling::dependencies::ScanningMode::DependencyDirectivesScan,
                          clang::tooling::dependencies::ScanningOutputFormat::Full,
                          clang::CASOptions(),
-                         /* Cache (llvm::cas::ActionCache) */ nullptr,
-                         /* SharedFS */ nullptr,
-                         /* ReuseFileManager */ false,
-                         /* OptimizeArgs */ false) {}
-GlobalModuleDependenciesCache::ContextSpecificGlobalCacheState *
-GlobalModuleDependenciesCache::getCurrentCache() const {
+                         /* Cache (llvm::cas::ActionCache) */                nullptr,
+                         /* SharedFS (llvm::cas::CachingOnDiskFileSystem) */ nullptr,
+                         /* ReuseFileManager */                              false,
+                         /* OptimizeArgs */                                  false) {
+  SharedFilesystemCache.emplace();
+}
+SwiftDependencyScanningService::ContextSpecificGlobalCacheState *
+SwiftDependencyScanningService::getCurrentCache() const {
   assert(CurrentContextHash.has_value() &&
          "Global Module Dependencies Cache not configured with Triple.");
   return getCacheForScanningContextHash(CurrentContextHash.value());
 }
 
-GlobalModuleDependenciesCache::ContextSpecificGlobalCacheState *
-GlobalModuleDependenciesCache::getCacheForScanningContextHash(StringRef scanningContextHash) const {
+SwiftDependencyScanningService::ContextSpecificGlobalCacheState *
+SwiftDependencyScanningService::getCacheForScanningContextHash(StringRef scanningContextHash) const {
   auto contextSpecificCache = ContextSpecificCacheMap.find(scanningContextHash);
   assert(contextSpecificCache != ContextSpecificCacheMap.end() &&
          "Global Module Dependencies Cache not configured with context-specific "
@@ -251,7 +252,7 @@ GlobalModuleDependenciesCache::getCacheForScanningContextHash(StringRef scanning
 }
 
 const ModuleNameToDependencyMap &
-GlobalModuleDependenciesCache::getDependenciesMap(
+SwiftDependencyScanningService::getDependenciesMap(
     ModuleDependenciesKind kind) const {
   auto contextSpecificCache = getCurrentCache();
   auto it = contextSpecificCache->ModuleDependenciesMap.find(kind);
@@ -261,7 +262,7 @@ GlobalModuleDependenciesCache::getDependenciesMap(
 }
 
 ModuleNameToDependencyMap &
-GlobalModuleDependenciesCache::getDependenciesMap(
+SwiftDependencyScanningService::getDependenciesMap(
     ModuleDependenciesKind kind) {
   auto contextSpecificCache = getCurrentCache();
   auto it = contextSpecificCache->ModuleDependenciesMap.find(kind);
@@ -270,7 +271,7 @@ GlobalModuleDependenciesCache::getDependenciesMap(
   return it->second;
 }
 
-void GlobalModuleDependenciesCache::configureForContextHash(std::string scanningContextHash) {
+void SwiftDependencyScanningService::configureForContextHash(std::string scanningContextHash) {
   auto knownContext = ContextSpecificCacheMap.find(scanningContextHash);
   if (knownContext != ContextSpecificCacheMap.end()) {
     // Set the current context and leave the rest as-is
@@ -290,7 +291,7 @@ void GlobalModuleDependenciesCache::configureForContextHash(std::string scanning
   }
 }
 
-Optional<ModuleDependencies> GlobalModuleDependenciesCache::findDependencies(
+Optional<ModuleDependencies> SwiftDependencyScanningService::findDependencies(
     StringRef moduleName, Optional<ModuleDependenciesKind> kind) const {
   if (!kind) {
     for (auto kind = ModuleDependenciesKind::FirstKind;
@@ -316,7 +317,7 @@ Optional<ModuleDependencies> GlobalModuleDependenciesCache::findDependencies(
 }
 
 Optional<ModuleDependencies>
-GlobalModuleDependenciesCache::findSourceModuleDependency(
+SwiftDependencyScanningService::findSourceModuleDependency(
     StringRef moduleName) const {
   auto known = SwiftSourceModuleDependenciesMap.find(moduleName);
   if (known != SwiftSourceModuleDependenciesMap.end())
@@ -325,7 +326,7 @@ GlobalModuleDependenciesCache::findSourceModuleDependency(
     return None;
 }
 
-bool GlobalModuleDependenciesCache::hasDependencies(
+bool SwiftDependencyScanningService::hasDependencies(
     StringRef moduleName, Optional<ModuleDependenciesKind> kind) const {
   assert(kind != ModuleDependenciesKind::Clang &&
          "Attempting to query Clang dependency in persistent Dependency "
@@ -359,7 +360,7 @@ static std::string modulePathForVerification(const ModuleDependencies &module) {
   return existingModulePath;
 }
 
-const ModuleDependencies *GlobalModuleDependenciesCache::recordDependencies(
+const ModuleDependencies *SwiftDependencyScanningService::recordDependencies(
     StringRef moduleName, ModuleDependencies dependencies) {
   auto kind = dependencies.getKind();
   assert(kind != ModuleDependenciesKind::Clang &&
@@ -384,7 +385,7 @@ const ModuleDependencies *GlobalModuleDependenciesCache::recordDependencies(
   return &(map[moduleName]);
 }
 
-const ModuleDependencies *GlobalModuleDependenciesCache::updateDependencies(
+const ModuleDependencies *SwiftDependencyScanningService::updateDependencies(
     ModuleDependencyID moduleID, ModuleDependencies dependencies) {
   auto kind = dependencies.getKind();
   assert(kind != ModuleDependenciesKind::Clang &&
@@ -424,13 +425,13 @@ ModuleDependenciesCache::getDependencyReferencesMap(
 }
 
 ModuleDependenciesCache::ModuleDependenciesCache(
-    GlobalModuleDependenciesCache &globalCache,
+    SwiftDependencyScanningService &globalScanningService,
     std::string mainScanModuleName,
     std::string scanningContextHash)
-    : globalCache(globalCache),
+    : globalScanningService(globalScanningService),
       mainScanModuleName(mainScanModuleName),
-      clangScanningTool(globalCache.clangScanningService) {
-  globalCache.configureForContextHash(scannerContextHash);
+      clangScanningTool(globalScanningService.ClangScanningService) {
+  globalScanningService.configureForContextHash(scannerContextHash);
   for (auto kind = ModuleDependenciesKind::FirstKind;
        kind != ModuleDependenciesKind::LastKind; ++kind) {
     ModuleDependenciesMap.insert(
@@ -468,7 +469,7 @@ ModuleDependenciesCache::findDependencies(
   if (localResult.has_value())
     return *(localResult.value());
   else
-    return globalCache.findDependencies(moduleName, kind);
+    return globalScanningService.findDependencies(moduleName, kind);
 }
 
 bool ModuleDependenciesCache::hasDependenciesLocalOnly(StringRef moduleName,
@@ -510,7 +511,7 @@ void ModuleDependenciesCache::recordDependencies(
 
   } else
     recordedDependencies =
-        globalCache.recordDependencies(moduleName, dependencies);
+        globalScanningService.recordDependencies(moduleName, dependencies);
 
   auto &map = getDependencyReferencesMap(dependenciesKind);
   assert(map.count(moduleName) == 0 && "Already added to map");
@@ -519,7 +520,7 @@ void ModuleDependenciesCache::recordDependencies(
 
 void ModuleDependenciesCache::updateDependencies(
     ModuleDependencyID moduleID, ModuleDependencies dependencies) {
-  auto globalDepRef = globalCache.updateDependencies(moduleID, dependencies);
+  auto globalDepRef = globalScanningService.updateDependencies(moduleID, dependencies);
   auto &map = getDependencyReferencesMap(moduleID.second);
   auto known = map.find(moduleID.first);
   if (known != map.end())

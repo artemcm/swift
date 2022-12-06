@@ -76,12 +76,11 @@ public:
     return LLVMSourceMgr;
   }
 
-  void setFileSystem(llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> FS) {
-    FileSystem = FS;
-  }
-
   llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> getFileSystem() const {
     return FileSystem;
+  }
+  void setFileSystem(llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> FS) {
+    FileSystem = FS;
   }
 
   void setCodeCompletionPoint(unsigned BufferID, unsigned Offset) {
