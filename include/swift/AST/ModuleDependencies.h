@@ -487,14 +487,13 @@ using ModuleDependenciesKindRefMap =
                        llvm::StringMap<const ModuleDependencies *>,
                        ModuleDependenciesKindHash>;
 
-// MARK: GlobalModuleDependenciesCache
-/// A cache describing the set of module dependencies that has been queried
-/// thus far. This cache records/stores the actual Dependency values and can be
-/// preserved across different scanning actions (e.g. in
-/// `DependencyScanningTool`). It is not to be queried directly, but is rather
+// MARK: SwiftDependencyScanningService
+/// A service with state which may persist across multiple scanning actions.
+/// Collects the set of module dependencies that has been queried
+/// thus far by each scan. It is not to be queried directly, but is rather
 /// meant to be wrapped in an instance of `ModuleDependenciesCache`, responsible
 /// for recording new dependencies and answering cache queries in a given scan.
-class GlobalModuleDependenciesCache {
+class SwiftDependencyScanningService {
   /// Global cache contents specific to a specific scanner invocation context
   struct ContextSpecificGlobalCacheState {
     /// All cached module dependencies, in the order in which they were
@@ -540,11 +539,11 @@ class GlobalModuleDependenciesCache {
   getDependenciesMap(ModuleDependenciesKind kind) const;
 
 public:
-  GlobalModuleDependenciesCache();
-  GlobalModuleDependenciesCache(const GlobalModuleDependenciesCache &) = delete;
-  GlobalModuleDependenciesCache &
-  operator=(const GlobalModuleDependenciesCache &) = delete;
-  virtual ~GlobalModuleDependenciesCache() {}
+  SwiftDependencyScanningService();
+  SwiftDependencyScanningService(const SwiftDependencyScanningService &) = delete;
+  SwiftDependencyScanningService &
+  operator=(const SwiftDependencyScanningService &) = delete;
+  virtual ~SwiftDependencyScanningService() {}
 
   /// Query the service's filesystem cache
   clang::tooling::dependencies::DependencyScanningFilesystemSharedCache &
@@ -622,18 +621,18 @@ private:
 
 // MARK: ModuleDependenciesCache
 /// This "local" dependencies cache persists only for the duration of a given
-/// scanning action, and wraps an instance of a `GlobalModuleDependenciesCache`
+/// scanning action, and wraps an instance of a `SwiftDependencyScanningService`
 /// which may carry cached scanning information from prior scanning actions.
 /// This cache maintains a store of references to all dependencies found within
 /// the current scanning action (with their values stored in the global Cache).
 class ModuleDependenciesCache {
 private:
-  GlobalModuleDependenciesCache &globalCache;
+  SwiftDependencyScanningService &scanningService;
 
   /// References to data in `globalCache` for Swift dependencies and
   /// `clangModuleDependencies` for Clang dependencies accimulated during
   /// the current scanning action.
-  ModuleDependenciesKindRefMap ModuleDependenciesMap;
+  ModuleDependenciesKindRefMap moduleDependenciesMap;
   
   /// Name of the module under scan
   std::string mainScanModuleName;
@@ -666,7 +665,7 @@ private:
                             Optional<ModuleDependenciesKind> kind) const;
 
 public:
-  ModuleDependenciesCache(GlobalModuleDependenciesCache &globalCache,
+  ModuleDependenciesCache(SwiftDependencyScanningService &scanningService,
                           std::string mainScanModuleName,
                           std::string scanningContextHash);
   ModuleDependenciesCache(const ModuleDependenciesCache &) = delete;
@@ -701,7 +700,7 @@ public:
                           ModuleDependencies dependencies);
 
   const std::vector<ModuleDependencyID> &getAllSourceModules() const {
-    return globalCache.getAllSourceModules();
+    return scanningService.getAllSourceModules();
   }
   
   StringRef getMainModuleName() const {

@@ -108,7 +108,7 @@ private:
 
   /// Shared cache of module dependencies, re-used by individual full-scan queries
   /// during the lifetime of this Tool.
-  std::unique_ptr<GlobalModuleDependenciesCache> SharedCache;
+  std::unique_ptr<SwiftDependencyScanningService> ScanningService;
 
   /// Shared cache of compiler instances created during batch scanning, corresponding to
   /// command-line options specified in the batch scan input entry.
