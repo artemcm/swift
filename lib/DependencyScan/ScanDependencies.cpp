@@ -157,6 +157,12 @@ static void findAllImportedClangModules(ASTContext &ctx, StringRef moduleName,
   }
 }
 
+static void
+resolveExplicitModuleInputs(const ModuleDependencyInfo& dep) {
+  auto textualDep = dep.getAsSwiftInterfaceModule();
+  assert(textualDep);
+}
+
 /// Resolve the direct dependencies of the given module.
 static ArrayRef<ModuleDependencyID>
 resolveDirectDependencies(CompilerInstance &instance, ModuleDependencyID module,
@@ -1470,6 +1476,20 @@ swift::dependencies::performModuleScan(CompilerInstance &instance,
     assert(moduleInfo->isResolved());
   }
 #endif
+
+  // Resolve Swift dependency command-line arguments
+  for (auto module : allModules) {
+    auto optionalDeps = cache.findDependency(module.first, module.second);
+    if (!optionalDeps.has_value())
+      continue;
+    auto deps = optionalDeps.value();
+    // For main module or binary modules, no command-line to resolve
+    // For Clang modules, their dependencies are resolved by the clang Scanner itself for us.
+    if (deps->isSwiftSourceModule() || deps->isSwiftBinaryModule() || deps->isClangModule())
+      continue;
+
+    resolveExplicitModuleInputs(deps);
+  }
 
   // Diagnose cycle in dependency graph.
   if (diagnoseCycle(instance, cache, mainModuleID, ASTDelegate))
