@@ -933,11 +933,17 @@ void SILGenFunction::emitArtificialTopLevel(Decl *mainDecl) {
     
     ImportPath::Element UIKitName =
       {ctx.getIdentifier("UIKit"), SourceLoc()};
-    
-    ModuleDecl *UIKit = ctx
-      .getClangModuleLoader()
-      ->loadModule(SourceLoc(),
-                   ImportPath::Module(llvm::makeArrayRef(UIKitName)));
+    ModuleDecl *UIKit = ctx.getClangModuleLoader()->loadModule(
+        SourceLoc(), ImportPath::Module(llvm::makeArrayRef(UIKitName)));
+
+    // If the "UIKit" lookup failed, we may be dealing with a case where
+    // the definition of `UIApplicationMain` was moved to "UIKitCore"
+    if (!UIKit) {
+      ImportPath::Element UIKitCoreName = {ctx.getIdentifier("UIKitCore"),
+                                           SourceLoc()};
+      UIKit = ctx.getClangModuleLoader()->loadModule(
+          SourceLoc(), ImportPath::Module(llvm::makeArrayRef(UIKitCoreName)));
+    }
     assert(UIKit && "couldn't find UIKit objc module?!");
     SmallVector<ValueDecl *, 2> results;
     UIKit->lookupQualified(UIKit,
