@@ -22,6 +22,9 @@
 #include "swift/Serialization/SerializedModuleLoader.h"
 #include "swift/Serialization/ModuleDependencyScanner.h"
 #include "swift/Subsystems.h"
+#include "ModuleFileSharedCore.h"
+
+#include <algorithm>
 using namespace swift;
 using llvm::ErrorOr;
 
@@ -110,6 +113,8 @@ ErrorOr<ModuleDependencyInfo> ModuleDependencyScanner::scanInterfaceFile(
   llvm::SmallString<32> modulePath = realModuleName.str();
   llvm::sys::path::replace_extension(modulePath, newExt);
   Optional<ModuleDependencyInfo> Result;
+
+  // FIXME: Consider not spawning a sub-instance for this
   std::error_code code =
     astDelegate.runInSubContext(realModuleName.str(),
                                               moduleInterfacePath.str(),
@@ -177,6 +182,27 @@ ErrorOr<ModuleDependencyInfo> ModuleDependencyScanner::scanInterfaceFile(
     for (auto import: imInfo.AdditionalUnloadedImports) {
       Result->addModuleImport(import.module.getModulePath(), &alreadyAddedModules);
     }
+
+    // Check the adjacent binary module, if one is found,
+    // for additional "optional" dependencies.
+    auto adjacentBinaryCandidate = std::find_if(
+        compiledCandidates.begin(), compiledCandidates.end(),
+        [moduleInterfacePath](const std::string &candidate) {
+          return llvm::sys::path::parent_path(candidate) ==
+                 llvm::sys::path::parent_path(moduleInterfacePath.str());
+        });
+    if (adjacentBinaryCandidate != compiledCandidates.end()) {
+      auto adjacentBinaryCandidateModules = getModuleImportsOfModule(
+          *adjacentBinaryCandidate, ModuleLoadingBehavior::Optional,
+          isFramework, isRequiredOSSAModules(), Ctx.LangOpts.SDKName,
+          Ctx.LangOpts.PackageName, Ctx.SourceMgr.getFileSystem().get(),
+          Ctx.SearchPathOpts.DeserializedPathRecoverer);
+      if (!adjacentBinaryCandidateModules)
+        return adjacentBinaryCandidateModules.getError();
+      for (const auto &t : *adjacentBinaryCandidateModules)
+        Result->addOptionalModuleImport(t.getKey(), &alreadyAddedModules);
+    }
+
     return std::error_code();
   });
 

@@ -336,9 +336,15 @@ resolveDirectDependencies(CompilerInstance &instance, ModuleDependencyID module,
         result.insert({dependsOn, ModuleDependencyKind::Clang});
     } else {
       if (auto found =
-              ctx.getModuleDependencies(dependsOn, cache, ASTDelegate, module))
+              ctx.getModuleDependencies(dependsOn, cache, ASTDelegate, false, module))
         result.insert({dependsOn, found.value()->getKind()});
     }
+  }
+
+  for (auto optionallyDependsOn : knownDependencies->getOptionalModuleImports()) {
+    if (auto found =
+            ctx.getModuleDependencies(optionallyDependsOn, cache, ASTDelegate, true, module))
+      result.insert({optionallyDependsOn, found.value()->getKind()});
   }
 
   if (isSwiftInterfaceOrSource) {
