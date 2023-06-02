@@ -483,8 +483,9 @@ public:
                                bool usesMoveableValueDebugInfo = false
 #ifndef NDEBUG
                                ,
-                               bool skipVarDeclAssert = false,
+                               bool skipVarDeclAssert = false
 #endif
+                               ,
                                bool hasPointerEscape = false) {
     llvm::SmallString<4> Name;
     Loc.markAsPrologue();
