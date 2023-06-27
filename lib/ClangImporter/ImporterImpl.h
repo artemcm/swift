@@ -74,6 +74,10 @@ class ParmVarDecl;
 class Parser;
 class QualType;
 class TypedefNameDecl;
+
+namespace api_notes {
+class APINotesReader;
+}
 }
 
 namespace swift {
@@ -729,6 +733,10 @@ public:
   /// A map from Clang modules to their Swift wrapper modules.
   llvm::SmallDenseMap<const clang::Module *, ModuleInitPair, 16> ModuleWrappers;
 
+  /// A map from Clang modules to their associated API notes.
+  llvm::SmallDenseMap<const clang::Module *,
+    std::unique_ptr<clang::api_notes::APINotesManager>> APINotesManagers;
+
   /// The module unit that contains declarations from imported headers.
   ClangModuleUnit *ImportedHeaderUnit = nullptr;
 
@@ -1186,6 +1194,13 @@ public:
   /// it if necessary.
   ClangModuleUnit *getWrapperForModule(const clang::Module *underlying,
                                        SourceLoc importLoc = SourceLoc());
+
+  /// Retrieve the API notes manager that corresponds to the given Clang module,
+  /// loading it if necessary.
+  ///
+  /// \returns an unowned pointer to the corresponding API notes reader, or
+  /// nullptr if no API notes file exists.
+  void getAPINotesForModule(const clang::Module *clangModule);
 
   /// Constructs a Swift module for the given Clang module.
   ModuleDecl *finishLoadingClangModule(const clang::Module *clangModule,
