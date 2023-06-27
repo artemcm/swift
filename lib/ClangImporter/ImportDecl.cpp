@@ -8209,6 +8209,9 @@ ClangImporter::Implementation::importDeclImpl(const clang::NamedDecl *ClangDecl,
   if (access == clang::AS_protected || access == clang::AS_private)
     return nullptr;
 
+  // ACTODO: Prototype choke-point for APINotes processing.
+  //getClangSema().ProcessAPINotes(const_cast<clang::NamedDecl *>(ClangDecl));
+
   bool SkippedOverTypedef = false;
   Decl *Result = nullptr;
   if (auto *UnderlyingDecl = canSkipOverTypedef(*this, ClangDecl,

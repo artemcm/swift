@@ -50,6 +50,8 @@
 #include "swift/Subsystems.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Mangle.h"
+#include "clang/APINotes/APINotesReader.h"
+#include "clang/APINotes/APINotesManager.h"
 #include "clang/Basic/IdentifierTable.h"
 #include "clang/Basic/Module.h"
 #include "clang/Basic/TargetInfo.h"
@@ -2161,6 +2163,8 @@ ModuleDecl *ClangImporter::Implementation::finishLoadingClangModule(
     const clang::Module *clangModule, SourceLoc importLoc) {
   assert(clangModule);
 
+  getAPINotesForModule(clangModule);
+
   // Bump the generation count.
   bumpGeneration();
 
@@ -2178,8 +2182,9 @@ ModuleDecl *ClangImporter::Implementation::finishLoadingClangModule(
     finishLoadingClangModule(clangModule->getTopLevelModule(), importLoc);
   } else {
 
-    if (!SwiftContext.getLoadedModule(result->getName()))
+    if (!SwiftContext.getLoadedModule(result->getName())) {
       SwiftContext.addLoadedModule(result);
+    }
   }
 
   return result;
@@ -2264,6 +2269,61 @@ PlatformAvailability::PlatformAvailability(const LangOptions &langOpts)
 
   case PlatformKind::none:
     break;
+  }
+}
+
+// ACTODO: Copied from SemaAPINotes.cpp
+static StringRef CopyString(clang::ASTContext &ctx, StringRef string) {
+  void *mem = ctx.Allocate(string.size(), alignof(char));
+  memcpy(mem, string.data(), string.size());
+  return StringRef(static_cast<char *>(mem), string.size());
+}
+// ACTODO: Copied from SemaAPINotes.cpp
+static clang::AttributeCommonInfo getDummyAttrInfo() {
+  return clang::AttributeCommonInfo(clang::SourceRange(),
+                                    clang::AttributeCommonInfo::UnknownAttribute,
+                                    clang::AttributeCommonInfo::AS_GNU,
+                                    /*Spelling*/0);
+}
+
+void ClangImporter::Implementation::getAPINotesForModule(
+    const clang::Module *clangModule) {
+  assert(clangModule == clangModule->getTopLevelModule() &&
+         "Only allowed on a top-level module");
+  clang::Module *nonConstModule = const_cast<clang::Module *>(clangModule);
+  getClangSema().APINotes.setSwiftVersion(
+      SwiftContext.LangOpts.EffectiveLanguageVersion);
+  // Locate and load the module's corresponding APINotes
+  auto apiNotesloadResult = getClangSema().APINotes.loadCurrentModuleAPINotes(
+      nonConstModule, /*lookInModule*/ true,
+      SwiftContext.SearchPathOpts.getImportSearchPaths());
+  // If we didn't find anything in the user-provided import search paths, look
+  // in the runtime library import path
+  if (!apiNotesloadResult)
+    apiNotesloadResult = getClangSema().APINotes.loadCurrentModuleAPINotes(
+        nonConstModule, /*lookInModule*/ true,
+        SwiftContext.SearchPathOpts.getRuntimeLibraryImportPaths());
+
+  // Find top-level decls
+  llvm::SmallVector<ValueDecl *, 20> topLevelDecls;
+  VectorDeclConsumer vectorDeclConsumer(topLevelDecls);
+  if (auto lookupTable = findLookupTable(clangModule)) {
+    llvm::SmallVector<ValueDecl *, 20> topLevelDecls2;
+    VectorDeclConsumer vectorDeclConsumer2(topLevelDecls);
+    clang::ASTReader &R = *Instance->getASTReader();
+    clang::serialization::ModuleFile *ModFile =
+        R.getModuleManager().lookup(clangModule->getASTFile());
+    for (auto d : R.getModuleFileLevelDecls(*ModFile)) {
+      if (auto funcDecl = dyn_cast<clang::FunctionDecl>(d)) {
+        if (auto namedClangDecl = dyn_cast<clang::NamedDecl>(funcDecl)) {
+          clang::NamedDecl *nonConstClangDecl =
+              const_cast<clang::NamedDecl *>(namedClangDecl);
+          getClangSema().ProcessAPINotes(nonConstClangDecl);
+          importer::addEntryToLookupTable(*lookupTable, nonConstClangDecl,
+                                          *nameImporter);
+        }
+      }
+    }
   }
 }
 
