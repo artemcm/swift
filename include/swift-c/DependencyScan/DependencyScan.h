@@ -55,6 +55,9 @@ typedef struct swiftscan_import_set_s *swiftscan_import_set_t;
 /// Opaque container to contain the info of a diagnostics emitted by the scanner.
 typedef struct swiftscan_diagnostic_info_s *swiftscan_diagnostic_info_t;
 
+/// Opaque container to contain the info of a source location.
+typedef struct swiftscan_source_location_s *swiftscan_source_location_t;
+
 /// Full Dependency Graph (Result)
 typedef struct {
   swiftscan_dependency_info_t *modules;
@@ -419,8 +422,24 @@ swiftscan_diagnostic_get_message(swiftscan_diagnostic_info_t diagnostic);
 SWIFTSCAN_PUBLIC swiftscan_diagnostic_severity_t
 swiftscan_diagnostic_get_severity(swiftscan_diagnostic_info_t diagnostic);
 
+SWIFTSCAN_PUBLIC swiftscan_source_location_t
+swiftscan_diagnostic_get_source_location(swiftscan_diagnostic_info_t diagnostic);
+
 SWIFTSCAN_PUBLIC void
 swiftscan_diagnostics_set_dispose(swiftscan_diagnostic_set_t* diagnostics);
+
+//=== Source Location -----------------------------------------------------===//
+SWIFTSCAN_PUBLIC swiftscan_string_ref_t
+swiftscan_source_location_get_buffer_identifier(swiftscan_source_location_t source_location);
+
+SWIFTSCAN_PUBLIC int64_t
+swiftscan_source_location_get_line_number(swiftscan_source_location_t source_location);
+
+SWIFTSCAN_PUBLIC int64_t
+swiftscan_source_location_get_column_number(swiftscan_source_location_t source_location);
+
+SWIFTSCAN_PUBLIC void
+swiftscan_source_location_dispose(swiftscan_source_location_t source_location);
 
 //=== Scanner Cache Operations --------------------------------------------===//
 // The following operations expose an implementation detail of the dependency

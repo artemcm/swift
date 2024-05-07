@@ -112,7 +112,7 @@ void DependencyScanDiagnosticCollector::addDiagnostic(
   DiagnosticEngine::formatDiagnosticText(Out, Info.FormatString,
                                          Info.FormatArgs);
   auto Msg = SM.GetMessage(Info.Loc, SMKind, Text, Ranges, FixIts);
-  Diagnostics.push_back(ScannerDiagnosticInfo{Msg.getMessage().str(), SMKind});
+  Diagnostics.push_back(ScannerDiagnosticInfo{Msg.getMessage().str(), SMKind, Info.Loc});
 }
 
 void LockingDependencyScanDiagnosticCollector::addDiagnostic(

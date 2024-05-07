@@ -37,6 +37,7 @@ private:
   struct ScannerDiagnosticInfo {
     std::string Message;
     llvm::SourceMgr::DiagKind Severity;
+    SourceLoc SourceLocation;
   };
 
   void handleDiagnostic(SourceManager &SM, const DiagnosticInfo &Info) override;

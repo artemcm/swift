@@ -1109,6 +1109,7 @@ static void bridgeDependencyIDs(const ArrayRef<ModuleDependencyID> dependencies,
 }
 
 static swiftscan_diagnostic_set_t *mapCollectedDiagnosticsForOutput(
+    const SourceManager &SM,
     const DependencyScanDiagnosticCollector *diagnosticCollector) {
   auto collectedDiagnostics = diagnosticCollector->getDiagnostics();
   auto numDiagnostics = collectedDiagnostics.size();
@@ -1136,6 +1137,20 @@ static swiftscan_diagnostic_set_t *mapCollectedDiagnosticsForOutput(
       diagnosticInfo->severity = SWIFTSCAN_DIAGNOSTIC_SEVERITY_REMARK;
       break;
     }
+
+    if (Diagnostic.SourceLocation.isValid() && SM.isOwning(Diagnostic.SourceLocation)) {
+      swiftscan_source_location_s *sourceLoc =
+      new swiftscan_source_location_s;
+      sourceLoc->buffer_identifier =
+      swift::c_string_utils::create_clone(SM.getDisplayNameForLoc(Diagnostic.SourceLocation, true).str().c_str());
+      auto lineAndColumn = SM.getLineAndColumnInBuffer(Diagnostic.SourceLocation);
+      sourceLoc->line_number = lineAndColumn.first;
+      sourceLoc->column_number = lineAndColumn.second;
+      diagnosticInfo->source_location = sourceLoc;
+    } else {
+      diagnosticInfo->source_location = nullptr;
+    }
+
     diagnosticOutput->diagnostics[i] = diagnosticInfo;
   }
   return diagnosticOutput;
@@ -1322,9 +1337,10 @@ generateFullDependencyGraph(const CompilerInstance &instance,
   result->main_module_name = create_clone(mainModuleName.c_str());
   result->dependencies = dependencySet;
   result->diagnostics =
-      diagnosticCollector
-          ? mapCollectedDiagnosticsForOutput(diagnosticCollector)
-          : nullptr;
+              diagnosticCollector
+              ? mapCollectedDiagnosticsForOutput(instance.getSourceMgr(),
+                                                 diagnosticCollector)
+              : nullptr;
   return result;
 }
 
@@ -1995,11 +2011,13 @@ swift::dependencies::performModulePrescan(CompilerInstance &instance,
   importSet->imports = create_set(importIdentifiers);
   importSet->diagnostics =
       diagnosticCollector
-          ? mapCollectedDiagnosticsForOutput(diagnosticCollector)
+          ? mapCollectedDiagnosticsForOutput(instance.getSourceMgr(),
+                                             diagnosticCollector)
           : nullptr;
   importSet->diagnostics =
       diagnosticCollector
-          ? mapCollectedDiagnosticsForOutput(diagnosticCollector)
+          ? mapCollectedDiagnosticsForOutput(instance.getSourceMgr(),
+                                             diagnosticCollector)
           : nullptr;
   return importSet;
 }
