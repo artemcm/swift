@@ -53,14 +53,15 @@ static void findPath_dfs(ModuleDependencyID X, ModuleDependencyID Y,
     std::optional<ModuleDependencyKind> lookupKind = std::nullopt;
     // Underlying Clang module needs an explicit lookup to avoid confusing it
     // with the parent Swift module.
-    if ((dep == X.ModuleName && node->isSwiftModule()) || node->isClangModule())
+    if ((dep.importIdentifier == X.ModuleName && node->isSwiftModule()) || 
+        node->isClangModule())
       lookupKind = ModuleDependencyKind::Clang;
 
-    auto optionalDepNode = cache.findDependency(dep, lookupKind);
+    auto optionalDepNode = cache.findDependency(dep.importIdentifier, lookupKind);
     if (!optionalDepNode.has_value())
       continue;
     auto depNode = optionalDepNode.value();
-    auto depID = ModuleDependencyID{dep, depNode->getKind()};
+    auto depID = ModuleDependencyID{dep.importIdentifier, depNode->getKind()};
     if (!visited.count(depID)) {
       findPath_dfs(depID, Y, visited, stack, result, cache);
     }
@@ -88,11 +89,16 @@ findPathToDependency(ModuleDependencyID dependency,
 // Diagnose scanner failure and attempt to reconstruct the dependency
 // path from the main module to the missing dependency.
 static void
-diagnoseScannerFailure(StringRef moduleName, DiagnosticEngine &Diags,
+diagnoseScannerFailure(const ImportStatementInfo &moduleImport,
+                       DiagnosticEngine &Diags,
                        const ModuleDependenciesCache &cache,
                        std::optional<ModuleDependencyID> dependencyOf) {
-  Diags.diagnose(SourceLoc(), diag::dependency_scan_module_not_found,
-                 moduleName);
+  auto importLoc = moduleImport.importLocations.empty() ? SourceLoc() : moduleImport.importLocations[0];
+  if (!importLoc.isValid() || !Diags.SourceMgr.isOwning(importLoc))
+    importLoc = SourceLoc();
+
+  Diags.diagnose(importLoc, diag::dependency_scan_module_not_found,
+                 moduleImport.importIdentifier);
   if (dependencyOf.has_value()) {
     auto path = findPathToDependency(dependencyOf.value(), cache);
     // We may fail to construct a path in some cases, such as a Swift overlay of
@@ -109,7 +115,7 @@ diagnoseScannerFailure(StringRef moduleName, DiagnosticEngine &Diags,
       bool isClang = false;
       switch (entryNode->getKind()) {
       case swift::ModuleDependencyKind::SwiftSource:
-        Diags.diagnose(SourceLoc(), diag::dependency_as_imported_by_main_module,
+        Diags.diagnose(importLoc, diag::dependency_as_imported_by_main_module,
                        entry.ModuleName);
         continue;
       case swift::ModuleDependencyKind::SwiftInterface:
@@ -132,11 +138,17 @@ diagnoseScannerFailure(StringRef moduleName, DiagnosticEngine &Diags,
         llvm_unreachable("Unexpected dependency kind");
       }
 
-      // TODO: Consider turning the module file (interface or modulemap) into
-      // the SourceLoc of this diagnostic instead. Ideally with the location of
-      // the `import` statement that this dependency originates from.
-      Diags.diagnose(SourceLoc(), diag::dependency_as_imported_by,
+      Diags.diagnose(importLoc, diag::dependency_as_imported_by,
                      entry.ModuleName, moduleFilePath, isClang);
+    }
+  }
+
+  if (moduleImport.importLocations.size() > 1) {
+    for (size_t i = 1; i < moduleImport.importLocations.size(); ++i) {
+      auto importLoc = moduleImport.importLocations[i];
+      if (!importLoc.isValid() || !Diags.SourceMgr.isOwning(importLoc))
+        importLoc = SourceLoc();
+      Diags.diagnose(moduleImport.importLocations[i], diag::unresolved_import_location);
     }
   }
 }
@@ -396,7 +408,8 @@ ModuleDependencyScanner::getMainModuleDependencyInfo(ModuleDecl *mainModule) {
     // Already-loaded, implicitly imported module names.
     for (const auto &import : importInfo.AdditionalImports) {
       mainDependencies.addModuleImport(
-          import.module.importedModule->getNameStr(), &alreadyAddedModules);
+          import.module.importedModule->getNameStr(),
+          &alreadyAddedModules);
     }
 
     // Add the bridging header.
@@ -416,7 +429,8 @@ ModuleDependencyScanner::getMainModuleDependencyInfo(ModuleDecl *mainModule) {
     // to be impored in the source.
     for (const auto &tbdSymbolModule :
          ScanCompilerInvocation.getTBDGenOptions().embedSymbolsFromModules) {
-      mainDependencies.addModuleImport(tbdSymbolModule, &alreadyAddedModules);
+      mainDependencies.addModuleImport(tbdSymbolModule,
+                                       &alreadyAddedModules);
     }
   }
 
@@ -436,8 +450,9 @@ ModuleDependencyScanner::getMainModuleDependencyInfo(ModuleDecl *mainModule) {
     // SourceFiles.
     for (auto &Module :
          mainModule->getASTContext().getSuccessfulCanImportCheckNames())
-      mainDependencies.addModuleImport(Module.first(), &alreadyAddedModules);
-  }    
+      mainDependencies.addModuleImport(Module.first(),
+                                       &alreadyAddedModules);
+  }
 
   return mainDependencies;
 }
@@ -557,8 +572,9 @@ void ModuleDependencyScanner::resolveImportDependencies(
   auto moduleDependencyInfo = optionalModuleDependencyInfo.value();
 
   llvm::StringMap<std::optional<ModuleDependencyVector>> moduleLookupResult;
+  // ACTDOO: Import refactor
   for (const auto &dependsOn : moduleDependencyInfo->getModuleImports())
-    moduleLookupResult.insert(std::make_pair(dependsOn, std::nullopt));
+    moduleLookupResult.insert(std::make_pair(dependsOn.importIdentifier, std::nullopt));
 
   // A scanning task to query a module by-name. If the module already exists
   // in the cache, do nothing and return.
@@ -587,51 +603,55 @@ void ModuleDependencyScanner::resolveImportDependencies(
     moduleLookupResult.insert_or_assign(moduleName, moduleDependencies);
   };
 
+  // ACTDOO: Import refactor
   // Enque asynchronous lookup tasks
   for (const auto &dependsOn : moduleDependencyInfo->getModuleImports()) {
-    bool underlyingClangModuleLookup = moduleID.ModuleName == dependsOn;
-    bool isTestable = moduleDependencyInfo->isTestableImport(dependsOn);
-    ScanningThreadPool.async(scanForModuleDependency, getModuleImportIdentifier(dependsOn),
+    bool underlyingClangModuleLookup = moduleID.ModuleName == dependsOn.importIdentifier;
+    bool isTestable = moduleDependencyInfo->isTestableImport(dependsOn.importIdentifier);
+    ScanningThreadPool.async(scanForModuleDependency, getModuleImportIdentifier(dependsOn.importIdentifier),
                              underlyingClangModuleLookup, isTestable);
   }
   for (const auto &dependsOn :
        moduleDependencyInfo->getOptionalModuleImports()) {
-    bool underlyingClangModuleLookup = moduleID.ModuleName == dependsOn;
-    bool isTestable = moduleDependencyInfo->isTestableImport(dependsOn);
-    ScanningThreadPool.async(scanForModuleDependency, getModuleImportIdentifier(dependsOn),
+    bool underlyingClangModuleLookup = moduleID.ModuleName == dependsOn.importIdentifier;
+    bool isTestable = moduleDependencyInfo->isTestableImport(dependsOn.importIdentifier);
+    ScanningThreadPool.async(scanForModuleDependency, getModuleImportIdentifier(dependsOn.importIdentifier),
                              underlyingClangModuleLookup, isTestable);
   }
   ScanningThreadPool.wait();
 
-  std::vector<std::string> unresolvedImports;
+  std::vector<ImportStatementInfo> unresolvedImports;
   // Aggregate both previously-cached and freshly-scanned module results
   auto recordResolvedModuleImport =
       [&cache, &moduleLookupResult, &unresolvedImports, &directDependencies,
-       moduleID](const std::string &moduleName, bool optionalImport) {
-        bool underlyingClangModule = moduleID.ModuleName == moduleName;
-        auto lookupResult = moduleLookupResult[moduleName];
+       moduleID](const ImportStatementInfo &moduleImport, bool optionalImport) {
+        bool underlyingClangModule = moduleID.ModuleName == moduleImport.importIdentifier;
+        auto lookupResult = moduleLookupResult[moduleImport.importIdentifier];
         // The imported module was found in the cache
         if (lookupResult == std::nullopt) {
           const ModuleDependencyInfo *cachedInfo;
           if (underlyingClangModule)
             cachedInfo =
-                cache.findDependency(moduleName, ModuleDependencyKind::Clang)
-                    .value();
+                cache.findDependency(moduleImport.importIdentifier,
+                                     ModuleDependencyKind::Clang).value();
           else
-            cachedInfo = cache.findDependency(moduleName).value();
+            cachedInfo =
+              cache.findDependency(moduleImport.importIdentifier).value();
           assert(cachedInfo && "Expected cached dependency info");
-          directDependencies.insert({moduleName, cachedInfo->getKind()});
+          directDependencies.insert({moduleImport.importIdentifier,
+                                     cachedInfo->getKind()});
         } else {
           // Cache discovered module dependencies.
           if (!lookupResult.value().empty()) {
             cache.recordDependencies(lookupResult.value());
             directDependencies.insert(
-                {moduleName, lookupResult.value()[0].first.Kind});
+                {moduleImport.importIdentifier,
+                 lookupResult.value()[0].first.Kind});
           } else if (!optionalImport) {
             // Otherwise, we failed to resolve this dependency. We will try
             // again using the cache after all other imports have been resolved.
             // If that fails too, a scanning failure will be diagnosed.
-            unresolvedImports.push_back(moduleName);
+            unresolvedImports.push_back(moduleImport);
           }
         }
       };
@@ -664,14 +684,16 @@ void ModuleDependencyScanner::resolveImportDependencies(
   // transitive dependencies to the cache, and then attempt to re-query imports
   // for which resolution originally failed from the cache. If this fails, then
   // the scanner genuinely failed to resolve this dependency.
-  for (const auto &moduleName : unresolvedImports) {
+  for (const auto &moduleImport : unresolvedImports) {
     auto optionalCachedModuleInfo =
-      cache.findDependency({moduleName, ModuleDependencyKind::Clang});
+      cache.findDependency({moduleImport.importIdentifier,
+                            ModuleDependencyKind::Clang});
     if (optionalCachedModuleInfo.has_value())
       directDependencies.insert(
-          {moduleName, optionalCachedModuleInfo.value()->getKind()});
+          {moduleImport.importIdentifier,
+           optionalCachedModuleInfo.value()->getKind()});
     else
-      diagnoseScannerFailure(moduleName, Diagnostics, cache, moduleID);
+      diagnoseScannerFailure(moduleImport, Diagnostics, cache, moduleID);
   }
 }
 

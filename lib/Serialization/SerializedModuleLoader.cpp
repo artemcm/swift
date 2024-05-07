@@ -478,25 +478,25 @@ SerializedModuleLoaderBase::scanModuleFile(Twine modulePath, bool isFramework,
                          Ctx.LangOpts.PackageName, isTestableImport);
 
   auto importedModuleSet = binaryModuleImports.moduleImports;
-  std::vector<std::string> importedModuleNames;
-  importedModuleNames.reserve(importedModuleSet.size());
+  std::vector<ImportStatementInfo> moduleImports;
+  moduleImports.reserve(importedModuleSet.size());
   llvm::transform(importedModuleSet.keys(),
-                  std::back_inserter(importedModuleNames),
+                  std::back_inserter(moduleImports),
                   [](llvm::StringRef N) {
-                     return N.str();
+                     return ImportStatementInfo(N.str());
                   });
 
   auto importedHeader = binaryModuleImports.headerImport;
   auto &importedOptionalModuleSet = binaryModuleOptionalImports.moduleImports;
-  std::vector<std::string> importedOptionalModuleNames;
+  std::vector<ImportStatementInfo> optionalModuleImports;
   for (const auto optionalImportedModule : importedOptionalModuleSet.keys())
     if (!importedModuleSet.contains(optionalImportedModule))
-      importedOptionalModuleNames.push_back(optionalImportedModule.str());
+      optionalModuleImports.push_back(ImportStatementInfo(optionalImportedModule.str()));
 
   // Map the set of dependencies over to the "module dependencies".
   auto dependencies = ModuleDependencyInfo::forSwiftBinaryModule(
        modulePath.str(), moduleDocPath, sourceInfoPath,
-       importedModuleNames, importedOptionalModuleNames,
+       moduleImports, optionalModuleImports,
        importedHeader, isFramework, /*module-cache-key*/ "");
 
   return std::move(dependencies);

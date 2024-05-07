@@ -121,9 +121,35 @@ void ModuleDependencyInfo::addOptionalModuleImport(
 }
 
 void ModuleDependencyInfo::addModuleImport(
-    StringRef module, llvm::StringSet<> *alreadyAddedModules) {
-  if (!alreadyAddedModules || alreadyAddedModules->insert(module).second)
-    storage->moduleImports.push_back(module.str());
+    StringRef module, llvm::StringSet<> *alreadyAddedModules,
+    SourceLoc sourceLocation) {
+  if (alreadyAddedModules && alreadyAddedModules->contains(module)) {
+    // Find a prior import of this module and add import location
+    for (auto &existingImport : storage->moduleImports) {
+      if (existingImport.importIdentifier == module) {
+        existingImport.importLocations.push_back(sourceLocation);
+        break;
+      }
+    }
+  } else
+    storage->moduleImports.push_back(ImportStatementInfo(sourceLocation,
+                                                         module.str()));
+}
+
+void ModuleDependencyInfo::addModuleImport(
+    ImportPath::Module module, llvm::StringSet<> *alreadyAddedModules,
+    SourceLoc sourceLocation) {
+  std::string ImportedModuleName = module.front().Item.str().str();
+  auto submodulePath = module.getSubmodulePath();
+  if (submodulePath.size() > 0 && !submodulePath[0].Item.empty()) {
+    auto submoduleComponent = submodulePath[0];
+    // Special case: a submodule named "Foo.Private" can be moved to a top-level
+    // module named "Foo_Private". ClangImporter has special support for this.
+    if (submoduleComponent.Item.str() == "Private")
+      addOptionalModuleImport(ImportedModuleName + "_Private", alreadyAddedModules);
+  }
+
+  addModuleImport(ImportedModuleName, alreadyAddedModules, sourceLocation);
 }
 
 void ModuleDependencyInfo::addModuleImport(
@@ -152,7 +178,7 @@ void ModuleDependencyInfo::addModuleImport(
             realPath, importDecl->getLoc(), sf, importDecl->isExported()))
       continue;
 
-    addModuleImport(realPath, &alreadyAddedModules);
+    addModuleImport(realPath, &alreadyAddedModules, importDecl->getLoc());
 
     // Additionally, keep track of which dependencies of a Source
     // module are `@Testable`.

@@ -13,6 +13,7 @@
 #include "swift-c/CommonString/CommonString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include <string>
 #include <vector>
 

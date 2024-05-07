@@ -129,6 +129,24 @@ namespace dependencies {
                                   bool);
 }
 
+struct ImportStatementInfo {
+  ImportStatementInfo(SourceLoc location,
+                      std::string importIdentifier)
+  : importLocations({location}),
+    importIdentifier(importIdentifier) {}
+
+  ImportStatementInfo(std::string importIdentifier)
+  : importLocations(),
+    importIdentifier(importIdentifier) {}
+
+  void addImportLocation(SourceLoc location) {
+    importLocations.push_back(location);
+  }
+
+  SmallVector<SourceLoc, 4> importLocations;
+  std::string importIdentifier;
+};
+
 /// Base class for the variant storage of ModuleDependencyInfo.
 ///
 /// This class is mostly an implementation detail for \c ModuleDependencyInfo.
@@ -142,8 +160,8 @@ public:
         resolved(false), finalized(false) {}
 
   ModuleDependencyInfoStorageBase(ModuleDependencyKind dependencyKind,
-                                  const std::vector<std::string> &moduleImports,
-                                  const std::vector<std::string> &optionalModuleImports,
+                                  const std::vector<ImportStatementInfo> &moduleImports,
+                                  const std::vector<ImportStatementInfo> &optionalModuleImports,
                                   StringRef moduleCacheKey = "")
       : dependencyKind(dependencyKind), moduleImports(moduleImports),
         optionalModuleImports(optionalModuleImports),
@@ -154,12 +172,12 @@ public:
   virtual ~ModuleDependencyInfoStorageBase();
 
   /// The set of modules on which this module depends.
-  std::vector<std::string> moduleImports;
+  std::vector<ImportStatementInfo> moduleImports;
 
   /// The set of modules which constitute optional module
   /// dependencies for this module, such as `@_implementationOnly`
   /// or `internal` imports.
-  std::vector<std::string> optionalModuleImports;
+  std::vector<ImportStatementInfo> optionalModuleImports;
 
   /// The set of modules on which this module depends, resolved
   /// to Module IDs, qualified by module kind: Swift, Clang, etc.
@@ -328,8 +346,8 @@ public:
   SwiftBinaryModuleDependencyStorage(const std::string &compiledModulePath,
                                      const std::string &moduleDocPath,
                                      const std::string &sourceInfoPath,
-                                     const std::vector<std::string> &moduleImports,
-                                     const std::vector<std::string> &optionalModuleImports,
+                                     const std::vector<ImportStatementInfo> &moduleImports,
+                                     const std::vector<ImportStatementInfo> &optionalModuleImports,
                                      const std::string &headerImport,
                                      const bool isFramework,
                                      const std::string &moduleCacheKey)
@@ -516,8 +534,8 @@ public:
       const std::string &compiledModulePath,
       const std::string &moduleDocPath,
       const std::string &sourceInfoPath,
-      const std::vector<std::string> &moduleImports,
-      const std::vector<std::string> &optionalModuleImports,
+      const std::vector<ImportStatementInfo> &moduleImports,
+      const std::vector<ImportStatementInfo> &optionalModuleImports,
       const std::string &headerImport,
       bool isFramework, const std::string &moduleCacheKey) {
     return ModuleDependencyInfo(
@@ -567,12 +585,12 @@ public:
   }
 
   /// Retrieve the module-level imports.
-  ArrayRef<std::string> getModuleImports() const {
+  ArrayRef<ImportStatementInfo> getModuleImports() const {
     return storage->moduleImports;
   }
 
   /// Retrieve the module-level optional imports.
-  ArrayRef<std::string> getOptionalModuleImports() const {
+  ArrayRef<ImportStatementInfo> getOptionalModuleImports() const {
     return storage->optionalModuleImports;
   }
 
@@ -752,23 +770,13 @@ public:
 
   /// Add a dependency on the given module, if it was not already in the set.
   void addModuleImport(StringRef module,
-                       llvm::StringSet<> *alreadyAddedModules = nullptr);
+                       llvm::StringSet<> *alreadyAddedModules = nullptr,
+                       SourceLoc sourceLocation = SourceLoc());
 
   /// Add a dependency on the given module, if it was not already in the set.
   void addModuleImport(ImportPath::Module module,
-                       llvm::StringSet<> *alreadyAddedModules = nullptr) {
-    std::string ImportedModuleName = module.front().Item.str().str();
-    auto submodulePath = module.getSubmodulePath();
-    if (submodulePath.size() > 0 && !submodulePath[0].Item.empty()) {
-      auto submoduleComponent = submodulePath[0];
-      // Special case: a submodule named "Foo.Private" can be moved to a top-level
-      // module named "Foo_Private". ClangImporter has special support for this.
-      if (submoduleComponent.Item.str() == "Private")
-        addOptionalModuleImport(ImportedModuleName + "_Private", alreadyAddedModules);
-    }
-
-    addModuleImport(ImportedModuleName, alreadyAddedModules);
-  }
+                       llvm::StringSet<> *alreadyAddedModules = nullptr,
+                       SourceLoc sourceLocation = SourceLoc());
 
   /// Add all of the module imports in the given source
   /// file to the set of module imports.

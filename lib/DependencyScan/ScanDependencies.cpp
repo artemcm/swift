@@ -1984,7 +1984,19 @@ swift::dependencies::performModulePrescan(CompilerInstance &instance,
   if (!mainDependencies)
     return mainDependencies.getError();
   auto *importSet = new swiftscan_import_set_s;
-  importSet->imports = create_set(mainDependencies->getModuleImports());
+
+  std::vector<std::string> importIdentifiers;
+  importIdentifiers.reserve(mainDependencies->getModuleImports().size());
+  llvm::transform(mainDependencies->getModuleImports(),
+                  std::back_inserter(importIdentifiers),
+                  [](const auto &importInfo) -> std::string {
+                    return importInfo.importIdentifier;
+                  });
+  importSet->imports = create_set(importIdentifiers);
+  importSet->diagnostics =
+      diagnosticCollector
+          ? mapCollectedDiagnosticsForOutput(diagnosticCollector)
+          : nullptr;
   importSet->diagnostics =
       diagnosticCollector
           ? mapCollectedDiagnosticsForOutput(diagnosticCollector)
