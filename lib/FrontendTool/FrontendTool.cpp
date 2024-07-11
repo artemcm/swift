@@ -1504,7 +1504,7 @@ static bool validateTBDIfNeeded(const CompilerInvocation &Invocation,
     if (mode == FrontendOptions::TBDValidationMode::Default) {
 #ifndef NDEBUG
       // With a debug compiler, we do some validation by default.
-      return true;
+      return false;
 #else
       // Otherwise, the default is to do nothing.
       return false;

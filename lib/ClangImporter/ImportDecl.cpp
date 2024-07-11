@@ -8276,12 +8276,26 @@ void ClangImporter::Implementation::importAttributes(
   bool AnyUnavailable = MappedDecl->getAttrs().isUnavailable(C);
   for (clang::NamedDecl::attr_iterator AI = ClangDecl->attr_begin(),
        AE = ClangDecl->attr_end(); AI != AE; ++AI) {
+    clang::Attr *consideringAttr = *AI;
+    if (auto versionedAttr = dyn_cast<clang::SwiftVersionedAttr>(consideringAttr)) {
+      llvm::dbgs() << "\n--- Discovered versioned attribute on Clang decl: " << ClangDecl->getName() << " ---\n";
+      llvm::dbgs() << "VersionedAttr: " << versionedAttr->getVersion().getAsString() <<" -- ";
+      llvm::dbgs() << "CrrentVersion: " << CurrentVersion.asClangVersionTuple().getAsString();
+      if (versionedAttr->getVersion() == CurrentVersion.asClangVersionTuple()) {
+        consideringAttr = versionedAttr->getAttrToAdd();
+        llvm::dbgs() << " ----> Apply\n\n";
+      } else {
+        llvm::dbgs() << " ----> Continue\n\n";
+        continue;
+      }
+    }
+
     //
     // __attribute__((unavailable))
     //
     // Mapping: @available(*,unavailable)
     //
-    if (auto unavailable = dyn_cast<clang::UnavailableAttr>(*AI)) {
+    if (auto unavailable = dyn_cast<clang::UnavailableAttr>(consideringAttr)) {
       auto Message = unavailable->getMessage();
       auto attr = AvailableAttr::createPlatformAgnostic(C, Message);
       MappedDecl->getAttrs().add(attr);
@@ -8294,7 +8308,7 @@ void ClangImporter::Implementation::importAttributes(
     //
     // Mapping: @available(*, unavailable)
     //
-    if (auto unavailable_annot = dyn_cast<clang::AnnotateAttr>(*AI))
+    if (auto unavailable_annot = dyn_cast<clang::AnnotateAttr>(consideringAttr))
       if (unavailable_annot->getAnnotation() == "swift1_unavailable") {
         auto attr = AvailableAttr::createPlatformAgnostic(
             C, "", "", PlatformAgnosticAvailabilityKind::UnavailableInSwift);
@@ -8308,7 +8322,7 @@ void ClangImporter::Implementation::importAttributes(
     //
     // Mapping: @available(*,deprecated)
     //
-    if (auto deprecated = dyn_cast<clang::DeprecatedAttr>(*AI)) {
+    if (auto deprecated = dyn_cast<clang::DeprecatedAttr>(consideringAttr)) {
       auto Message = deprecated->getMessage();
       auto attr = AvailableAttr::createPlatformAgnostic(C, Message, "",
                     PlatformAgnosticAvailabilityKind::Deprecated);
@@ -8318,7 +8332,7 @@ void ClangImporter::Implementation::importAttributes(
 
     // __attribute__((availability))
     //
-    if (auto avail = dyn_cast<clang::AvailabilityAttr>(*AI)) {
+    if (auto avail = dyn_cast<clang::AvailabilityAttr>(consideringAttr)) {
       StringRef Platform = avail->getPlatform()->getName();
 
       // Is this our special "availability(swift, unavailable)" attribute?
