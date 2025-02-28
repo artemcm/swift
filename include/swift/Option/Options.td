@@ -2156,6 +2156,10 @@ def cas_plugin_option: Separate<["-"], "cas-plugin-option">,
 def clang_scanner_module_cache_path : Separate<["-"], "clang-scanner-module-cache-path">,
   Flags<[FrontendOption, DoesNotAffectIncrementalBuild, ArgumentIsPath]>,
   HelpText<"Specifies the Clang dependency scanner module cache path">;
+  
+def sdk_module_cache_path : Separate<["-"], "sdk-module-cache-path">,
+  Flags<[FrontendOption, DoesNotAffectIncrementalBuild, ArgumentIsPath]>,
+  HelpText<"Specifies the module cache path for explicitly-built SDK modules">;  
 
 def scanner_prefix_map : Separate<["-"], "scanner-prefix-map">,
   Flags<[FrontendOption, NewDriverOnlyOption]>,

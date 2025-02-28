@@ -400,6 +400,7 @@ computeClangWorkingDirectory(const std::vector<std::string> &commandLineArgs,
 ModuleDependencyVector
 ClangImporter::getModuleDependencies(Identifier moduleName,
                                      StringRef moduleOutputPath,
+                                     StringRef sdkModuleOutputPath,
                                      const llvm::DenseSet<clang::tooling::dependencies::ModuleID> &alreadySeenClangModules,
                                      clang::tooling::dependencies::DependencyScanningTool &clangScanningTool,
                                      InterfaceSubContextDelegate &delegate,
@@ -417,9 +418,11 @@ ClangImporter::getModuleDependencies(Identifier moduleName,
   }
   std::string workingDir = *optionalWorkingDir;
 
-  auto lookupModuleOutput =
-      [moduleOutputPath](const ModuleID &MID,
-                        ModuleOutputKind MOK) -> std::string {
+  auto lookupModuleOutput = [moduleOutputPath](
+                                const ModuleID &MID,
+                                ModuleOutputKind MOK) -> std::string {
+    // ACTODO: Once the clang scanner gets the required functionality, 
+    // use sdkModuleOutputPath for modules whose modulemap is a part of the SDK.
     return moduleCacheRelativeLookupModuleOutput(MID, MOK, moduleOutputPath);
   };
 

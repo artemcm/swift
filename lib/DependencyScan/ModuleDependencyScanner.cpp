@@ -239,22 +239,23 @@ ModuleDependencyScanningWorker::ModuleDependencyScanningWorker(
 
 ModuleDependencyVector
 ModuleDependencyScanningWorker::scanFilesystemForSwiftModuleDependency(
-    Identifier moduleName, StringRef moduleOutputPath,
-    llvm::PrefixMapper *prefixMapper, bool isTestableImport) {
+    Identifier moduleName, StringRef moduleOutputPath, 
+    StringRef sdkModuleOutputPath, llvm::PrefixMapper *prefixMapper, 
+    bool isTestableImport) {
   return swiftScannerModuleLoader->getModuleDependencies(
-      moduleName, moduleOutputPath,
+      moduleName, moduleOutputPath, sdkModuleOutputPath,
       {}, clangScanningTool, *scanningASTDelegate,
       prefixMapper, isTestableImport);
 }
 
 ModuleDependencyVector
 ModuleDependencyScanningWorker::scanFilesystemForClangModuleDependency(
-    Identifier moduleName,
-    StringRef moduleOutputPath,
+    Identifier moduleName, StringRef moduleOutputPath, 
+    StringRef sdkModuleOutputPath,
     const llvm::DenseSet<clang::tooling::dependencies::ModuleID> &alreadySeenModules,
     llvm::PrefixMapper *prefixMapper) {
   return clangScannerModuleLoader->getModuleDependencies(
-      moduleName, moduleOutputPath,
+      moduleName, moduleOutputPath, sdkModuleOutputPath,
       alreadySeenModules, clangScanningTool,
       *scanningASTDelegate, prefixMapper, false);
 }
@@ -513,7 +514,8 @@ ModuleDependencyScanner::getNamedClangModuleDependencyInfo(
   auto moduleDependencies = withDependencyScanningWorker(
       [&cache, moduleIdentifier](ModuleDependencyScanningWorker *ScanningWorker) {
         return ScanningWorker->scanFilesystemForClangModuleDependency(
-          moduleIdentifier, cache.getModuleOutputPath(),
+          moduleIdentifier, cache.getModuleOutputPath(), 
+          cache.getSDKModuleOutputPath(),
           cache.getAlreadySeenClangModules(),
           cache.getScanService().getPrefixMapper());
       });
@@ -551,7 +553,8 @@ ModuleDependencyScanner::getNamedSwiftModuleDependencyInfo(
   auto moduleDependencies = withDependencyScanningWorker(
       [&cache, moduleIdentifier](ModuleDependencyScanningWorker *ScanningWorker) {
         return ScanningWorker->scanFilesystemForSwiftModuleDependency(
-          moduleIdentifier, cache.getModuleOutputPath(),
+          moduleIdentifier, cache.getModuleOutputPath(), 
+          cache.getSDKModuleOutputPath(),
           cache.getScanService().getPrefixMapper());
       });
   if (moduleDependencies.empty())
@@ -891,8 +894,9 @@ ModuleDependencyScanner::resolveAllClangModuleDependencies(
             [&cache, &seenClangModules,
              moduleIdentifier](ModuleDependencyScanningWorker *ScanningWorker) {
               return ScanningWorker->scanFilesystemForClangModuleDependency(
-                  moduleIdentifier, cache.getModuleOutputPath(),
-                  seenClangModules, cache.getScanService().getPrefixMapper());
+                  moduleIdentifier, cache.getModuleOutputPath(), 
+                  cache.getSDKModuleOutputPath(), seenClangModules, 
+                  cache.getScanService().getPrefixMapper());
             });
 
         // Update the `moduleLookupResult` and cache all discovered dependencies
@@ -1080,7 +1084,8 @@ void ModuleDependencyScanner::resolveSwiftImportsForModule(
             [&cache, moduleIdentifier,
              isTestable](ModuleDependencyScanningWorker *ScanningWorker) {
               return ScanningWorker->scanFilesystemForSwiftModuleDependency(
-                  moduleIdentifier, cache.getModuleOutputPath(),
+                  moduleIdentifier, cache.getModuleOutputPath(), 
+                  cache.getSDKModuleOutputPath(),
                   cache.getScanService().getPrefixMapper(), isTestable);
             });
 
@@ -1268,7 +1273,8 @@ void ModuleDependencyScanner::resolveSwiftOverlayDependenciesForModule(
         [&cache,
          moduleIdentifier](ModuleDependencyScanningWorker *ScanningWorker) {
           return ScanningWorker->scanFilesystemForSwiftModuleDependency(
-              moduleIdentifier, cache.getModuleOutputPath(),
+              moduleIdentifier, cache.getModuleOutputPath(), 
+              cache.getSDKModuleOutputPath(),
               cache.getScanService().getPrefixMapper());
         });
     swiftOverlayLookupResult.insert_or_assign(moduleName, moduleDependencies);
