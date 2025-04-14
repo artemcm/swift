@@ -241,7 +241,8 @@ bool ModuleDependenciesCacheDeserializer::readGraph(
         // Add imports of this module
         for (const auto &moduleName : currentModuleImports)
           moduleDep.addModuleImport(moduleName.importIdentifier,
-                                    moduleName.isExported);
+                                    moduleName.isExported,
+                                    AccessLevel::Public);  // ACTODO: Fix
         // Add optional imports of this module
         for (const auto &moduleName : currentOptionalModuleImports)
           moduleDep.addOptionalModuleImport(moduleName.importIdentifier,

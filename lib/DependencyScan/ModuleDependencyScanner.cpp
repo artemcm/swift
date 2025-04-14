@@ -407,6 +407,7 @@ ModuleDependencyScanner::getMainModuleDependencyInfo(ModuleDecl *mainModule) {
 
     case ImplicitStdlibKind::Stdlib:
       mainDependencies.addModuleImport("Swift", /* isExported */false,
+                                       AccessLevel::Public,
                                        &alreadyAddedModules);
       break;
     }
@@ -415,6 +416,7 @@ ModuleDependencyScanner::getMainModuleDependencyInfo(ModuleDecl *mainModule) {
     for (const auto &import : importInfo.AdditionalUnloadedImports) {
       mainDependencies.addModuleImport(import.module.getModulePath(),
                                        import.options.contains(ImportFlags::Exported),
+                                       import.accessLevel,
                                        &alreadyAddedModules,
                                        &ScanASTContext.SourceMgr);
     }
@@ -424,6 +426,7 @@ ModuleDependencyScanner::getMainModuleDependencyInfo(ModuleDecl *mainModule) {
       mainDependencies.addModuleImport(
           import.module.importedModule->getNameStr(),
           import.options.contains(ImportFlags::Exported),
+          import.accessLevel,
           &alreadyAddedModules);
     }
 
@@ -437,6 +440,7 @@ ModuleDependencyScanner::getMainModuleDependencyInfo(ModuleDecl *mainModule) {
     if (importInfo.ShouldImportUnderlyingModule) {
       mainDependencies.addModuleImport(mainModule->getName().str(),
                                        /* isExported */ true,
+                                       AccessLevel::Public,
                                        &alreadyAddedModules);
     }
 
@@ -447,6 +451,7 @@ ModuleDependencyScanner::getMainModuleDependencyInfo(ModuleDecl *mainModule) {
          ScanCompilerInvocation.getTBDGenOptions().embedSymbolsFromModules) {
       mainDependencies.addModuleImport(tbdSymbolModule,
                                        /* isExported */ false,
+                                       AccessLevel::Public,
                                        &alreadyAddedModules);
     }
   }
@@ -1380,7 +1385,8 @@ void ModuleDependencyScanner::resolveCrossImportOverlayDependencies(
   std::for_each(newOverlays.begin(), newOverlays.end(),
                 [&](Identifier modName) {
                   dummyMainDependencies.addModuleImport(modName.str(),
-                                                        /* isExported */ false);
+                                                        /* isExported */ false,
+                                                        AccessLevel::Public);  // ACTODO: Fix
                 });
 
   // Record the dummy main module's direct dependencies. The dummy main module

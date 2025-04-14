@@ -173,6 +173,8 @@ struct ScannerImportStatementInfo {
   std::string importIdentifier;
   /// Is this an @_exported import
   bool isExported;
+  /// Canonical access level for this imported module
+  AccessLevel accessLevel;
 };
 
 /// Base class for the variant storage of ModuleDependencyInfo.
@@ -941,13 +943,13 @@ public:
                         const SourceManager *sourceManager);
 
   /// Add a dependency on the given module, if it was not already in the set.
-  void addModuleImport(ImportPath::Module module, bool isExported,
+  void addModuleImport(ImportPath::Module module, bool isExported, AccessLevel accessLevel,
                        llvm::StringSet<> *alreadyAddedModules = nullptr,
                        const SourceManager *sourceManager = nullptr,
                        SourceLoc sourceLocation = SourceLoc());
 
   /// Add a dependency on the given module, if it was not already in the set.
-  void addModuleImport(StringRef module, bool isExported,
+  void addModuleImport(StringRef module, bool isExported, AccessLevel accessLevel,
                        llvm::StringSet<> *alreadyAddedModules = nullptr,
                        const SourceManager *sourceManager = nullptr,
                        SourceLoc sourceLocation = SourceLoc());

@@ -264,6 +264,7 @@ SwiftModuleScanner::scanInterfaceFile(Twine moduleInterfacePath,
         for (auto import : imInfo.AdditionalUnloadedImports) {
           Result->addModuleImport(import.module.getModulePath(),
                                   import.options.contains(ImportFlags::Exported),
+                                  import.accessLevel,
                                   &alreadyAddedModules, &Ctx.SourceMgr);
         }
 
@@ -292,6 +293,7 @@ SwiftModuleScanner::scanInterfaceFile(Twine moduleInterfacePath,
                if (!alreadyAddedModules.contains(requiredImport.importIdentifier))
                  Result->addModuleImport(requiredImport.importIdentifier,
                                          requiredImport.isExported,
+                                         requiredImport.accessLevel,
                                          &alreadyAddedModules);
            }
          }

@@ -123,8 +123,9 @@ void ModuleDependencyInfo::addOptionalModuleImport(
 }
 
 void ModuleDependencyInfo::addModuleImport(
-    StringRef module, bool isExported, llvm::StringSet<> *alreadyAddedModules,
-    const SourceManager *sourceManager, SourceLoc sourceLocation) {
+    StringRef module, bool isExported, AccessLevel accessLevel,
+    llvm::StringSet<> *alreadyAddedModules, const SourceManager *sourceManager,
+    SourceLoc sourceLocation) {
   auto scannerImportLocToDiagnosticLocInfo =
       [&sourceManager](SourceLoc sourceLocation) {
         auto lineAndColumnNumbers =
@@ -163,8 +164,9 @@ void ModuleDependencyInfo::addModuleImport(
 }
 
 void ModuleDependencyInfo::addModuleImport(
-    ImportPath::Module module, bool isExported, llvm::StringSet<> *alreadyAddedModules,
-    const SourceManager *sourceManager, SourceLoc sourceLocation) {
+    ImportPath::Module module, bool isExported, AccessLevel accessLevel,
+    llvm::StringSet<> *alreadyAddedModules, const SourceManager *sourceManager,
+    SourceLoc sourceLocation) {
   std::string ImportedModuleName = module.front().Item.str().str();
   auto submodulePath = module.getSubmodulePath();
   if (submodulePath.size() > 0 && !submodulePath[0].Item.empty()) {
@@ -176,8 +178,8 @@ void ModuleDependencyInfo::addModuleImport(
                               alreadyAddedModules);
   }
 
-  addModuleImport(ImportedModuleName, isExported, alreadyAddedModules,
-                  sourceManager, sourceLocation);
+  addModuleImport(ImportedModuleName, isExported, accessLevel,
+                  alreadyAddedModules, sourceManager, sourceLocation);
 }
 
 void ModuleDependencyInfo::addModuleImports(
@@ -206,8 +208,8 @@ void ModuleDependencyInfo::addModuleImports(
         continue;
 
       addModuleImport(realPath, importDecl->isExported(),
-                      &alreadyAddedModules, sourceManager,
-                      importDecl->getLoc());
+                      importDecl->getAccessLevel(), &alreadyAddedModules,
+                      sourceManager, importDecl->getLoc());
 
       // Additionally, keep track of which dependencies of a Source
       // module are `@Testable`.
