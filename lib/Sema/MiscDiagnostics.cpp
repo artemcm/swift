@@ -6333,6 +6333,7 @@ void swift::performSyntacticExprDiagnostics(const Expr *E,
   if (ctx.LangOpts.EnableObjCInterop)
     diagDeprecatedObjCSelectors(DC, E);
   diagnoseConstantArgumentRequirement(E, DC);
+  diagnoseIllegalConstExpr(E, DC);
   diagUnqualifiedAccessToMethodNamedSelf(E, DC);
   diagnoseDictionaryLiteralDuplicateKeyEntries(E, DC);
   diagnoseMissingMemberImports(E, DC);

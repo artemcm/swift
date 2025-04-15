@@ -814,6 +814,9 @@ NOTE(add_return_type_note,none,
 
 ERROR(expect_compile_time_const,none,
       "expect a compile-time constant literal", ())
+      
+ERROR(unsupported_const_operator,none,
+      "unsupported operator in a '@const' expression'", ())
 
 //------------------------------------------------------------------------------
 // MARK: Import Resolution
