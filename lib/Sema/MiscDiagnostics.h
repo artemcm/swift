@@ -101,6 +101,12 @@ namespace swift {
   void diagnoseConstantArgumentRequirement(const Expr *expr,
                                            const DeclContext *declContext);
 
+  /// If \p expr is a `@const` expression which contains values and
+  /// operations that are not legal in a `@const` expression,
+  /// emit an error diagnostic.
+  void diagnoseInvalidConstExpressions(const Expr *expr,
+                                const DeclContext *declContext);
+
   /// Attempt to fix the type of \p decl so that it's a valid override for
   /// \p base...but only if we're highly confident that we know what the user
   /// should have written.
