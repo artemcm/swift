@@ -687,8 +687,9 @@ static bool writeJSONToOutput(DiagnosticEngine &diags,
   });
 }
 
+template <template <typename> class Container>
 static void
-bridgeDependencyIDs(const ArrayRef<ModuleDependencyID> dependencies,
+bridgeDependencyIDs(const Container<ModuleDependencyID> dependencies,
                     std::vector<std::string> &bridgedDependencyNames) {
   for (const auto &dep : dependencies) {
     std::string dependencyKindAndName;
@@ -925,8 +926,7 @@ static swiftscan_dependency_graph_t generateFullDependencyGraph(
 
     // Create a direct dependencies set according to the output format
     std::vector<std::string> bridgedDependencyNames;
-    bridgeDependencyIDs(directDependencies.getArrayRef(),
-                        bridgedDependencyNames);
+    bridgeDependencyIDs(directDependencies, bridgedDependencyNames);
     moduleInfo->direct_dependencies = create_set(bridgedDependencyNames);
     moduleInfo->details = getModuleDetails();
 

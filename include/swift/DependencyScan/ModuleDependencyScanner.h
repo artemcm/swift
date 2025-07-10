@@ -247,9 +247,10 @@ private:
   /// (bridging headers)
   /// 4. Swift overlay modules of all of the transitively imported Clang modules
   /// that have one
-  ModuleDependencyIDSetVector
-  resolveImportedModuleDependencies(const ModuleDependencyID &rootModuleID,
-                                    ModuleDependenciesCache &cache);
+  void
+  resolveImportedModuleDependencies(
+      const ModuleDependencyID &rootModuleID, ModuleDependenciesCache &cache,
+      ModuleDependencyIDSetVector &allModules);
   void resolveSwiftModuleDependencies(
       const ModuleDependencyID &rootModuleID, ModuleDependenciesCache &cache,
       ModuleDependencyIDSetVector &discoveredSwiftModules);
