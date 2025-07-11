@@ -244,6 +244,11 @@ struct CommonSwiftTextualModuleDependencyDetails {
 
   /// CASID for the Root of bridgingHeaderClangIncludeTree. Empty if not used.
   std::string CASBridgingHeaderIncludeTreeRootID;
+
+  /// A list of Clang modules that are visible to this Swift module. This
+  /// includes both direct Clang modules as well as transitive Clang
+  /// module dependencies when they are exported
+  llvm::StringSet<> visibleClangModules;
 };
 
 /// Describes the dependencies of a Swift module described by an Swift interface
@@ -816,7 +821,32 @@ public:
       cast<ClangModuleDependencyStorage>(storage.get())->CASFileSystemRootID =
           rootID;
     else
-      llvm_unreachable("Unexpected type");
+      llvm_unreachable("Unexpected module dependency kind");
+  }
+
+  llvm::StringSet<> &getVisibleClangModules() const {
+    if (isSwiftInterfaceModule())
+      return cast<SwiftInterfaceModuleDependenciesStorage>(storage.get())
+          ->textualModuleDetails.visibleClangModules;
+    else if (isSwiftSourceModule())
+      return cast<SwiftSourceModuleDependenciesStorage>(storage.get())
+          ->textualModuleDetails.visibleClangModules;
+    else
+      llvm_unreachable("Unexpected module dependency kind");
+  }
+
+  void
+  addVisibleClangModules(const std::vector<std::string> &moduleNames) const {
+    if (isSwiftInterfaceModule())
+      cast<SwiftInterfaceModuleDependenciesStorage>(storage.get())
+          ->textualModuleDetails.visibleClangModules.insert(moduleNames.begin(),
+                                                            moduleNames.end());
+    else if (isSwiftSourceModule())
+      cast<SwiftSourceModuleDependenciesStorage>(storage.get())
+          ->textualModuleDetails.visibleClangModules.insert(moduleNames.begin(),
+                                                            moduleNames.end());
+    else
+      llvm_unreachable("Unexpected module dependency kind");
   }
 
   /// Whether explicit input paths of all the module dependencies
@@ -1057,6 +1087,9 @@ public:
   /// Query all cross-import overlay dependencies
   llvm::ArrayRef<ModuleDependencyID>
   getCrossImportOverlayDependencies(const ModuleDependencyID &moduleID) const;
+  /// Query all visible Clang modules for a given Swift dependency
+  llvm::StringSet<>&
+  getVisibleClangModules(ModuleDependencyID moduleID) const;
 
   /// Look for module dependencies for a module with the given ID
   ///
@@ -1122,6 +1155,11 @@ public:
   void
   setCrossImportOverlayDependencies(ModuleDependencyID moduleID,
                                     const ArrayRef<ModuleDependencyID> dependencyIDs);
+
+  /// Add to this module's set of visible Clang modules
+  void
+  addVisibleClangModules(ModuleDependencyID moduleID,
+                         const std::vector<std::string> &moduleNames);
 
   StringRef getMainModuleName() const { return mainScanModuleName; }
 

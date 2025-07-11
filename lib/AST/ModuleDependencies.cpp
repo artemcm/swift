@@ -918,6 +918,23 @@ ModuleDependenciesCache::setCrossImportOverlayDependencies(ModuleDependencyID mo
   updateDependency(moduleID, updatedDependencyInfo);
 }
 
+void
+ModuleDependenciesCache::addVisibleClangModules(ModuleDependencyID moduleID,
+                                                const std::vector<std::string> &moduleNames) {
+  if (moduleNames.empty())
+    return;
+  auto dependencyInfo = findKnownDependency(moduleID);
+  auto updatedDependencyInfo = dependencyInfo;
+  updatedDependencyInfo.addVisibleClangModules(moduleNames);
+  updateDependency(moduleID, updatedDependencyInfo);
+}
+
+llvm::StringSet<> &ModuleDependenciesCache::getVisibleClangModules(ModuleDependencyID moduleID) const {
+  ASSERT(moduleID.Kind == ModuleDependencyKind::SwiftSource ||
+         moduleID.Kind == ModuleDependencyKind::SwiftInterface);
+  return findKnownDependency(moduleID).getVisibleClangModules();
+}
+
 ModuleDependencyIDSetVector
 ModuleDependenciesCache::getAllDependencies(const ModuleDependencyID &moduleID) const {
   const auto &moduleInfo = findKnownDependency(moduleID);
