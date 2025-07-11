@@ -385,6 +385,9 @@ public:
   /// Emit remarks indicating use of the serialized module dependency scanning cache.
   bool EmitDependencyScannerCacheRemarks = false;
 
+  /// Emit remarks about various steps of dependency scanning.
+  bool EmitDependencyScannerProgressRemarks = false;
+
   /// The path at which the dependency scanner can write generated files.
   std::string ScannerOutputDir;
 

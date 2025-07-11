@@ -2396,6 +2396,10 @@ WARNING(dependency_scan_module_incompatible, none,
         "module file '%0' is incompatible with this Swift compiler: %1",
         (StringRef, StringRef))
 
+REMARK(dependency_scan_progress_remark, none,
+       "dependency scan: %0",
+       (StringRef))
+
 ERROR(clang_dependency_scan_error, none, "clang dependency scanning failure: %0", (StringRef))
 
 ERROR(clang_header_dependency_scan_error, none, "bridging header dependency scanning failure: %0", (StringRef))

@@ -145,8 +145,9 @@ private:
 
 class ModuleDependencyIssueReporter {
 private:
-  ModuleDependencyIssueReporter(DiagnosticEngine &Diagnostics)
-      : Diagnostics(Diagnostics) {}
+  ModuleDependencyIssueReporter(DiagnosticEngine &Diagnostics,
+                                bool emitProgressRemarks)
+      : Diagnostics(Diagnostics), emitProgressRemarks(emitProgressRemarks) {}
 
   /// Diagnose scanner failure and attempt to reconstruct the dependency
   /// path from the main module to the missing dependency
@@ -176,9 +177,12 @@ private:
       StringRef moduleName,
       const std::vector<SwiftModuleScannerQueryResult::IncompatibleCandidate>
           &candidates);
+  
+  void remark(StringRef message);
 
   DiagnosticEngine &Diagnostics;
   std::unordered_set<std::string> ReportedMissing;
+  bool emitProgressRemarks;
   // Restrict access to the parent scanner class.
   friend class ModuleDependencyScanner;
 };
