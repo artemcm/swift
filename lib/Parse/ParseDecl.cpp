@@ -21,6 +21,7 @@
 #include "swift/AST/Decl.h"
 #include "swift/AST/DiagnosticsParse.h"
 #include "swift/AST/DiagnosticsSema.h"
+#include "swift/AST/DiagnosticGroups.h"
 #include "swift/AST/GenericParamList.h"
 #include "swift/AST/Initializer.h"
 #include "swift/AST/LazyResolver.h"
@@ -3178,6 +3179,62 @@ ParserStatus Parser::parseNewDeclAttribute(DeclAttributes &Attributes,
   case DeclAttrKind::Extern: {
     if (!parseExternAttribute(Attributes, DiscardAttribute, AttrName, AtLoc, Loc))
       return makeParserSuccess();
+    break;
+  }
+
+  case DeclAttrKind::PerformanceOverride: {
+    if (!consumeIfAttributeLParen()) {
+      diagnose(Loc, diag::attr_expected_lparen, AttrName,
+               DeclAttribute::isDeclModifier(DK));
+      return makeParserSuccess();
+    }
+
+    // Map the kind identifier to PerformanceOverrideAttr::CheckKind
+    StringRef parsedCategoryIdentifier = Tok.getText();
+    if (!consumeIf(tok::identifier)) {
+      diagnose(Loc, diag::attr_expected_option_identifier, AttrName);
+      return makeParserSuccess();
+    }
+
+    auto diagGroupID = getDiagGroupIDByName(parsedCategoryIdentifier);
+    if (!diagGroupID) {
+      diagnose(Loc, diag::attr_expected_option_identifier, AttrName);
+      return makeParserSuccess();
+    }
+    std::optional<PerformanceOverrideAttr::CheckKind> checkKind =
+        PerformanceOverrideAttr::getCheckKind(*diagGroupID);
+
+    if (!consumeIf(tok::comma)) {
+      diagnose(Tok, diag::attr_expected_comma, "@performanceOverride", false);
+      return makeParserSuccess();
+    }
+
+    // Parse out the given reason string literal
+    if (Tok.isNot(tok::string_literal)) {
+      diagnose(Loc, diag::attr_expected_string_literal, AttrName);
+      return makeParserSuccess();
+    }
+
+    auto Reason =
+        getStringLiteralIfNotInterpolated(Loc, ("'" + AttrName + "'").str());
+
+    consumeToken(tok::string_literal);
+
+    if (Reason.has_value())
+      AttrRange = SourceRange(Loc, Tok.getRange().getStart());
+    else
+      DiscardAttribute = true;
+
+    if (!consumeIf(tok::r_paren)) {
+      diagnose(Loc, diag::attr_expected_rparen, AttrName,
+               DeclAttribute::isDeclModifier(DK));
+      return makeParserSuccess();
+    }
+
+    if (!DiscardAttribute)
+      Attributes.add(new (Context) PerformanceOverrideAttr(
+          *checkKind, Reason.value(), AtLoc, AttrRange, /*Implicit=*/false));
+
     break;
   }
 

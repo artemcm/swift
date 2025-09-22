@@ -23,6 +23,7 @@
 #include "swift/AST/AvailabilityRange.h"
 #include "swift/AST/ConcreteDeclRef.h"
 #include "swift/AST/DeclNameLoc.h"
+#include "swift/AST/DiagnosticGroups.h"
 #include "swift/AST/Identifier.h"
 #include "swift/AST/KnownProtocols.h"
 #include "swift/AST/LifetimeDependence.h"
@@ -727,6 +728,63 @@ public:
 
   bool isEquivalent(const SectionAttr *other, Decl *attachedTo) const {
     return Name == other->Name;
+  }
+};
+
+/// Defines the @performanceOverride attribute.
+class PerformanceOverrideAttr : public DeclAttribute {
+public:
+  enum class CheckKind : uint8_t { ReturnTypeImplicitCopy, Count = 1 };
+
+  PerformanceOverrideAttr(CheckKind Kind, StringRef Reason, SourceLoc AtLoc,
+                          SourceRange Range, bool Implicit)
+      : DeclAttribute(DeclAttrKind::PerformanceOverride, AtLoc, Range,
+                      Implicit),
+        Kind(Kind), Reason(Reason) {}
+
+  PerformanceOverrideAttr(CheckKind Kind, StringRef Reason, bool Implicit)
+      : PerformanceOverrideAttr(Kind, Reason, SourceLoc(), SourceRange(),
+                                Implicit) {}
+
+  /// Override check category
+  CheckKind Kind;
+  /// The override string.
+  const StringRef Reason;
+
+  static bool classof(const DeclAttribute *DA) {
+    return DA->getKind() == DeclAttrKind::PerformanceOverride;
+  }
+
+  PerformanceOverrideAttr *clone(ASTContext &ctx) const {
+    return new (ctx)
+        PerformanceOverrideAttr(Kind, Reason, AtLoc, Range, isImplicit());
+  }
+
+  bool isEquivalent(const PerformanceOverrideAttr *other,
+                    Decl *attachedTo) const {
+    return Reason == other->Reason;
+  }
+
+  static std::optional<CheckKind> getCheckKind(DiagGroupID diagGroupID) {
+    // Mapping from diagnostic group to check kind.
+    // The diagnostic group identifier is specified as an attribute parameter
+    static constexpr std::array<
+        std::pair<DiagGroupID, PerformanceOverrideAttr::CheckKind>, 1>
+        DiagGroupKindMap = {
+            {{DiagGroupID::PerfHintReturnTypeImplicitCopy,
+              PerformanceOverrideAttr::CheckKind::ReturnTypeImplicitCopy}}};
+    static_assert(
+        std::size(DiagGroupKindMap) ==
+        static_cast<size_t>(PerformanceOverrideAttr::CheckKind::Count));
+
+    auto kindIt =
+        llvm::find_if(DiagGroupKindMap, [diagGroupID](const auto &pair) {
+          return pair.first == diagGroupID;
+        });
+    if (kindIt == DiagGroupKindMap.end())
+      return std::nullopt;
+    else
+      return kindIt->second;
   }
 };
 

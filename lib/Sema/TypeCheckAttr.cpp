@@ -398,6 +398,8 @@ public:
   void visitPostfixAttr(PostfixAttr *attr) { checkOperatorAttribute(attr); }
   void visitPrefixAttr(PrefixAttr *attr) { checkOperatorAttribute(attr); }
 
+  void visitPerformanceOverrideAttr(PerformanceOverrideAttr *attr);
+
   void visitSpecializedAttr(SpecializedAttr *attr);
   void visitSpecializeAttr(SpecializeAttr *attr);
   void visitAbstractSpecializeAttr(AbstractSpecializeAttr *attr);
@@ -2831,6 +2833,17 @@ void AttributeChecker::visitConstValAttr(ConstValAttr *attr) {
       diagnose(D->getStartLoc(), diag::attr_only_one_decl_kind,
                attr, "let");
       attr->setInvalid();
+      return;
+    }
+  }
+}
+
+void AttributeChecker::visitPerformanceOverrideAttr(PerformanceOverrideAttr *attr) {
+  auto *VD = dyn_cast<VarDecl>(D);
+  if (VD) {
+    if (!isa<FuncDecl>(D)) {
+      diagnoseAndRemoveAttr(attr, diag::attr_only_one_decl_kind,
+                            attr, "function");
       return;
     }
   }

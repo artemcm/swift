@@ -313,6 +313,10 @@ static bool usesFeatureCompileTimeValues(Decl *decl) {
          decl->getAttrs().hasAttribute<ConstInitializedAttr>();
 }
 
+static bool usesFeatureSwiftPerformanceHints(Decl *decl) {
+  return decl->getAttrs().hasAttribute<PerformanceOverrideAttr>();
+}
+
 static bool usesFeatureCompileTimeValuesPreview(Decl *decl) {
   return false;
 }

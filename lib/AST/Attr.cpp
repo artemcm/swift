@@ -1316,6 +1316,18 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
     Printer << "(\"" << cast<SectionAttr>(this)->Name << "\")";
     break;
 
+  case DeclAttrKind::PerformanceOverride:
+    Printer.printAttrName("@performanceOverride(");
+    switch (cast<PerformanceOverrideAttr>(this)->Kind) {
+    case PerformanceOverrideAttr::CheckKind::ReturnTypeImplicitCopy:
+      Printer << "PerfHintReturnTypeImplicitCopy, ";
+      break;
+    case PerformanceOverrideAttr::CheckKind::Count:
+      llvm_unreachable("invalid 'PerformanceOverrideAttr::CheckKind'");
+    }
+    Printer << "\"" << cast<PerformanceOverrideAttr>(this)->Reason << "\")";
+    break;
+
   case DeclAttrKind::ObjC: {
     Printer.printAttrName("@objc");
     llvm::SmallString<32> scratch;
@@ -1967,6 +1979,8 @@ StringRef DeclAttribute::getAttrName() const {
     return "_expose";
   case DeclAttrKind::Section:
     return "_section";
+  case DeclAttrKind::PerformanceOverride:
+    return "performanceOverride";
   case DeclAttrKind::Documentation:
     return "_documentation";
   case DeclAttrKind::Nonisolated:

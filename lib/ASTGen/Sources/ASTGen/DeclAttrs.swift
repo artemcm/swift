@@ -182,6 +182,8 @@ extension ASTGenVisitor {
         return handle(self.generateRawLayoutAttr(attribute: node)?.asDeclAttribute)
       case .Section:
         return handle(self.generateSectionAttr(attribute: node)?.asDeclAttribute)
+      case .PerformanceOverride:
+        return handle(self.generateSimpleDeclAttr(attribute: node, kind: .PerformanceOverride)) // TODO:
       case .Semantics:
         return handle(self.generateSemanticsAttr(attribute: node)?.asDeclAttribute)
       case .SILGenName:

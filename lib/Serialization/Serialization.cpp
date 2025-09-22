@@ -3438,6 +3438,16 @@ class Serializer::DeclSerializer : public DeclVisitor<DeclSerializer> {
       return;
     }
 
+    case DeclAttrKind::PerformanceOverride: {
+      auto *theAttr = cast<PerformanceOverrideAttr>(DA);
+      auto abbrCode =
+          S.DeclTypeAbbrCodes[PerformanceOverrideDeclAttrLayout::Code];
+      PerformanceOverrideDeclAttrLayout::emitRecord(
+          S.Out, S.ScratchRecord, abbrCode, theAttr->isImplicit(),
+          static_cast<uint8_t>(theAttr->Kind), theAttr->Reason);
+      return;
+    }
+
     case DeclAttrKind::Documentation: {
       auto *theAttr = cast<DocumentationAttr>(DA);
       auto abbrCode = S.DeclTypeAbbrCodes[DocumentationDeclAttrLayout::Code];

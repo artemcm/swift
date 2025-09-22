@@ -6653,6 +6653,17 @@ llvm::Error DeclDeserializer::deserializeDeclCommon() {
         break;
       }
 
+      case decls_block::PerformanceOverride_DECL_ATTR: {
+        bool isImplicit;
+        uint8_t kind;
+        serialization::decls_block::PerformanceOverrideDeclAttrLayout::
+            readRecord(scratch, isImplicit, kind);
+        Attr = new (ctx) PerformanceOverrideAttr(
+            static_cast<PerformanceOverrideAttr::CheckKind>(kind), blobData,
+            isImplicit);
+        break;
+      }
+
       case decls_block::RawLayout_DECL_ATTR: {
         bool isImplicit;
         TypeID typeID;

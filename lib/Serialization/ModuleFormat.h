@@ -2247,6 +2247,13 @@ namespace decls_block {
     BCBlob      // _section
   >;
 
+  using PerformanceOverrideDeclAttrLayout = BCRecordLayout<
+    PerformanceOverride_DECL_ATTR,
+    BCFixed<1>, // implicit flag
+    BCFixed<8>, // kind
+    BCBlob      // reason
+  >;
+
   using CDeclDeclAttrLayout = BCRecordLayout<
     CDecl_DECL_ATTR,
     BCFixed<1>, // implicit flag

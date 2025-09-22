@@ -29,7 +29,17 @@ using namespace swift;
 
 namespace {
 
+bool funcDeclHasImplicitCopyReturnTypeOverride(const FuncDecl *FD) {
+  if (auto *Attr = FD->getAttrs().getAttribute<PerformanceOverrideAttr>())
+    if (Attr->Kind == PerformanceOverrideAttr::CheckKind::ReturnTypeImplicitCopy)
+      return true;
+  return false;
+}
+
 void checkImplicitCopyReturnType(const FuncDecl *FD, DiagnosticEngine &Diags) {
+  if (funcDeclHasImplicitCopyReturnTypeOverride(FD))
+    return;
+
   auto ReturnType = FD->getResultInterfaceType();
   if (ReturnType->isArray() || ReturnType->isDictionary()) {
     Diags.diagnose(FD->getLoc(), diag::perf_hint_function_returns_array, FD,
@@ -39,6 +49,17 @@ void checkImplicitCopyReturnType(const FuncDecl *FD, DiagnosticEngine &Diags) {
 
 void checkImplicitCopyReturnType(const ClosureExpr *Closure,
                                  DiagnosticEngine &Diags) {
+  // Check if any of the parent contexts are functions
+  // annotated with @performanceOverride for this check.
+  auto ParentContext = Closure->getParent();
+  while (!isa<ModuleDecl>(ParentContext)) {
+    if (auto *FD = dyn_cast<FuncDecl>(ParentContext)) {
+      if (funcDeclHasImplicitCopyReturnTypeOverride(FD))
+        return;
+    }
+    ParentContext = ParentContext->getParent();
+  }
+
   auto ReturnType = Closure->getResultType();
   if (ReturnType->isArray() || ReturnType->isDictionary()) {
     Diags.diagnose(Closure->getLoc(), diag::perf_hint_closure_returns_array,

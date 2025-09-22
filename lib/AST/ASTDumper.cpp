@@ -5457,6 +5457,12 @@ public:
     visitAbstractSpecializeAttr(Attr, label);
   }
 
+  void visitPerformanceOverrideAttr(PerformanceOverrideAttr *Attr, Label label) {
+    printCommon(Attr, "performance_override_attr", label);
+    printFieldQuoted(Attr->Reason, Label::always("name"));
+    printFoot();
+  }
+
   void visitAbstractSpecializeAttr(AbstractSpecializeAttr *Attr, Label label) {
     printCommon(Attr, Attr->isPublic() ? "specialized_attr" :
                   "specialize_attr", label);
