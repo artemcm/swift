@@ -577,9 +577,11 @@ std::error_code ImplicitSerializedModuleLoader::findModuleFilesInDirectory(
   return std::error_code();
 }
 
-bool ImplicitSerializedModuleLoader::maybeDiagnoseTargetMismatch(
-    SourceLoc sourceLocation, StringRef moduleName,
-    const SerializedModuleBaseName &absoluteBaseName) {
+void SerializedModuleLoaderBase::diagnoseTargetMismatchImpl(
+     ASTContext &Ctx,
+     SourceLoc sourceLocation,
+     StringRef moduleName,
+     const SerializedModuleBaseName &absoluteBaseName) {
   llvm::vfs::FileSystem &fs = *Ctx.SourceMgr.getFileSystem();
 
   // Get the last component of the base name, which is the target-specific one.
@@ -596,7 +598,7 @@ bool ImplicitSerializedModuleLoader::maybeDiagnoseTargetMismatch(
        directoryIterator != endIterator;
        directoryIterator.increment(errorCode)) {
     if (errorCode)
-      return false;
+      return;
     StringRef filePath = directoryIterator->path();
     StringRef extension = llvm::sys::path::extension(filePath);
     if (file_types::lookupTypeForExtension(extension) ==
@@ -611,12 +613,11 @@ bool ImplicitSerializedModuleLoader::maybeDiagnoseTargetMismatch(
     // Maybe this swiftmodule directory only contains swiftinterfaces, or
     // maybe something else is going on. Regardless, we shouldn't emit a
     // possibly incorrect diagnostic.
-    return false;
+    return;
   }
 
   Ctx.Diags.diagnose(sourceLocation, diag::sema_no_import_target, moduleName,
                      target, foundArchs, dir);
-  return true;
 }
 
 SerializedModuleBaseName::SerializedModuleBaseName(
@@ -778,10 +779,9 @@ bool SerializedModuleLoaderBase::findModule(
 
     // We can only get here if all targetFileNamePairs failed with
     // 'std::errc::no_such_file_or_directory'.
-    if (firstAbsoluteBaseName &&
-        maybeDiagnoseTargetMismatch(moduleID.Loc, moduleName,
-                                    *firstAbsoluteBaseName))
-      return SearchResult::Error;
+    if (firstAbsoluteBaseName)
+      maybeDiagnoseTargetMismatch(moduleID.Loc, moduleName,
+                                  *firstAbsoluteBaseName);
 
     return SearchResult::NotFound;
   };
@@ -1754,12 +1754,6 @@ std::error_code MemoryBufferSerializedModuleLoader::findModuleFilesInDirectory(
   // the Swift compiler accidentally break the contract.
   assert(false && "not supported");
   return std::make_error_code(std::errc::not_supported);
-}
-
-bool MemoryBufferSerializedModuleLoader::maybeDiagnoseTargetMismatch(
-    SourceLoc sourceLocation, StringRef moduleName,
-    const SerializedModuleBaseName &absoluteBaseName) {
-  return false;
 }
 
 void SerializedModuleLoaderBase::verifyAllModules() {

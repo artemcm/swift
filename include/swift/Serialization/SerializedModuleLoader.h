@@ -150,12 +150,20 @@ protected:
   /// loading an architecture-specific file out of a swiftmodule bundle, try
   /// to list the architectures that \e are present.
   ///
-  /// \returns true if an error diagnostic was emitted
-  virtual bool maybeDiagnoseTargetMismatch(
+  /// \returns true if a diagnostic was emitted
+  static void diagnoseTargetMismatchImpl(
+       ASTContext &Ctx,
+       SourceLoc sourceLocation,
+       StringRef moduleName,
+       const SerializedModuleBaseName &absoluteBaseName);
+
+  /// Virtual hook for calling the above target mismatch diagnosis
+  /// logic for loaders which are required to do so
+  virtual void maybeDiagnoseTargetMismatch(
       SourceLoc sourceLocation,
       StringRef moduleName,
-      const SerializedModuleBaseName &BaseName) {
-    return false;
+      const SerializedModuleBaseName &absoluteBaseName) {
+    return;
   }
 
   /// Determines if the provided path is a cached artifact for dependency
@@ -281,10 +289,12 @@ class ImplicitSerializedModuleLoader : public SerializedModuleLoaderBase {
       bool SkipBuildingInterface, bool IsFramework,
       bool isTestableDependencyLookup = false) override;
 
-  bool maybeDiagnoseTargetMismatch(
-      SourceLoc sourceLocation,
-      StringRef moduleName,
-      const SerializedModuleBaseName &BaseName) override;
+  void maybeDiagnoseTargetMismatch(
+      SourceLoc sourceLocation, StringRef moduleName,
+      const SerializedModuleBaseName &absoluteBaseName) override {
+    SerializedModuleLoaderBase::diagnoseTargetMismatchImpl(
+        Ctx, sourceLocation, moduleName, absoluteBaseName);
+  }
 
 public:
   virtual ~ImplicitSerializedModuleLoader();
@@ -338,11 +348,6 @@ class MemoryBufferSerializedModuleLoader : public SerializedModuleLoaderBase {
       std::unique_ptr<llvm::MemoryBuffer> *ModuleSourceInfoBuffer,
       bool SkipBuildingInterface, bool IsFramework,
       bool IsTestableDependencyLookup = false) override;
-
-  bool maybeDiagnoseTargetMismatch(
-      SourceLoc sourceLocation,
-      StringRef moduleName,
-      const SerializedModuleBaseName &BaseName) override;
 
   bool BypassResilience;
 public:

@@ -53,7 +53,8 @@
 // RUN: %empty-directory(%t/mcp)
 // RUN: not %target-swift-frontend(mock-sdk: -sdk %t/bad-sdk) -resource-dir %t/empty-toolchain/usr/lib/swift -module-cache-path %t/mcp -typecheck %s -dump-clang-diagnostics -disable-implicit-concurrency-module-import -disable-implicit-string-processing-module-import 2>&1 | %FileCheck --check-prefix CHECK-EMPTY %s
 // CHECK-EMPTY-NOT: '-isystem' '{{.*}}/bad-sdk/usr/lib/swift/shims'
-// CHECK-EMPTY: error: could not find module 'Swift' for target '{{.*}}'; found: garbage-garbage-garbage, at: {{.*}}/Swift.swiftmodule
+// CHECK-EMPTY: warning: could not find module 'Swift' for target '{{.*}}'; found: garbage-garbage-garbage, at: {{.*}}/Swift.swiftmodule
+// CHECK-EMPTY-NEXT: error: unable to load standard library for target 'arm64-apple-macosx13.0'
 
 // Check that, when the toolchain *doesn't* have SwiftShims in it, ClagImporter
 // *does* add a -I flag to look in the SDK.
@@ -61,6 +62,7 @@
 // RUN: %empty-directory(%t/mcp)
 // RUN: not %target-swift-frontend(mock-sdk: -sdk %t/bad-sdk) -resource-dir %t/really-empty-toolchain/usr/lib/swift -module-cache-path %t/mcp -typecheck %s -dump-clang-diagnostics -disable-implicit-concurrency-module-import -disable-implicit-string-processing-module-import 2>&1 | %FileCheck --check-prefix CHECK-REALLY-EMPTY %s
 // CHECK-REALLY-EMPTY: '-isystem' '{{.*}}/bad-sdk/usr/lib/swift/shims'
-// CHECK-REALLY-EMPTY: error: could not find module 'Swift' for target '{{.*}}'; found: garbage-garbage-garbage, at: {{.*}}/Swift.swiftmodule
+// CHECK-REALLY-EMPTY: warning: could not find module 'Swift' for target '{{.*}}'; found: garbage-garbage-garbage, at: {{.*}}/Swift.swiftmodule
+// CHECK-REALLY-EMPTY-NEXT: error: unable to load standard library for target 'arm64-apple-macosx13.0'
 
 let x: Int = 1

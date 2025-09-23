@@ -94,7 +94,8 @@
 import Lib
 // NO-SUCH-MODULE: [[@LINE-1]]:8: error: no such module 'Lib'
 // BAD-MODULE: [[@LINE-2]]:8: error: malformed compiled module: {{.*}}Lib.swiftmodule
-// WRONG-ARCH: [[@LINE-3]]:8: error: could not find module 'Lib' for target '[[ARCH]]'; found: garbage
+// WRONG-ARCH: [[@LINE-3]]:8: warning: could not find module 'Lib' for target '[[ARCH]]'; found: garbage
+// WRONG-ARCH: [[@LINE-4]]:8: error: no such module 'Lib'
 
 struct X {}
 let _: X = Lib.testValue

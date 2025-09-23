@@ -15,8 +15,8 @@
 
 import ForeignModule
 
-// CHECK: error: could not find module 'ForeignModule'
-// CHECK-SAME: '[[NORM]]'
+// CHECK: warning: could not find module 'ForeignModule' for target '[[NORM]]'; found: garbage-garbage-garbage, at:
+// CHECK: error: no such module 'ForeignModule'
 
 // Run lines for individual test cases follow.
 

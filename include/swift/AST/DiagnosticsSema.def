@@ -852,10 +852,10 @@ ERROR(const_unknown_default,none,
 ERROR(sema_no_import,Fatal,
       "no such module '%0'", (StringRef))
 NOTE(did_you_mean_cxxstdlib,none,
-      "did you mean 'CxxStdlib'?'", ())
-ERROR(sema_no_import_target,Fatal,
-      "could not find module '%0' for target '%1'; "
-      "found: %2, at: %3", (StringRef, StringRef, StringRef, StringRef))
+     "did you mean 'CxxStdlib'?'", ())
+WARNING(sema_no_import_target,Fatal,
+        "could not find module '%0' for target '%1'; "
+        "found: %2, at: %3", (StringRef, StringRef, StringRef, StringRef))
 ERROR(sema_no_import_repl,none,
       "no such module '%0'", (StringRef))
 NOTE(sema_no_import_no_sdk,none,
