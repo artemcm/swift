@@ -30,8 +30,8 @@
 
 using namespace swift;
 
-bool swift::performanceHintDiagnosticsEnabled(ASTContext &ctx) {
-  return !ctx.Diags.isIgnoredDiagnosticGroupTree(DiagGroupID::PerformanceHints) &&
+bool swift::performanceHintDiagnosticsEnabled(ASTContext &ctx, SourceFile *sf) {
+  return ctx.Diags.isDiagnosticGroupEnabled(sf, DiagGroupID::PerformanceHints)  &&
          (ctx.TypeCheckerOpts.SkipFunctionBodies == FunctionBodySkipping::None);
 }
 
