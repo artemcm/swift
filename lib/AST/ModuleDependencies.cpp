@@ -738,8 +738,6 @@ ModuleDependenciesCache::findSwiftDependency(StringRef moduleName) const {
     return found;
   if (auto found = findDependency(moduleName, ModuleDependencyKind::SwiftBinary))
     return found;
-  if (auto found = findDependency(moduleName, ModuleDependencyKind::SwiftSource))
-    return found;
   return std::nullopt;
 }
 
@@ -778,6 +776,9 @@ int ModuleDependenciesCache::numberOfClangDependencies() const {
 int ModuleDependenciesCache::numberOfSwiftDependencies() const {
   return ModuleDependenciesMap.at(ModuleDependencyKind::SwiftInterface).size() +
          ModuleDependenciesMap.at(ModuleDependencyKind::SwiftBinary).size();
+
+bool ModuleDependenciesCache::hasNegativeSwiftDependency(StringRef moduleName) const {
+  return negativeSwiftDependencyCache.contains(moduleName);
 }
 
 void ModuleDependenciesCache::recordDependency(
@@ -956,6 +957,11 @@ void ModuleDependenciesCache::addVisibleClangModules(
   auto updatedDependencyInfo = dependencyInfo;
   updatedDependencyInfo.addVisibleClangModules(moduleNames);
   updateDependency(moduleID, updatedDependencyInfo);
+}
+
+void ModuleDependenciesCache::cacheNegativeSwiftDependency(
+    StringRef moduleIdentifier) {
+  negativeSwiftDependencyCache.insert(moduleIdentifier);
 }
 
 llvm::StringSet<> &ModuleDependenciesCache::getVisibleClangModules(

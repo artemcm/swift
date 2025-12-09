@@ -26,6 +26,7 @@
 #include "swift/Basic/Defer.h"
 #include "swift/Basic/FileTypes.h"
 #include "swift/Basic/PrettyStackTrace.h"
+#include "swift/Basic/Statistic.h"
 #include "swift/ClangImporter/ClangImporter.h"
 #include "swift/Frontend/CompileJobCacheKey.h"
 #include "swift/Frontend/ModuleInterfaceLoader.h"
@@ -1353,6 +1354,13 @@ void ModuleDependencyScanner::resolveSwiftImportsForModule(
     // Avoid querying the underlying Clang module here
     if (moduleID.ModuleName == dependsOn.importIdentifier)
       continue;
+    // Avoid querying Swift module dependencies previously discovered
+    if (DependencyCache.hasSwiftDependency(dependsOn.importIdentifier))
+      continue;
+    // Avoid querying Swift module dependencies which have already produced
+    // in a negative (not found) result
+    if (DependencyCache.hasNegativeSwiftDependency(dependsOn.importIdentifier))
+      continue;
     ScanningThreadPool.async(
         scanForSwiftModuleDependency,
         getModuleImportIdentifier(dependsOn.importIdentifier),
@@ -1392,10 +1400,13 @@ void ModuleDependencyScanner::resolveSwiftImportsForModule(
                        moduleImport.importIdentifier))
           importedSwiftDependencies.insert(
               {moduleImport.importIdentifier, cachedInfo.value()->getKind()});
-        else
+        else {
           ScanDiagnosticReporter.diagnoseFailureOnOnlyIncompatibleCandidates(
                      moduleImport, lookupResult.incompatibleCandidates,
                      DependencyCache, std::nullopt);
+          DependencyCache
+            .cacheNegativeSwiftDependency(moduleImport.importIdentifier);
+        }
       };
 
   for (const auto &importInfo : moduleDependencyInfo.getModuleImports())
@@ -1539,10 +1550,8 @@ void ModuleDependencyScanner::resolveSwiftOverlayDependenciesForModule(
     auto moduleName = moduleIdentifier.str();
     {
       std::lock_guard<std::mutex> guard(lookupResultLock);
-      if (DependencyCache.hasDependency(moduleName,
-                                        ModuleDependencyKind::SwiftInterface) ||
-          DependencyCache.hasDependency(moduleName,
-                                        ModuleDependencyKind::SwiftBinary))
+      if (DependencyCache.hasSwiftDependency(moduleName) ||
+          DependencyCache.hasNegativeSwiftDependency(moduleName))
         return;
     }
 
