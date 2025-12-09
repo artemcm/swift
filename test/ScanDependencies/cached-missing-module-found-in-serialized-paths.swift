@@ -9,13 +9,13 @@
 // Put the dependency module into a location discoverable by the first scan which will succeed and serialize scanner state
 // RUN: cp %t/moreDeps/C.swiftinterface %t/deps/C.swiftinterface
 
-// RUN: %target-swift-frontend -scan-dependencies -o %t/deps.json %t/client.swift -I %t/deps -disable-implicit-string-processing-module-import -disable-implicit-concurrency-module-import -Rdependency-scan-cache -serialize-dependency-scan-cache -load-dependency-scan-cache -dependency-scan-cache-path %t/cache.moddepcache &> %t/initial_output.txt
+// RUN: %target-swift-frontend -scan-dependencies -o %t/deps.json %t/client.swift -I %t/deps -disable-implicit-string-processing-module-import -disable-implicit-concurrency-module-import -Rdependency-scan -serialize-dependency-scan-cache -load-dependency-scan-cache -dependency-scan-cache-path %t/cache.moddepcache &> %t/initial_output.txt
 
 // Remove the 'C' dependency module into a location not discoverable by the second scan in order to trigger a failure and use serialized scanner state
 // to emit the diagnostic
 // RUN: rm %t/deps/C.swiftinterface
 
-// RUN: %target-swift-frontend -scan-dependencies -o %t/deps.json %t/client.swift -I %t/deps -disable-implicit-string-processing-module-import -disable-implicit-concurrency-module-import -Rdependency-scan-cache -load-dependency-scan-cache -dependency-scan-cache-path %t/cache.moddepcache -validate-prior-dependency-scan-cache &> %t/output.txt
+// RUN: %target-swift-frontend -scan-dependencies -o %t/deps.json %t/client.swift -I %t/deps -disable-implicit-string-processing-module-import -disable-implicit-concurrency-module-import -Rdependency-scan -load-dependency-scan-cache -dependency-scan-cache-path %t/cache.moddepcache -validate-prior-dependency-scan-cache &> %t/output.txt
 // RUN: cat %t/output.txt | %FileCheck %s
 
 // CHECK: remark: Incremental module scan: Re-using serialized module scanning dependency cache from: '{{.*}}cache.moddepcache'.

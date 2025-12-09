@@ -1383,14 +1383,14 @@ performModuleScanImpl(
   // is specified
   if (opts.ReuseDependencyScannerCache) {
     auto cachePath = opts.SerializedDependencyScannerCachePath;
-    if (opts.EmitDependencyScannerCacheRemarks)
+    if (opts.EmitDependencyScannerRemarks)
       ctx.Diags.diagnose(SourceLoc(), diag::remark_reuse_cache, cachePath);
 
     llvm::sys::TimePoint<> serializedCacheTimeStamp;
     bool loadFailure =
         module_dependency_cache_serialization::readInterModuleDependenciesCache(
             cachePath, cache, serializedCacheTimeStamp);
-    if (opts.EmitDependencyScannerCacheRemarks && loadFailure)
+    if (opts.EmitDependencyScannerRemarks && loadFailure)
       ctx.Diags.diagnose(SourceLoc(), diag::warn_scanner_deserialize_failed,
                          cachePath);
 
@@ -1401,7 +1401,7 @@ performModuleScanImpl(
       incremental::validateInterModuleDependenciesCache(
           mainModuleID, cache, instance->getSharedCASInstance(),
           serializedCacheTimeStamp, *instance->getSourceMgr().getFileSystem(),
-          ctx.Diags, opts.EmitDependencyScannerCacheRemarks);
+          ctx.Diags, opts.EmitDependencyScannerRemarks);
     }
   }
 
@@ -1410,7 +1410,8 @@ performModuleScanImpl(
       instance->getASTContext(), *instance->getDependencyTracker(),
       instance->getSharedCASInstance(), instance->getSharedCacheInstance(),
       instance->getDiags(),
-      instance->getInvocation().getFrontendOptions().ParallelDependencyScan);
+      instance->getInvocation().getFrontendOptions().ParallelDependencyScan,
+      instance->getInvocation().getFrontendOptions().EmitDependencyScannerRemarks);
 
   // Identify imports of the main module and add an entry for it
   // to the dependency graph.
@@ -1444,7 +1445,7 @@ performModuleScanImpl(
     auto savePath = opts.SerializedDependencyScannerCachePath;
     module_dependency_cache_serialization::writeInterModuleDependenciesCache(
         ctx.Diags, instance->getOutputBackend(), savePath, cache);
-    if (opts.EmitDependencyScannerCacheRemarks)
+    if (opts.EmitDependencyScannerRemarks)
       ctx.Diags.diagnose(SourceLoc(), diag::remark_save_cache, savePath);
   }
 
@@ -1462,7 +1463,9 @@ static llvm::ErrorOr<swiftscan_import_set_t> performModulePrescanImpl(
       instance->getASTContext(), *instance->getDependencyTracker(),
       instance->getSharedCASInstance(), instance->getSharedCacheInstance(),
       instance->getDiags(),
-      instance->getInvocation().getFrontendOptions().ParallelDependencyScan);
+      instance->getInvocation().getFrontendOptions().ParallelDependencyScan,
+      instance->getInvocation().getFrontendOptions().EmitDependencyScannerRemarks);
+
   // Execute import prescan, and write JSON output to the output stream
   auto mainDependencies =
       scanner.getMainModuleDependencyInfo(instance->getMainModule());

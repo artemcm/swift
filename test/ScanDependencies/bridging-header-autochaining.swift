@@ -140,7 +140,7 @@
 // RUN:   -disable-implicit-string-processing-module-import -disable-implicit-concurrency-module-import -scanner-module-validation \
 // RUN:   -Xcc -fmodule-map-file=%t/a.modulemap -Xcc -fmodule-map-file=%t/b.modulemap \
 // RUN:   -I %t %t/user2.swift -import-objc-header %t/Bridging3.h -auto-bridging-header-chaining -scanner-output-dir %t -scanner-debug-write-output \
-// RUN:   -o %t/deps4.json -Rdependency-scan-cache -serialize-dependency-scan-cache -dependency-scan-cache-path %t/cache.moddepcache
+// RUN:   -o %t/deps4.json -Rdependency-scan -serialize-dependency-scan-cache -dependency-scan-cache-path %t/cache.moddepcache
 
 // RUN: %FileCheck %s --check-prefix DEPS_JSON2 --input-file=%t/deps4.json
 // DEPS_JSON2: "chainedBridgingHeaderPath":
@@ -156,7 +156,7 @@
 // RUN:   -disable-implicit-string-processing-module-import -disable-implicit-concurrency-module-import -scanner-module-validation \
 // RUN:   -Xcc -fmodule-map-file=%t/a.modulemap -Xcc -fmodule-map-file=%t/b.modulemap \
 // RUN:   -I %t %t/user2.swift -import-objc-header %t/Bridging3.h -auto-bridging-header-chaining -scanner-output-dir %t -scanner-debug-write-output \
-// RUN:   -o %t/deps4.json -Rdependency-scan-cache -load-dependency-scan-cache -serialize-dependency-scan-cache \
+// RUN:   -o %t/deps4.json -Rdependency-scan -load-dependency-scan-cache -serialize-dependency-scan-cache \
 // RUN:   -dependency-scan-cache-path %t/cache.moddepcache 2>&1 | %FileCheck %s -check-prefix=CACHE-LOAD
 // CACHE-LOAD: remark: Incremental module scan: Re-using serialized module scanning dependency cache from:
 
