@@ -910,7 +910,6 @@ void ModuleDependenciesCache::setSwiftOverlayDependencies(
     ModuleDependencyID moduleID,
     const ArrayRef<ModuleDependencyID> dependencyIDs) {
   auto dependencyInfo = findKnownDependency(moduleID);
-  assert(dependencyInfo.getSwiftOverlayDependencies().empty());
 #ifndef NDEBUG
   for (const auto &depID : dependencyIDs)
     assert(depID.Kind != ModuleDependencyKind::Clang);
@@ -925,7 +924,6 @@ void ModuleDependenciesCache::setCrossImportOverlayDependencies(
     ModuleDependencyID moduleID,
     const ModuleDependencyIDCollectionView dependencyIDs) {
   auto dependencyInfo = findKnownDependency(moduleID);
-  assert(dependencyInfo.getCrossImportOverlayDependencies().empty());
   // Copy the existing info to a mutable one we can then replace it with,
   // after setting its overlay dependencies.
   auto updatedDependencyInfo = dependencyInfo;

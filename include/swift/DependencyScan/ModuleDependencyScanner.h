@@ -37,6 +37,19 @@ using ImportStatementInfoMap =
     std::unordered_map<ModuleDependencyID,
                        std::vector<ScannerImportStatementInfo>>;
 
+struct ScannerMetrics {
+  /// Number of performed queries for a Swift dependency with a given name
+  std::atomic<uint32_t> SwiftModuleQueries;
+  /// Number of performed queries for a Clang dependency with a given name
+  std::atomic<uint32_t> NamedClangModuleQueries;
+
+  /// Number of discovered Swift module dependencies
+  std::atomic<uint32_t> RecordedSwiftModuleDependencies;
+  /// Number of discovered Clang module dependencies which are directly
+  /// imported from a Swift module by-name
+  std::atomic<uint32_t> RecordedNamedClangModuleDependencies;
+};
+
 /// A dependency scanning worker which performs filesystem lookup
 /// of a named module dependency.
 class ModuleDependencyScanningWorker {
@@ -48,6 +61,7 @@ public:
       DependencyTracker &DependencyTracker,
       std::shared_ptr<llvm::cas::ObjectStore> CAS,
       std::shared_ptr<llvm::cas::ActionCache> ActionCache,
+      std::shared_ptr<ScannerMetrics> Metrics,
       llvm::PrefixMapper *mapper, DiagnosticEngine &diags);
 
 private:
@@ -128,6 +142,9 @@ private:
   std::shared_ptr<llvm::cas::ObjectStore> CAS;
   std::shared_ptr<llvm::cas::ActionCache> ActionCache;
 
+  // Metrics about actions performed by the scanner
+  std::shared_ptr<ScannerMetrics> Metrics;
+
   // Base command line invocation for clang scanner queries (both module and header)
   std::vector<std::string> clangScanningBaseCommandLineArgs;
   // Command line invocation for clang by-name module lookups
@@ -173,10 +190,11 @@ private:
   std::map<std::string, FileEntry> TrackedFiles;
 };
 
-class ModuleDependencyIssueReporter {
+class DependencyScannerDiagnosticReporter {
 private:
-  ModuleDependencyIssueReporter(DiagnosticEngine &Diagnostics)
-      : Diagnostics(Diagnostics) {}
+  DependencyScannerDiagnosticReporter(DiagnosticEngine &Diagnostics,
+                                      bool EmitScanRemarks)
+      : Diagnostics(Diagnostics), EmitScanRemarks(EmitScanRemarks) {}
 
   /// Diagnose scanner failure and attempt to reconstruct the dependency
   /// path from the main module to the missing dependency
@@ -207,7 +225,11 @@ private:
       const std::vector<SwiftModuleScannerQueryResult::IncompatibleCandidate>
           &candidates);
 
+  ///
+  void emitScanMetrics(std::shared_ptr<ScannerMetrics> metrics) const;
+
   DiagnosticEngine &Diagnostics;
+  bool EmitScanRemarks;
   std::unordered_set<std::string> ReportedMissing;
   // Restrict access to the parent scanner class.
   friend class ModuleDependencyScanner;
@@ -223,7 +245,8 @@ public:
                           DependencyTracker &DependencyTracker,
                           std::shared_ptr<llvm::cas::ObjectStore> CAS,
                           std::shared_ptr<llvm::cas::ActionCache> ActionCache,
-                          DiagnosticEngine &Diagnostics, bool ParallelScan);
+                          DiagnosticEngine &Diagnostics, bool ParallelScan,
+                          bool EmitScanRemarks);
 
   /// Identify the scanner invocation's main module's dependencies
   llvm::ErrorOr<ModuleDependencyInfo>
@@ -347,7 +370,7 @@ private:
   /// For the provided collection of unresolved imports
   /// belonging to identified Swift dependnecies, execute a parallel
   /// query to the Clang dependency scanner for each import's module identifier.
-  void performParallelClangModuleLookup(
+  void performClangModuleLookup(
       const ImportStatementInfoMap &unresolvedImportsMap,
       const ImportStatementInfoMap &unresolvedOptionalImportsMap,
       BatchClangModuleLookupResult &result);
@@ -396,7 +419,7 @@ private:
 private:
   const CompilerInvocation &ScanCompilerInvocation;
   ASTContext &ScanASTContext;
-  ModuleDependencyIssueReporter IssueReporter;
+  DependencyScannerDiagnosticReporter ScanDiagnosticReporter;
 
   /// The location of where the explicitly-built modules will be output to
   std::string ModuleOutputPath;
@@ -405,6 +428,9 @@ private:
   
   /// Reference to a module dependency cache
   ModuleDependenciesCache &DependencyCache;
+
+  /// ACTODO: Comment
+  std::shared_ptr<ScannerMetrics> Metrics;
 
   /// The available pool of workers for filesystem module search
   unsigned NumThreads;
