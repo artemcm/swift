@@ -33,7 +33,7 @@ TEST_F(SemaTest, TestPlaceholderInferenceForArrayLiteral) {
   auto *typedPattern = new (Context) TypedPattern(namedPattern, arrayRepr);
 
   auto target = SyntacticElementTarget::forInitialization(
-      arrayExpr, DC, arrayTy, typedPattern, /*bindPatternVarsOneWay=*/false);
+     arrayExpr, DC, arrayTy, typedPattern);
 
   ConstraintSystem cs(DC, ConstraintSystemOptions());
   ContextualTypeInfo contextualInfo({arrayRepr, arrayTy}, CTP_Initialization);
@@ -75,8 +75,8 @@ TEST_F(SemaTest, TestPlaceholderInferenceForDictionaryLiteral) {
   auto *namedPattern = new (Context) NamedPattern(varDecl);
   auto *typedPattern = new (Context) TypedPattern(namedPattern, dictRepr);
 
-  auto target = SyntacticElementTarget::forInitialization(
-      dictExpr, DC, dictTy, typedPattern, /*bindPatternVarsOneWay=*/false);
+  auto target = SyntacticElementTarget::forInitialization(dictExpr, DC, dictTy,
+                                                          typedPattern);
 
   ConstraintSystem cs(DC, ConstraintSystemOptions());
   ContextualTypeInfo contextualInfo({dictRepr, dictTy}, CTP_Initialization);

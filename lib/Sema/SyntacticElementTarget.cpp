@@ -126,7 +126,7 @@ void SyntacticElementTarget::maybeApplyPropertyWrapper() {
 SyntacticElementTarget
 SyntacticElementTarget::forInitialization(Expr *initializer, DeclContext *dc,
                                           Type patternType, Pattern *pattern,
-                                          bool bindPatternVarsOneWay) {
+                                          ElementInitializationFlags options) {
   // Determine the contextual type for the initialization.
   TypeLoc contextualType;
   if (!(isa<OptionalSomePattern>(pattern) && !pattern->isImplicit()) &&
@@ -150,21 +150,24 @@ SyntacticElementTarget::forInitialization(Expr *initializer, DeclContext *dc,
   SyntacticElementTarget target(initializer, dc, contextInfo,
                                 /*isDiscarded=*/false);
   target.expression.pattern = pattern;
-  target.expression.bindPatternVarsOneWay = bindPatternVarsOneWay;
+  target.expression.bindPatternVarsOneWay =
+      options.contains(InitializationTargetOption::bindPatternVarsOneWay);
+  target.expression.literalExpression =
+      options.contains(InitializationTargetOption::literalExpression);
   target.maybeApplyPropertyWrapper();
   return target;
 }
 
 SyntacticElementTarget SyntacticElementTarget::forInitialization(
     Expr *initializer, Type patternType, PatternBindingDecl *patternBinding,
-    unsigned patternBindingIndex, bool bindPatternVarsOneWay) {
+    unsigned patternBindingIndex, ElementInitializationFlags options) {
   auto *dc = patternBinding->getDeclContext();
   if (auto *initContext = patternBinding->getInitContext(patternBindingIndex))
     dc = initContext;
 
   auto result = forInitialization(
       initializer, dc, patternType,
-      patternBinding->getPattern(patternBindingIndex), bindPatternVarsOneWay);
+      patternBinding->getPattern(patternBindingIndex), options);
   result.expression.initialization.patternBinding = patternBinding;
   result.expression.initialization.patternBindingIndex = patternBindingIndex;
   return result;

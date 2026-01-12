@@ -19,6 +19,7 @@
 #include "MiscDiagnostics.h"
 #include "TypeCheckAvailability.h"
 #include "TypeChecker.h"
+#include "LiteralExpressionFolding.h"
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/ASTWalker.h"
 #include "swift/AST/ConformanceLookup.h"
@@ -491,6 +492,12 @@ TypeChecker::typeCheckTarget(SyntacticElementTarget &target,
     return errorResult();
   }
 
+  // Apply literal expression folding when required to do so.
+  if (target.isLiteralExpression())
+    if (Expr *folded = LiteralExprFolding::foldLiteralExpression(
+            resultTarget->getAsExpr(), dc))
+      resultTarget->setExpr(folded);
+
   // Unless the client has disabled them, perform syntactic checks on the
   // expression now.
   if (!cs.shouldSuppressDiagnostics()) {
@@ -817,13 +824,18 @@ bool TypeChecker::typeCheckBinding(Pattern *&pattern, Expr *&initializer,
                                    PatternBindingDecl *PBD,
                                    unsigned patternNumber,
                                    TypeCheckExprOptions options) {
+  SyntacticElementTarget::ElementInitializationFlags initOpts = {};
+  if (PBD && PBD->getSingleVar())
+    if (auto storage = dyn_cast<AbstractStorageDecl>(PBD->getSingleVar());
+        storage->isConstValue())
+      initOpts |=
+          SyntacticElementTarget::InitializationTargetOption::literalExpression;
+
   SyntacticElementTarget target =
       PBD ? SyntacticElementTarget::forInitialization(
-                initializer, patternType, PBD, patternNumber,
-                /*bindPatternVarsOneWay=*/false)
-          : SyntacticElementTarget::forInitialization(
-                initializer, DC, patternType, pattern,
-                /*bindPatternVarsOneWay=*/false);
+                initializer, patternType, PBD, patternNumber, initOpts)
+          : SyntacticElementTarget::forInitialization(initializer, DC,
+                                                      patternType, pattern);
 
   // Type-check the initializer.
   auto resultTarget = typeCheckExpression(target, options);

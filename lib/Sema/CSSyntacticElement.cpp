@@ -768,8 +768,7 @@ private:
     // declaring local wrapped variables (yet).
     if (hasPropertyWrapper(pattern)) {
       auto target = SyntacticElementTarget::forInitialization(
-          init, patternType, patternBinding, index,
-          /*bindPatternVarsOneWay=*/false);
+          init, patternType, patternBinding, index);
 
       if (ConstraintSystem::preCheckTarget(target))
         return std::nullopt;
@@ -779,8 +778,7 @@ private:
 
     if (init) {
       return SyntacticElementTarget::forInitialization(
-          init, patternType, patternBinding, index,
-          /*bindPatternVarsOneWay=*/false);
+          init, patternType, patternBinding, index);
     }
 
     return SyntacticElementTarget::forUninitializedVar(patternBinding, index,
@@ -1512,7 +1510,7 @@ bool ConstraintSystem::generateConstraints(SingleValueStmtExpr *E) {
 
     auto *initializer = binding->getInit(0);
     auto target = SyntacticElementTarget::forInitialization(initializer, Type(),
-                                                            binding, 0, false);
+                                                            binding, 0);
     setTargetFor({binding, 0}, target);
 
     if (generateConstraints(target)) {

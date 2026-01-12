@@ -4103,11 +4103,13 @@ bool ConstraintSystem::generateConstraints(
         init = TypeChecker::buildDefaultInitializer(patternType);
       }
 
-      auto target = init ? SyntacticElementTarget::forInitialization(
-                               init, patternType, patternBinding, index,
-                               /*bindPatternVarsOneWay=*/true)
-                         : SyntacticElementTarget::forUninitializedVar(
-                               patternBinding, index, patternType);
+      auto target =
+          init ? SyntacticElementTarget::forInitialization(
+                     init, patternType, patternBinding, index,
+                     SyntacticElementTarget::InitializationTargetOption::
+                         bindPatternVarsOneWay)
+               : SyntacticElementTarget::forUninitializedVar(
+                     patternBinding, index, patternType);
 
       if (generateConstraints(target)) {
         hadError = true;
@@ -4231,7 +4233,8 @@ bool ConstraintSystem::generateConstraints(StmtCondition condition,
 
       auto target = SyntacticElementTarget::forInitialization(
           condElement.getInitializer(), dc, Type(), pattern,
-          /*bindPatternVarsOneWay=*/true);
+          SyntacticElementTarget::InitializationTargetOption::
+              bindPatternVarsOneWay);
       if (generateConstraints(target, FreeTypeVariableBinding::Disallow))
         return true;
 

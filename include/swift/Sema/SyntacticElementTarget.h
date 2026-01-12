@@ -89,6 +89,11 @@ private:
       /// fresh type variables via one-way constraints.
       bool bindPatternVarsOneWay;
 
+      /// Whether this is an expression expected to be folded into
+      /// a literal value, e.g. an initializer for an `@section` or
+      /// `@const` declaration, or an integer generic parameter value.
+      bool literalExpression;
+
       union {
         struct {
           /// The pattern binding declaration for an initialization, if any.
@@ -219,17 +224,26 @@ public:
     forEachPreamble.dc = dc;
   }
 
+  /// Summary of configuration options for an initialization
+  /// syntactic element target.
+  enum class InitializationTargetOption {
+    bindPatternVarsOneWay = (1<<0),
+    literalExpression = (1<<1),
+  };
+  using ElementInitializationFlags = OptionSet<InitializationTargetOption>;
+
   /// Form a target for the initialization of a pattern from an expression.
   static SyntacticElementTarget
   forInitialization(Expr *initializer, DeclContext *dc, Type patternType,
-                    Pattern *pattern, bool bindPatternVarsOneWay);
+                    Pattern *pattern, ElementInitializationFlags options = {});
 
   /// Form a target for the initialization of a pattern binding entry from
   /// an expression.
   static SyntacticElementTarget
   forInitialization(Expr *initializer, Type patternType,
                     PatternBindingDecl *patternBinding,
-                    unsigned patternBindingIndex, bool bindPatternVarsOneWay);
+                    unsigned patternBindingIndex,
+                    ElementInitializationFlags options = {});
 
   /// Form an expression target for a ReturnStmt.
   static SyntacticElementTarget forReturn(ReturnStmt *returnStmt,
@@ -471,6 +485,15 @@ public:
   bool shouldBindPatternVarsOneWay() const {
     if (kind == Kind::expression)
       return expression.bindPatternVarsOneWay;
+    return false;
+  }
+
+  /// Whether this is an expression expected to be folded into
+  /// a literal value, e.g. an initializer for an `@section` or
+  /// `@const` declaration, or an integer generic parameter value.
+  bool isLiteralExpression() const {
+    if (kind == Kind::expression)
+      return expression.literalExpression;
     return false;
   }
 
