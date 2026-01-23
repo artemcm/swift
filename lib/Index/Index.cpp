@@ -307,7 +307,7 @@ private:
         }
       }
 
-      if (auto *InitExpr = PBD->getInit(Index)) {
+      auto associateInit = [&](Expr* InitExpr) {
         if (auto *TE = dyn_cast<TupleExpr>(InitExpr)) {
           PatternInitExpr = TE;
         } else {
@@ -315,7 +315,12 @@ private:
           // the initializer.
           associateAllPatternElements(P, InitExpr, Entry);
         }
-      }
+      };
+
+      if (auto *InitExpr = PBD->getPreConstantFoldInit(Index))
+        associateInit(InitExpr);
+      else if (auto *InitExpr = PBD->getInit(Index))
+        associateInit(InitExpr);
 
       if (PatternTypeRepr || PatternInitExpr) {
         forEachPatternElementPreservingIndex(

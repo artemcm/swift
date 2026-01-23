@@ -54,6 +54,10 @@ private:
       /// The expression being type-checked.
       Expr *expression;
 
+      /// The type-checked expression prior
+      /// to constant-folding
+      Expr *preConstantFoldExpression;
+
       /// The declaration context in which the expression is being
       /// type-checked.
       DeclContext *dc;
@@ -328,6 +332,22 @@ public:
     llvm_unreachable("invalid expression type");
   }
 
+  Expr *getPreConstantFoldExpr() const {
+    switch (kind) {
+    case Kind::expression:
+      return expression.preConstantFoldExpression;
+    case Kind::closure:
+    case Kind::function:
+    case Kind::stmtCondition:
+    case Kind::caseLabelItem:
+    case Kind::patternBinding:
+    case Kind::uninitializedVar:
+    case Kind::forEachPreamble:
+      return nullptr;
+    }
+    llvm_unreachable("invalid expression type");
+  }
+
   DeclContext *getDeclContext() const {
     switch (kind) {
     case Kind::expression:
@@ -556,6 +576,11 @@ public:
   void setExpr(Expr *expr) {
     assert(kind == Kind::expression);
     expression.expression = expr;
+  }
+
+  void setPreConstantFoldExpr(Expr *expr) {
+    assert(kind == Kind::expression);
+    expression.preConstantFoldExpression = expr;
   }
 
   Pattern *getPattern() const {

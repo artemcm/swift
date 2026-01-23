@@ -2793,6 +2793,10 @@ namespace {
                     printRec(PBD->getOriginalInit(idx),
                              Label::always("original_init"));
                   }
+                  if (PBD->getPreConstantFoldInit(idx)) {
+                    printRec(PBD->getPreConstantFoldInit(idx),
+                             Label::always("pre_constant_fold_init"));
+                  }
                   if (PBD->getInit(idx)) {
                     printRec(PBD->getInit(idx),
                              Label::always("processed_init"));

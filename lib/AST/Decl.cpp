@@ -2503,9 +2503,15 @@ unsigned PatternBindingDecl::getPatternEntryIndexForVarDecl(const VarDecl *VD) c
 }
 
 Expr *PatternBindingEntry::getOriginalInit() const {
-  return InitContextAndFlags.getInt().contains(PatternFlags::IsText)
+  return InitContextFlags.contains(PatternFlags::IsText)
              ? nullptr
              : InitExpr.originalInit;
+}
+
+Expr *PatternBindingEntry::getPreConstantFoldInit() const {
+  return InitContextFlags.contains(PatternFlags::IsConstantFolded)
+             ? InitExpr.preConstantFoldInit
+             : nullptr;
 }
 
 SourceRange PatternBindingEntry::getOriginalInitRange() const {
@@ -2516,8 +2522,12 @@ SourceRange PatternBindingEntry::getOriginalInitRange() const {
 
 void PatternBindingEntry::setOriginalInit(Expr *E) {
   InitExpr.originalInit = E;
-  InitContextAndFlags.setInt(InitContextAndFlags.getInt() -
-                             PatternFlags::IsText);
+  InitContextFlags = InitContextFlags - PatternFlags::IsText;
+}
+
+void PatternBindingEntry::setPreConstantFoldInit(Expr *E) {
+  InitExpr.preConstantFoldInit = E;
+  InitContextFlags = InitContextFlags | PatternFlags::IsConstantFolded;
 }
 
 bool PatternBindingEntry::isInitialized(bool onlyExplicit) const {
@@ -2543,8 +2553,7 @@ void PatternBindingEntry::setInit(Expr *E) {
     PatternAndFlags.setInt(F | Flags::Removed);
   }
   InitExpr.initAfterSynthesis.setPointer(E);
-  InitContextAndFlags.setInt(InitContextAndFlags.getInt() -
-                             PatternFlags::IsText);
+  InitContextFlags = InitContextFlags - PatternFlags::IsText;
 }
 
 VarDecl *PatternBindingEntry::getAnchoringVarDecl() const {
@@ -2594,7 +2603,7 @@ SourceRange PatternBindingEntry::getSourceRange(bool omitAccessors) const {
 }
 
 bool PatternBindingEntry::hasInitStringRepresentation() const {
-  if (InitContextAndFlags.getInt().contains(PatternFlags::IsText))
+  if (InitContextFlags.contains(PatternFlags::IsText))
     return !InitStringRepresentation.empty();
   return getOriginalInit() && getOriginalInit()->getSourceRange().isValid();
 }
@@ -2605,7 +2614,7 @@ StringRef PatternBindingEntry::getInitStringRepresentation(
   assert(hasInitStringRepresentation() &&
          "must check if pattern has string representation");
 
-  if (InitContextAndFlags.getInt().contains(PatternFlags::IsText) &&
+  if (InitContextFlags.contains(PatternFlags::IsText) &&
       !InitStringRepresentation.empty())
     return InitStringRepresentation;
   auto &ctx = getAnchoringVarDecl()->getASTContext();

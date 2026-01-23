@@ -77,7 +77,7 @@ public:
 
 /// The initializer expression of a non-local pattern binding
 /// declaration, such as a field or global variable.
-class PatternBindingInitializer : public Initializer {
+class alignas(16) PatternBindingInitializer : public Initializer {
   PatternBindingDecl *Binding;
 
   // created lazily for 'self' lookup from lazy property initializer

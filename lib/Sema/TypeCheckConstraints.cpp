@@ -495,8 +495,10 @@ TypeChecker::typeCheckTarget(SyntacticElementTarget &target,
   // Apply literal expression folding when required to do so.
   if (target.isLiteralExpression())
     if (Expr *folded = LiteralExprFolding::foldLiteralExpression(
-            resultTarget->getAsExpr(), dc))
+            resultTarget->getAsExpr(), dc)) {
+      resultTarget->setPreConstantFoldExpr(resultTarget->getAsExpr());
       resultTarget->setExpr(folded);
+    }
 
   // Unless the client has disabled them, perform syntactic checks on the
   // expression now.
@@ -820,6 +822,7 @@ Type TypeChecker::typeCheckParameterDefault(Expr *&defaultValue,
 }
 
 bool TypeChecker::typeCheckBinding(Pattern *&pattern, Expr *&initializer,
+                                   Expr *&preConstantFoldInit,
                                    DeclContext *DC, Type patternType,
                                    PatternBindingDecl *PBD,
                                    unsigned patternNumber,
@@ -842,6 +845,7 @@ bool TypeChecker::typeCheckBinding(Pattern *&pattern, Expr *&initializer,
 
   if (resultTarget) {
     initializer = resultTarget->getAsExpr();
+    preConstantFoldInit = resultTarget->getPreConstantFoldExpr();
     pattern = resultTarget->getInitializationPattern();
     return false;
   }
@@ -857,6 +861,7 @@ bool TypeChecker::typeCheckPatternBinding(PatternBindingDecl *PBD,
                                           TypeCheckExprOptions options) {
   Pattern *pattern = PBD->getPattern(patternNumber);
   Expr *init = PBD->getInit(patternNumber);
+  Expr *preConstantFoldInit = nullptr;
 
   // Enter an initializer context if necessary.
   PatternBindingInitializer *initContext = PBD->getInitContext(patternNumber);
@@ -872,8 +877,9 @@ bool TypeChecker::typeCheckPatternBinding(PatternBindingDecl *PBD,
     }
   }
 
-  bool hadError = TypeChecker::typeCheckBinding(pattern, init, DC, patternType,
-                                                PBD, patternNumber, options);
+  bool hadError =
+      TypeChecker::typeCheckBinding(pattern, init, preConstantFoldInit, DC,
+                                    patternType, PBD, patternNumber, options);
   if (!init) {
     PBD->setInvalid();
     return true;
@@ -881,6 +887,7 @@ bool TypeChecker::typeCheckPatternBinding(PatternBindingDecl *PBD,
 
   PBD->setPattern(patternNumber, pattern);
   PBD->setInit(patternNumber, init);
+  PBD->setPreConstantFoldInit(patternNumber, preConstantFoldInit);
 
   if (hadError)
     PBD->setInvalid();

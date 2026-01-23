@@ -38,6 +38,7 @@ SyntacticElementTarget::SyntacticElementTarget(
 
   kind = Kind::expression;
   expression.expression = expr;
+  expression.preConstantFoldExpression = nullptr;
   expression.dc = dc;
   expression.contextualInfo = contextualInfo;
   expression.pattern = nullptr;

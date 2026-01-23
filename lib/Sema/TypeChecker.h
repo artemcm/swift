@@ -841,8 +841,8 @@ bool typeCheckExprPattern(ExprPattern *EP, DeclContext *DC, Type type);
 void coerceParameterListToType(ParameterList *P, AnyFunctionType *FN);
 
 /// Type-check an initialized variable pattern declaration.
-bool typeCheckBinding(Pattern *&P, Expr *&Init, DeclContext *DC,
-                      Type patternType,
+bool typeCheckBinding(Pattern *&P, Expr *&Init, Expr *&preConstantFoldInit,
+                      DeclContext *DC, Type patternType,
                       PatternBindingDecl *PBD = nullptr,
                       unsigned patternNumber = 0,
                       TypeCheckExprOptions options = {});

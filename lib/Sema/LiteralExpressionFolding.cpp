@@ -412,5 +412,5 @@ Expr *LiteralExprFolding::foldLiteralExpression(Expr *expr, DeclContext *dc) {
     ConstantFolder folder(dc->getASTContext());
     return folder.fold(expr);
   }
-  return expr;
+  return nullptr;
 }

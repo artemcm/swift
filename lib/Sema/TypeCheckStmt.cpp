@@ -916,7 +916,10 @@ typeCheckPatternBindingStmtConditionElement(StmtConditionElement &elt,
   // If the pattern didn't get a type, it's because we ran into some
   // unknown types along the way. We'll need to check the initializer.
   auto init = elt.getInitializer();
-  bool hadError = TypeChecker::typeCheckBinding(pattern, init, dc, patternType);
+  Expr* preConstantFoldInit = nullptr;
+  bool hadError = TypeChecker::typeCheckBinding(pattern, init,
+                                                preConstantFoldInit, dc,
+                                                patternType);
   elt.setPattern(pattern);
   elt.setInitializer(init);
 

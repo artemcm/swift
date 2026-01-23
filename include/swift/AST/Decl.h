@@ -2351,6 +2351,9 @@ class PatternBindingEntry {
     
     /// Exactly the expr the programmer wrote
     Expr *originalInit;
+    /// Expr as parsed and type-checked before
+    /// being constant folded
+    Expr *preConstantFoldInit;
     /// Might be transformed, e.g. for a property wrapper. In the absence of
     /// transformation or synthesis, holds the expr as parsed.
     llvm::PointerIntPair<Expr *, 2, InitializerStatus> initAfterSynthesis;
@@ -2370,10 +2373,11 @@ class PatternBindingEntry {
     IsText = 1 << 0,
     IsFullyValidated = 1 << 1,
     IsFromDebugger = 1 << 2,
+    IsConstantFolded = 1 << 3,
   };
   /// The initializer context used for this pattern binding entry.
-  llvm::PointerIntPair<PatternBindingInitializer *, 3, OptionSet<PatternFlags>>
-      InitContextAndFlags;
+  PatternBindingInitializer *InitContext;
+  OptionSet<PatternFlags> InitContextFlags;
 
   /// Values captured by this initializer.
   CaptureInfo Captures;
@@ -2395,20 +2399,18 @@ private:
   friend class PatternBindingCaptureInfoRequest;
 
   bool isFullyValidated() const {
-    return InitContextAndFlags.getInt().contains(
+    return InitContextFlags.contains(
         PatternFlags::IsFullyValidated);
   }
   void setFullyValidated() {
-    InitContextAndFlags.setInt(InitContextAndFlags.getInt() |
-                               PatternFlags::IsFullyValidated);
+    InitContextFlags = InitContextFlags | PatternFlags::IsFullyValidated;
   }
 
   /// Set if this pattern binding came from the debugger.
   ///
   /// Stay away unless you are \c PatternBindingDecl::createForDebugger
   void setFromDebugger() {
-    InitContextAndFlags.setInt(InitContextAndFlags.getInt() |
-                               PatternFlags::IsFromDebugger);
+    InitContextFlags = InitContextFlags | PatternFlags::IsFromDebugger;
   }
 
 public:
@@ -2416,8 +2418,8 @@ public:
   PatternBindingEntry(Pattern *P, SourceLoc EqualLoc, Expr *E,
                       PatternBindingInitializer *InitContext)
       : PatternAndFlags(P, {}),
-        InitExpr({E, {E, InitializerStatus::NotChecked}, EqualLoc}),
-        InitContextAndFlags({InitContext, std::nullopt}) {}
+        InitExpr({E, nullptr, {E, InitializerStatus::NotChecked}, EqualLoc}),
+        InitContext(InitContext), InitContextFlags() {}
 
 private:
   Pattern *getPattern() const { return PatternAndFlags.getPointer(); }
@@ -2431,7 +2433,7 @@ private:
 
   Expr *getInit() const {
     if (PatternAndFlags.getInt().contains(Flags::Removed) ||
-        InitContextAndFlags.getInt().contains(PatternFlags::IsText))
+        InitContextFlags.contains(PatternFlags::IsText))
       return nullptr;
     return InitExpr.initAfterSynthesis.getPointer();
   }
@@ -2451,8 +2453,7 @@ private:
   /// deserialized from a partial module.
   void setInitStringRepresentation(StringRef str) {
     InitStringRepresentation = str;
-    InitContextAndFlags.setInt(InitContextAndFlags.getInt() |
-                               PatternFlags::IsText);
+    InitContextFlags = InitContextFlags | PatternFlags::IsText;
   }
 
   /// Whether this pattern entry can generate a string representation of its
@@ -2461,14 +2462,14 @@ private:
 
   /// Retrieve the location of the equal '=' token.
   SourceLoc getEqualLoc() const {
-    return InitContextAndFlags.getInt().contains(PatternFlags::IsText)
+    return InitContextFlags.contains(PatternFlags::IsText)
                ? SourceLoc()
                : InitExpr.EqualLoc;
   }
 
   /// Set the location of the equal '=' token.
   void setEqualLoc(SourceLoc equalLoc) {
-    assert(!InitContextAndFlags.getInt().contains(PatternFlags::IsText) &&
+    assert(!InitContextFlags.contains(PatternFlags::IsText) &&
            "cannot set equal loc for textual initializer");
     InitExpr.EqualLoc = equalLoc;
   }
@@ -2480,8 +2481,16 @@ private:
   /// Set the initializer after the = as it was written in the source.
   void setOriginalInit(Expr *);
 
+  /// Retrieve the initializer after any possible substitutions
+  /// but before being constant folded
+  Expr *getPreConstantFoldInit() const;
+
+  /// Set the initializer after any possible substitutions
+  /// but before being constant folded
+  void setPreConstantFoldInit(Expr *);
+
   InitializerStatus initializerStatus() const {
-    if (InitContextAndFlags.getInt().contains(PatternFlags::IsText))
+    if (InitContextFlags.contains(PatternFlags::IsText))
       return InitializerStatus::NotChecked;
     return InitExpr.initAfterSynthesis.getInt();
   }
@@ -2489,7 +2498,7 @@ private:
     return initializerStatus() != InitializerStatus::NotChecked;
   }
   void setInitializerChecked() {
-    assert(!InitContextAndFlags.getInt().contains(PatternFlags::IsText));
+    assert(!InitContextFlags.contains(PatternFlags::IsText));
     InitExpr.initAfterSynthesis.setInt(InitializerStatus::Checked);
   }
 
@@ -2497,7 +2506,7 @@ private:
     return initializerStatus() == InitializerStatus::CheckedAndContextualized;
   }
   void setInitializerCheckedAndContextualized() {
-    assert(!InitContextAndFlags.getInt().contains(PatternFlags::IsText));
+    assert(!InitContextFlags.contains(PatternFlags::IsText));
     InitExpr.initAfterSynthesis.setInt(
         InitializerStatus::CheckedAndContextualized);
   }
@@ -2511,7 +2520,7 @@ private:
 
   /// Returns \c true if the debugger created this pattern binding entry.
   bool isFromDebugger() const {
-    return InitContextAndFlags.getInt().contains(PatternFlags::IsFromDebugger);
+    return InitContextFlags.contains(PatternFlags::IsFromDebugger);
   }
 
   // Return the first variable initialized by this pattern.
@@ -2519,12 +2528,12 @@ private:
 
   // Retrieve the declaration context for the initializer.
   PatternBindingInitializer *getInitContext() const {
-    return InitContextAndFlags.getPointer();
+    return InitContext;
   }
 
   /// Override the initializer context.
   void setInitContext(PatternBindingInitializer *init) {
-    InitContextAndFlags.setPointer(init);
+    InitContext = init;
   }
 
   SourceLoc getStartLoc() const;
@@ -2704,6 +2713,9 @@ public:
   Expr *getInit(unsigned i) const {
     return getPatternList()[i].getInit();
   }
+  Expr *getPreConstantFoldInit(unsigned i) const {
+    return getPatternList()[i].getPreConstantFoldInit();
+  }
   Expr *getExecutableInit(unsigned i) const {
     return getPatternList()[i].getExecutableInit();
   }
@@ -2721,6 +2733,10 @@ public:
 
   void setOriginalInit(unsigned i, Expr *E) {
     getMutablePatternList()[i].setOriginalInit(E);
+  }
+
+  void setPreConstantFoldInit(unsigned i, Expr *E) {
+    getMutablePatternList()[i].setPreConstantFoldInit(E);
   }
 
   /// Returns a typechecked init expression for the pattern at the given
