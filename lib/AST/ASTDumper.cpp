@@ -2748,6 +2748,22 @@ namespace {
       if (auto *paramList = EED->getParameterList()) {
         printRec(paramList, Label::optional("params"));
       }
+      if (auto *rawValueExpr = EED->getRawValueExpr()) {
+        if (EED->getASTContext().LangOpts.hasFeature(
+                Feature::LiteralExpressions)) {
+          auto origRawValueExpr = EED->getOriginalRawValueExpr();
+          if (isa<LiteralExpr>(origRawValueExpr))
+            printRec(rawValueExpr, Label::always("raw_value_expr"));
+          else {
+            printRec(EED->getOriginalRawValueExpr(),
+                     Label::always("original_raw_value_expr"));
+            printRec(EED->getRawValueExpr(),
+                     Label::always("folded_raw_value_expr"));
+          }
+        } else {
+          printRec(rawValueExpr, Label::always("raw_value_expr"));
+        }
+      }
       printAttributes(EED);
       printFoot();
     }

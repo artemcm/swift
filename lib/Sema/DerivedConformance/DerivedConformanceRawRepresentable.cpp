@@ -323,6 +323,10 @@ deriveBodyRawRepresentable_init(AbstractFunctionDecl *initDecl, void *) {
     if (!checkAvailability(elt, availabilityContext, versionCheck))
       continue;
 
+    // Skip element decls without a valid initializer
+    if (elt->isInvalid())
+      continue;
+
     // litPat = elt.rawValueExpr as a pattern
     LiteralExpr *litExpr = cloneRawLiteralExpr(C, elt->getRawValueExpr());
     if (isStringEnum) {
