@@ -967,7 +967,15 @@ void SILBoxTypeRepr::printImpl(ASTPrinter &Printer,
 void IntegerTypeRepr::printImpl(ASTPrinter &Printer,
                                 const PrintOptions &Opts,
                                 NonRecursivePrintOptions nrOpts) const {
-  Printer.printText(getValue());
+  // ACTODO: Fix this
+  std::string str;
+  llvm::raw_string_ostream os(str);
+  ValueExpr->dump(os);
+  Printer.printText(str);
+}
+
+SourceLoc IntegerTypeRepr::getLoc() const {
+  return ValueExpr->getLoc();
 }
 
 // See swift/Basic/Statistic.h for declaration: this enables tracing

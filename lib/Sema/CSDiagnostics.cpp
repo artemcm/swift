@@ -870,6 +870,7 @@ GenericArgumentsMismatchFailure::getDiagnosticFor(
   case CTP_EnumCaseRawValue:
   case CTP_ExprPattern:
   case CTP_SingleValueStmtBranch:
+  case CTP_IntGenericParam:
     break;
   }
   return std::nullopt;
@@ -2953,6 +2954,7 @@ getContextualNilDiagnostic(ContextualTypePurpose CTP) {
   case CTP_SingleValueStmtBranch:
     return std::nullopt;
 
+  case CTP_IntGenericParam:
   case CTP_EnumCaseRawValue:
     return diag::cannot_convert_raw_initializer_value_nil;
   case CTP_DefaultParameter:
@@ -3717,6 +3719,7 @@ ContextualFailure::getDiagnosticFor(ContextualTypePurpose context,
     return forProtocol ? diag::cannot_convert_to_return_type_protocol
                        : diag::cannot_convert_to_return_type;
   }
+  case CTP_IntGenericParam:
   case CTP_EnumCaseRawValue:
     return diag::cannot_convert_raw_initializer_value;
   case CTP_DefaultParameter:

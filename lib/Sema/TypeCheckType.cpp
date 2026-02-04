@@ -24,6 +24,7 @@
 #include "TypeCheckProtocol.h"
 #include "TypeChecker.h"
 #include "TypoCorrection.h"
+#include "LiteralExpressionFolding.h"
 
 #include "swift/AST/ASTDemangler.h"
 #include "swift/AST/ASTVisitor.h"
@@ -2383,6 +2384,7 @@ namespace {
     resolveLifetimeDependentTypeRepr(LifetimeDependentTypeRepr *repr,
                                      TypeResolutionOptions options);
     NeverNullType resolveIntegerTypeRepr(IntegerTypeRepr *repr,
+                                         DeclContext *dc,
                                          TypeResolutionOptions options);
     NeverNullType resolveArrayType(ArrayTypeRepr *repr,
                                    TypeResolutionOptions options);
@@ -3024,7 +3026,8 @@ NeverNullType TypeResolver::resolveType(TypeRepr *repr,
         cast<LifetimeDependentTypeRepr>(repr), options);
 
   case TypeReprKind::Integer:
-    return resolveIntegerTypeRepr(cast<IntegerTypeRepr>(repr), options);
+    return resolveIntegerTypeRepr(cast<IntegerTypeRepr>(repr),
+                                  getDeclContext(), options);
   }
   llvm_unreachable("all cases should be handled");
 }
@@ -5661,6 +5664,7 @@ TypeResolver::resolveLifetimeDependentTypeRepr(LifetimeDependentTypeRepr *repr,
 
 NeverNullType
 TypeResolver::resolveIntegerTypeRepr(IntegerTypeRepr *repr,
+                                     DeclContext *dc,
                                      TypeResolutionOptions options) {
   if (!options.is(TypeResolverContext::ValueGenericArgument) &&
       !options.is(TypeResolverContext::SameTypeRequirement) &&
@@ -5671,7 +5675,38 @@ TypeResolver::resolveIntegerTypeRepr(IntegerTypeRepr *repr,
     return ErrorType::get(getASTContext());
   }
 
-  return IntegerType::get(repr->getValue(), (bool)repr->getMinusLoc(),
+  // ACTODO: Fix this
+  SmallString<10> constantValueText;
+  if (getASTContext().LangOpts.hasFeature(Feature::LiteralExpressions)) {
+    auto valueExpr = repr->getValue();
+//    llvm::dbgs() << "RAW INTEGER GENERIC PARAMETER EXPR: \n";
+//    valueExpr->dump();
+    {
+      if (TypeChecker::typeCheckExpression(
+             valueExpr, dc,
+              /*contextualInfo=*/{getASTContext().getIntType(), CTP_IntGenericParam})) {
+        if (auto *seqExpr = dyn_cast<SequenceExpr>(valueExpr))
+          valueExpr = TypeChecker::foldSequence(seqExpr, dc);
+      }
+    }
+
+    auto foldedExpr = foldLiteralExpression(valueExpr, &getASTContext());
+//    llvm::dbgs() << "FOLDED INTEGER GENERIC PARAMETER EXPR: \n";
+//    foldedExpr->dump();
+    if (auto litExp = dyn_cast<IntegerLiteralExpr>(foldedExpr))
+      litExp->getRawValue().toString(constantValueText, 10, true);
+    else {
+      // ACTODO: Hard error or not supposed to happen at all
+      constantValueText = "1";
+    }
+  } else if (auto litExp = dyn_cast<IntegerLiteralExpr>(repr->getValue()))
+    litExp->getRawValue().toString(constantValueText, 10, true);
+  else {
+    // ACTODO: Hard error or not supposed to happen at all
+    constantValueText = "1";
+  }
+
+  return IntegerType::get(constantValueText.str().str(), /* minusLoc */ false,
                           getASTContext());
 }
 

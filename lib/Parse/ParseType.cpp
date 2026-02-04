@@ -182,12 +182,13 @@ ParserResult<TypeRepr> Parser::parseTypeSimple(
 
   auto diagnoseAndRecover = [&]() -> ParserResult<TypeRepr> {
     {
-      auto diag = diagnose(Tok, MessageID);
-      // If the next token is closing or separating, the type was likely
-      // forgotten
-      if (Tok.isAny(tok::r_paren, tok::r_brace, tok::r_square, tok::arrow,
-                    tok::equal, tok::comma, tok::semi))
-        diag.fixItInsert(getEndOfPreviousLoc(), " <#type#>");
+      // ACTODO: Gross!
+//      auto diag = diagnose(Tok, MessageID);
+//      // If the next token is closing or separating, the type was likely
+//      // forgotten
+//      if (Tok.isAny(tok::r_paren, tok::r_brace, tok::r_square, tok::arrow,
+//                    tok::equal, tok::comma, tok::semi))
+//        diag.fixItInsert(getEndOfPreviousLoc(), " <#type#>");
     }
     if (Tok.isKeyword() && !Tok.isAtStartOfLine()) {
       ty = makeParserErrorResult(ErrorTypeRepr::create(Context, Tok.getLoc()));
@@ -1538,22 +1539,16 @@ ParserResult<TypeRepr> Parser::parseTypeOrValue() {
 
 ParserResult<TypeRepr> Parser::parseTypeOrValue(Diag<> MessageID,
                                                 ParseTypeReason reason) {
-  // Eat any '-' preceding integer literals.
-  SourceLoc minusLoc;
-  if (Tok.isMinus() && peekToken().is(tok::integer_literal)) {
-    minusLoc = consumeToken();
-  }
-
-  // Attempt to parse values first. Right now the only value that can be parsed
-  // as a type are integers.
-  if (Tok.is(tok::integer_literal)) {
-    auto text = copyAndStripUnderscores(Tok.getText());
-    auto loc = consumeToken(tok::integer_literal);
-    return makeParserResult(new (Context) IntegerTypeRepr(text, loc, minusLoc));
-  }
-
-  // Otherwise, attempt to parse a regular type.
-  return parseType(MessageID, reason);
+  auto Type = parseType();
+  if (Type.isNull()) {
+    // ACTODO: Fix this
+    auto IntegerGenericParamExpr = parseExprBasic(diag::expected_expr);
+    if (IntegerGenericParamExpr.isNull())
+      llvm::dbgs() << "NOGOOD\n";
+    else
+      return makeParserResult(new (Context) IntegerTypeRepr(IntegerGenericParamExpr.get()));
+  } else
+    return Type;
 }
 
 //===----------------------------------------------------------------------===//
