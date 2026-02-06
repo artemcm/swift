@@ -1573,16 +1573,8 @@ ParserResult<TypeRepr> Parser::parseTypeOrValue(Diag<> MessageID,
         return makeParserError();
       }
 
-      auto genericValueExpr = genericValueExprResult.get();
-      if (auto parenExpr = dyn_cast<ParenExpr>(genericValueExpr))
-        genericValueExpr = parenExpr->getSubExpr();
-
-      if (auto intValueExpr = dyn_cast<IntegerLiteralExpr>(genericValueExpr))
-        return makeParserResult(new (Context) IntegerTypeRepr(intValueExpr));
-      else {
-        diagnose(Tok, diag::expected_integer_generic_value);
-        return makeParserError();
-      }
+      return makeParserResult(
+          new (Context) IntegerTypeRepr(genericValueExprResult.get()));
     }
   }
 
