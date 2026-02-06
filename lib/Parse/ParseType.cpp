@@ -1555,6 +1555,37 @@ ParserResult<TypeRepr> Parser::parseTypeOrValue(Diag<> MessageID,
     return makeParserResult(new (Context) IntegerTypeRepr(intLitExpr));
   }
 
+  if (Context.LangOpts.hasFeature(Feature::LiteralExpressions)) {
+    // Attempt to parse an expression generic value specifier
+    if (Tok.is(tok::l_paren)) {
+      consumeToken();
+      auto genericValueExprResult =
+          parseExprBasic(diag::expected_integer_expr_generic_value);
+      if (genericValueExprResult.isNull()) {
+        diagnose(Tok, MessageID);
+        return makeParserError();
+      }
+
+      if (!consumeIf(tok::r_paren)) {
+        // Expected a closing r_paren.
+        diagnose(Tok.getLoc(), diag::expected_generic_value_delimiter_rparen);
+        consumeToken();
+        return makeParserError();
+      }
+
+      auto genericValueExpr = genericValueExprResult.get();
+      if (auto parenExpr = dyn_cast<ParenExpr>(genericValueExpr))
+        genericValueExpr = parenExpr->getSubExpr();
+
+      if (auto intValueExpr = dyn_cast<IntegerLiteralExpr>(genericValueExpr))
+        return makeParserResult(new (Context) IntegerTypeRepr(intValueExpr));
+      else {
+        diagnose(Tok, diag::expected_integer_generic_value);
+        return makeParserError();
+      }
+    }
+  }
+
   // Otherwise, attempt to parse a regular type.
   return parseType(MessageID, reason);
 }
@@ -1625,9 +1656,19 @@ bool Parser::canParseGenericArguments() {
     return true;
   }
 
+
+  auto canParseTypeBacktrack = [&]() {
+    BacktrackingScope backtrack(*this);
+    return canParseType();
+  };
   do {
-    if (!canParseType())
+    if (canParseTypeBacktrack())
+      parseType();
+    else if (Tok.is(tok::l_paren))
+      skipSingle();
+    else
       return false;
+
     // Parse the comma, if the list continues.
     // This could be the trailing comma.
   } while (consumeIf(tok::comma) && !startsWithGreater(Tok));

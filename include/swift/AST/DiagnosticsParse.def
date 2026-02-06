@@ -1942,6 +1942,12 @@ ERROR(expected_rangle_primary_associated_type_list,PointsToFirstBadToken,
       "expected '>' to complete primary associated type list", ())
 ERROR(expected_primary_associated_type_name,PointsToFirstBadToken,
       "expected an identifier to name primary associated type", ())
+ERROR(expected_integer_generic_value,none,
+      "expected integer literal for generic value", ())
+ERROR(expected_integer_expr_generic_value,none,
+      "expected integer literal expression for generic value", ())
+ERROR(expected_generic_value_delimiter_rparen,none,
+      "expected ')' after generic value specifier expression", ())
 
 //------------------------------------------------------------------------------
 // MARK: Conditional compilation parsing diagnostics
