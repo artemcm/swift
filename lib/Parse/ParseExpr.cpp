@@ -39,6 +39,447 @@ bool Token::isEditorPlaceholder() const {
   return is(tok::identifier) && Identifier::isEditorPlaceholder(getRawText());
 }
 
+/// Speculatively check if a basic expression
+/// (equivalent to `isExprBasic=true` on `parseExpr`) can be parsed.
+/// TODO: Severe code duplication with 'parseExprSequence'
+bool Parser::canParseExprBasic() {
+  if (!canParseExprSequenceElement())
+    return false;
+
+  while (true) {
+    switch (Tok.getKind()) {
+    case tok::oper_binary_spaced:
+    case tok::oper_binary_unspaced: {
+      // Consume the binary operator, then check the next element.
+      consumeToken();
+      if (!canParseExprSequenceElement())
+        return false;
+      continue;
+    }
+
+    case tok::question_infix: {
+      consumeToken();
+      if (!canParseExprBasic())
+        return false;
+      if (!consumeIf(tok::colon))
+        return false;
+      if (!canParseExprSequenceElement())
+        return false;
+      continue;
+    }
+
+    case tok::equal:
+      consumeToken();
+      if (!canParseExprSequenceElement())
+        return false;
+      continue;
+
+    case tok::kw_is:
+      consumeToken();
+      if (!canParseType())
+        return false;
+      continue;
+
+    case tok::kw_as:
+      consumeToken();
+      consumeIf(tok::question_postfix) || consumeIf(tok::exclaim_postfix);
+      if (!canParseType())
+        return false;
+      continue;
+
+    case tok::identifier:
+        // 'async' followed by 'throws' or '->' implies that we have an arrow
+        // expression.
+      if (!Tok.isContextualKeyword("async") &&
+          peekToken().isAny(tok::arrow, tok::kw_throws))
+        goto done;
+      LLVM_FALLTHROUGH;
+
+    case tok::arrow:
+    case tok::kw_throws:
+      // ACTODO: Not yet supported
+      return false;
+
+    default:
+      goto done;
+    }
+  }
+done:
+  // This does not model `isForConditionalDirective`
+  return true;
+}
+
+/// canParseExprSequenceElement
+///
+/// Mirrors parseExprSequenceElement with isExprBasic=true.
+///
+/// TODO: Severe code duplication with 'parseExprSequenceElement'
+bool Parser::canParseExprSequenceElement() {
+  bool isReplaceableAsync = Tok.isContextualKeyword("async") &&
+    !peekToken().isAtStartOfLine() &&
+    (peekToken().is(tok::identifier) || peekToken().is(tok::kw_try));
+  if (Tok.isContextualKeyword("await") || isReplaceableAsync) {
+    consumeToken();
+    return canParseExprSequenceElement();
+  }
+
+  if (Tok.isContextualKeyword("unsafe") &&
+      !(peekToken().isAtStartOfLine() ||
+        peekToken().isAny(tok::r_paren, tok::r_brace, tok::r_square, tok::equal,
+                          tok::colon, tok::comma, tok::eof) ||
+        peekToken().is(tok::l_brace) ||
+        peekToken().is(tok::period) ||
+        (peekToken().isAny(tok::l_paren, tok::l_square) &&
+         peekToken().getRange().getStart() == Tok.getRange().getEnd()) ||
+        peekToken().isBinaryOperatorLike() ||
+        peekToken().isPostfixOperatorLike())) {
+    consumeToken();
+    return canParseExprSequenceElement();
+  }
+
+  if (Tok.isContextualKeyword("consume")
+      && peekToken().isAny(tok::identifier, tok::kw_self, tok::dollarident,
+                           tok::code_complete)
+      && !peekToken().isAtStartOfLine()) {
+    consumeToken();
+    return canParseExprSequenceElement();
+  }
+
+  if (Tok.isContextualKeyword("copy") &&
+      peekToken().isAny(tok::identifier, tok::kw_self, tok::dollarident,
+                        tok::code_complete) &&
+      !peekToken().isAtStartOfLine()) {
+    consumeToken();
+    return canParseExprSequenceElement();
+  }
+
+  if (Context.LangOpts.hasFeature(Feature::OldOwnershipOperatorSpellings)) {
+    if (Tok.isContextualKeyword("_move") ||
+        Tok.isContextualKeyword("_borrow")) {
+      consumeToken();
+      return canParseExprSequenceElement();
+    }
+  }
+
+  // 'any' followed by another identifier is an existential type.
+  if (Tok.isContextualKeyword("any") &&
+      (peekToken().is(tok::identifier) ||
+       peekToken().isContextualPunctuator("~")) &&
+      !peekToken().isAtStartOfLine()) {
+    return canParseType();
+  }
+
+  // 'repeat' as an expression prefix is a pack expansion expression.
+  if (Tok.is(tok::kw_repeat)) {
+    consumeToken();
+    return canParseExprBasic();
+  }
+
+  // 'each' followed by another identifier is a pack element expr.
+  if (Tok.isContextualKeyword("each") &&
+      peekToken().isAny(tok::identifier, tok::kw_self, tok::dollarident,
+                        tok::code_complete) &&
+      !peekToken().isAtStartOfLine()) {
+    consumeToken();
+    return canParseExprSequenceElement();
+  }
+
+  bool hadTry = false;
+  if (Tok.is(tok::kw_try)) {
+    consumeToken();
+    hadTry = true;
+    if (Tok.isAny(tok::exclaim_postfix, tok::question_postfix))
+      consumeToken();
+  }
+
+  // Try to parse '@' sign, 'inout' or 'nonisolated' as a attributed type
+  if (Tok.isAny(tok::at_sign, tok::kw_inout) ||
+      Tok.isContextualKeyword("nonisolated")) {
+    CancellableBacktrackingScope backtrack(*this);
+    if (canParseType()) {
+      backtrack.cancelBacktrack();
+      return true;
+    }
+  }
+
+  return hadTry ? canParseExprSequenceElement() : canParseExprUnary();
+}
+
+/// TODO: Severe code duplication with 'parseExprPostfix'
+bool Parser::canParseExprPostfix() {
+  // If we couldn't parse any expr, don't attempt to parse suffixes.
+  if (!canParseExprPrimary())
+    return false;
+  return canParseExprPostfixSuffix();
+}
+
+/// canParseExprUnary
+///
+/// Mirrors parseExprUnary with isExprBasic=true.
+///
+/// TODO: Severe code duplication with 'parseExprUnary'
+bool Parser::canParseExprUnary() {
+  // First check to see if we have the start of a regex literal `/.../`.
+  tryLexRegexLiteral(/*forUnappliedOperator*/ false);
+
+  // Try parse 'if', 'switch', and 'do' as expressions. Note we do this here
+  // in canParseExprUnary as we don't allow postfix syntax to hang off such
+  // expressions to avoid ambiguities such as postfix '.member', which can
+  // currently be parsed as a static dot member for a result builder.
+  if (Tok.isAny(tok::kw_if, tok::kw_switch) ||
+      (Tok.is(tok::kw_do) &&
+       Context.LangOpts.hasFeature(Feature::DoExpressions))) {
+    // ACTODO: Not sure how to handle this,
+    // need an equivalent to ... canParseStmt()?
+    return false;
+  }
+
+  switch (Tok.getKind()) {
+  default:
+    // If the next token is not an operator, just parse this as expr-postfix.
+    return canParseExprPostfix();
+
+  case tok::amp_prefix:
+    consumeToken();
+    return canParseExprUnary();
+
+  case tok::backslash:
+    consumeToken();
+    return canParseExprKeyPath();
+
+  case tok::oper_postfix:
+    // Postfix operators cannot start a subexpression, but can happen
+    // syntactically because the operator may just follow whatever precedes this
+    // expression (and that may not always be an expression).
+    LLVM_FALLTHROUGH;
+  case tok::oper_prefix:
+    LLVM_FALLTHROUGH;
+  case tok::oper_binary_spaced:
+    LLVM_FALLTHROUGH;
+  case tok::oper_binary_unspaced:
+    break;
+  }
+  // Operator
+  consumeToken();
+  return canParseExprUnary();
+}
+
+
+/// TODO: Severe code duplication with 'parseExprKeyPath'
+bool Parser::canParseExprKeyPath() {
+  if (!startsWithSymbol(Tok, '.')) {
+    if (!canParseExprPostfix())
+      return false;
+  }
+
+  if (startsWithSymbol(Tok, '.')) {
+    if ((Tok.isAnyOperator() && Tok.getLength() != 1) ||
+        peekToken().is(tok::l_square)) {
+      consumeStartingCharacterOfCurrentToken(tok::period);
+    }
+    return canParseExprPostfixSuffix();
+  }
+
+  // Not handling code completion...
+  return true;
+}
+
+/// Speculatively check if a primary expression can be parsed.
+/// Mirrors parseExprPrimary with isExprBasic=true.
+///
+/// TODO: Severe code duplication with 'parseExprPrimary'
+bool Parser::canParseExprPrimary() {
+  switch (Tok.getKind()) {
+  case tok::integer_literal:
+  case tok::string_literal:
+  case tok::floating_literal:
+  case tok::regex_literal:
+  case tok::kw_nil:
+  case tok::kw_true:
+  case tok::kw_false:
+    consumeToken();
+    return true;
+  case tok::at_sign:
+    // Objective-C programmers habitually type @"foo", so recover gracefully
+    // with a fixit.  If this isn't @"foo", just handle it like an unknown
+    // input.
+    if (peekToken().is(tok::string_literal)) {
+      consumeToken(); // '@'
+      consumeToken(); // string_literal
+      return true;
+    }
+    return false;
+
+  // Cases for non-deprecated magic identifier tokens
+  case tok::pound_file:
+#define MAGIC_IDENTIFIER_TOKEN(NAME, TOKEN) case tok::TOKEN:
+#include "swift/AST/MagicIdentifierKinds.def"
+    consumeToken();
+    return true;
+
+  case tok::identifier:
+  case tok::kw_self:
+  case tok::kw_init:
+  case tok::kw_Self:
+  case tok::kw_super:
+  case tok::kw__:
+  case tok::colon_colon: {
+    parseModuleSelector();
+
+    // Consume the base name.
+    if (Tok.isAny(tok::identifier, tok::kw_self, tok::kw_Self,
+                  tok::kw_init, tok::kw_super, tok::kw__) ||
+        Tok.isKeyword()) {
+      consumeToken();
+    } else
+      return false;
+
+    if (canParseAsGenericArgumentList())
+      canParseGenericArguments(); // Advance the tokens
+    return true;
+  }
+
+  case tok::kw_Any:
+    if (peekToken().is(tok::colon_colon)) {
+      parseModuleSelector();
+      if (Tok.isAny(tok::identifier, tok::kw_self, tok::kw_Self) ||
+          Tok.isKeyword()) {
+        consumeToken();
+      }
+    } else
+      consumeToken();
+    return true;
+
+  case tok::dollarident: // $1
+    consumeToken();
+    return true;
+
+  case tok::l_paren:
+  case tok::l_square:
+  case tok::l_brace:
+    // ACTODO: Just skip over for now, instead of `parseTupleOrParenExpr`,
+    // `parseExprCollection`, `parseExprClosure` etc.
+    skipSingle();
+    return true;
+
+  case tok::pound_selector: // expr-selector
+  case tok::pound_keyPath:
+      // ACTODO: Just skip over for now, instead of `parseExprSelector`, `parseExprKeyPathObjC`.
+    consumeToken();
+    return true;
+
+#define POUND_OBJECT_LITERAL(Name, Desc, Proto) case tok::pound_##Name:
+#include "swift/AST/TokenKinds.def"
+    consumeToken();
+    return true;
+
+  case tok::period:         //=.foo
+  case tok::period_prefix:
+    consumeToken();
+    if (Tok.is(tok::integer_literal)) {
+      consumeToken();
+      return true;
+    }
+    if (Tok.isAny(tok::identifier, tok::kw_self, tok::kw_Self,
+                  tok::kw_init) ||
+        Tok.isKeyword()) {
+      consumeToken();
+      return true;
+    }
+    return false;
+
+  case tok::pound_available:
+  case tok::pound_unavailable:
+  case tok::pound__hasSymbol:
+    return false;
+
+  case tok::pound:
+    if (isStartOfFreestandingMacroExpansion()) {
+      consumeToken(tok::pound);
+      if (Tok.is(tok::identifier))
+        consumeToken();
+      // Optional generic arguments.
+      if (canParseAsGenericArgumentList())
+        canParseGenericArguments();
+      // Optional argument list.
+      if (Tok.is(tok::l_paren))
+        skipSingle();
+      return true;
+    }
+    LLVM_FALLTHROUGH;
+  case tok::unknown:
+    LLVM_FALLTHROUGH;
+  default:
+    return false;
+  }
+}
+
+/// Mirrors parseExprPostfixSuffix with isExprBasic=true.
+/// TODO: Severe code duplication with 'parseExprPostfixSuffix'
+bool Parser::canParseExprPostfixSuffix() {
+  while (1) {
+    // Check for a .foo suffix.
+    if (Tok.isAny(tok::period, tok::period_prefix)) {
+      consumeToken();
+      if (Tok.is(tok::integer_literal)) {
+        consumeToken();
+        continue;
+      }
+
+      if (Tok.is(tok::kw_self) && !peekToken().is(tok::colon_colon)) {
+        continue;
+      }
+
+      // Rough proxy for canParseDeclNameRef
+      if (Tok.isAny(tok::identifier, tok::kw_self, tok::kw_Self, tok::kw_init) ||
+                 Tok.isKeyword()) {
+        consumeToken();
+        // Optional generic arguments after member name.
+        if (canParseAsGenericArgumentList())
+          canParseGenericArguments(); // Advance the tokens
+      } else
+        return false;
+
+      continue;
+    }
+
+    // ACTODO: If there is an expr-call-suffix, skip it...
+    if (Tok.isFollowingLParen()) {
+      skipSingle();
+      continue;
+    }
+
+    // ACTODO: If there is an [expr] suffix, skip it...
+    if (Tok.isFollowingLSquare()) {
+      skipSingle();
+      continue;
+    }
+
+    // ACTODO: No trailing closures: isExprBasic=true suppresses them.
+
+    // Check for a ? suffix.
+    if (consumeIf(tok::question_postfix))
+      continue;
+
+    // Check for a ! suffix.
+    if (consumeIf(tok::exclaim_postfix))
+      continue;
+
+    // Check for a postfix-operator suffix.
+    if (Tok.is(tok::oper_postfix)) {
+      consumeToken();
+      continue;
+    }
+
+    // ACTODO: No #if
+
+    // Otherwise, we don't know what this token is, it must end the expression.
+    break;
+  }
+  return true;
+}
+
+
 /// parseExpr
 ///
 ///   expr:

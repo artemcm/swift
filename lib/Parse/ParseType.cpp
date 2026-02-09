@@ -1634,22 +1634,11 @@ bool Parser::canParseGenericArguments() {
     BacktrackingScope backtrack(*this);
     return canParseType();
   };
-  // ACTODO: This is not ideal...
-  auto canParseExpr = [&]() {
-    CancellableBacktrackingScope backtrack(*this);
-    auto genericValueExpr = parseExprBasic(diag::expected_integer_generic_value);
-    if (genericValueExpr.isNull())
-      return false;
-    else {
-      backtrack.cancelBacktrack();
-      return true;
-    }
-  };
 
   do {
     if (startsWithType())
       parseType(); // Proceed to the next element
-    else if (!canParseExpr())
+    else if (!canParseExprBasic())
       return false;
     // Parse the comma, if the list continues.
     // This could be the trailing comma.

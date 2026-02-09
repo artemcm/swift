@@ -1783,6 +1783,26 @@ public:
     return parseExprImpl(ID, /*isExprBasic=*/true);
   }
   ParserResult<Expr> parseExprImpl(Diag<> ID, bool isExprBasic);
+
+  // Speculative expression parsing:
+  // These mirror the parse* expression methods but are side-effect-free:
+  // no AST nodes created, no diagnostics emitted. They consume tokens
+  // speculatively and return true if a valid expression could be parsed.
+  //
+  // Currently have large limitations which may be acceptable for generic
+  // argument expression parsing, but not the general case, e.g.
+  // - Does not support if/switch/do expressions
+  // - Skips l_paren, l_brace, l_square sub-expressions...
+  // - Does not handle '#if' at all
+  // - Does not handle trailing closures in any way
+  bool canParseExprBasic();
+  bool canParseExprSequenceElement();
+  bool canParseExprUnary();
+  bool canParseExprPrimary();
+  bool canParseExprPostfix();
+  bool canParseExprPostfixSuffix();
+  bool canParseExprKeyPath();
+
   ParserResult<Expr> parseExprIs();
   ParserResult<Expr> parseExprAs();
   ParserResult<Expr> parseExprArrow();
