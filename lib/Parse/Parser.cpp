@@ -809,6 +809,14 @@ SourceLoc Parser::skipUntilGreaterInTypeList(bool protocolComposition) {
   }
 }
 
+void Parser::skipUntilGreaterOrComma() {
+  while (Tok.isNot(tok::comma, tok::eof, tok::pound_endif, tok::pound_else,
+                   tok::pound_elseif, tok::r_paren, tok::r_brace,
+                   tok::r_square, tok::l_brace, tok::semi) &&
+         !startsWithGreater(Tok))
+    skipSingle();
+}
+
 void Parser::skipUntilDeclRBrace() {
   while (Tok.isNot(tok::eof, tok::r_brace, tok::pound_endif,
                    tok::pound_else, tok::pound_elseif,
@@ -872,6 +880,15 @@ bool Parser::skipUntilTokenOrEndOfLine(tok T1, tok T2) {
     skipSingle();
 
   return Tok.isAny(T1, T2) && !Tok.isAtStartOfLine();
+}
+
+bool Parser::skipUntilOfOrEndOfLine() {
+  while (!Tok.isContextualKeyword("of") && !Tok.isAtStartOfLine() &&
+         Tok.isNot(tok::eof, tok::r_paren, tok::r_brace, tok::r_square,
+                   tok::l_brace, tok::semi))
+    skipSingle();
+
+  return Tok.isContextualKeyword("of") && !Tok.isAtStartOfLine();
 }
 
 bool Parser::parseEndIfDirective(SourceLoc &Loc) {
