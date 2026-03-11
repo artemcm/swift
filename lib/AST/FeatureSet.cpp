@@ -419,7 +419,7 @@ static bool usesFeatureBuiltinConcurrencyStackNesting(Decl *decl) {
 }
 
 UNINTERESTING_FEATURE(CompileTimeValuesPreview)
-UNINTERESTING_FEATURE(LiteralExpressions)
+//UNINTERESTING_FEATURE(LiteralExpressions)
 UNINTERESTING_FEATURE(StrictMemorySafety)
 UNINTERESTING_FEATURE(LibraryEvolution)
 UNINTERESTING_FEATURE(SafeInteropWrappers)
