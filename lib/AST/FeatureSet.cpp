@@ -448,7 +448,7 @@ static bool usesFeatureConcurrencySyntaxSugar(Decl *decl) {
 }
 
 static bool usesFeatureSourceWarningControl(Decl *decl) {
-  return decl->getAttrs().hasAttribute<WarnAttr>();
+  return decl->getAttrs().hasAttribute<DiagnoseAttr>();
 }
 
 static bool usesFeatureCompileTimeValues(Decl *decl) {
