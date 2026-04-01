@@ -64,6 +64,8 @@ static unsigned getIntegerBitWidth(Type type, ASTContext &ctx) {
   // Map stdlib integer types to their bitwidths
   if (type->isInt())
     return getTargetPointerBitWidth(ctx);
+  if (type->isInt128())
+    return 128;
   if (type->isInt64())
     return 64;
   if (type->isInt32())
@@ -75,6 +77,8 @@ static unsigned getIntegerBitWidth(Type type, ASTContext &ctx) {
 
   if (type->isUInt())
     return getTargetPointerBitWidth(ctx);
+  if (type->isUInt128())
+    return 128;
   if (type->isUInt64())
     return 64;
   if (type->isUInt32())
@@ -92,6 +96,8 @@ static ConcreteDeclRef getIntTypeBuiltinInit(Type type, ASTContext &ctx) {
   // Map stdlib integer types to their bitwidths
   if (type->isInt())
     return ctx.getIntBuiltinInitDecl(ctx.getIntDecl());
+  if (type->isInt128())
+    return ctx.getIntBuiltinInitDecl(ctx.getInt128Decl());
   if (type->isInt64())
     return ctx.getIntBuiltinInitDecl(ctx.getInt64Decl());
   if (type->isInt32())
@@ -103,6 +109,8 @@ static ConcreteDeclRef getIntTypeBuiltinInit(Type type, ASTContext &ctx) {
 
   if (type->isUInt())
     return ctx.getIntBuiltinInitDecl(ctx.getUIntDecl());
+  if (type->isUInt128())
+    return ctx.getIntBuiltinInitDecl(ctx.getUInt128Decl());
   if (type->isUInt64())
     return ctx.getIntBuiltinInitDecl(ctx.getUInt64Decl());
   if (type->isUInt32())
