@@ -77,7 +77,7 @@ class MoveOnlyObjectCheckerTesterPass : public SILFunctionTransform {
     auto *fn = getFunction();
 
     // Don't rerun diagnostics on deserialized functions.
-    if (getFunction()->wasDeserializedCanonical())
+    if (getFunction()->isAlreadyCanonical())
       return;
 
     assert(fn->getModule().getStage() == SILStage::Raw &&
