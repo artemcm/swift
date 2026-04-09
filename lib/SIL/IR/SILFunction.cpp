@@ -296,6 +296,7 @@ void SILFunction::init(
   this->Zombie = false;
   this->HasOwnership = true,
   this->WasDeserializedCanonical = false;
+  this->FunctionStage = unsigned(SILStage::Raw);
   this->IsWithoutActuallyEscapingThunk = false;
   this->OptMode = unsigned(OptimizationMode::NotSet);
   this->perfConstraints = PerformanceConstraints::None;
@@ -345,6 +346,12 @@ SILAddressConventions SILAddressConventions::forFunctionWithOverride(
       (overrideConv.has_value() && overrideConv->useLoweredAddresses()) ||
       (fn && fn->hasLoweredAddresses());
   return SILAddressConventions::withLoweredAddresses(M, loweredAddresses);
+}
+
+SILStage SILFunction::getEffectiveStage() const {
+  SILStage fs = getFunctionStage();
+  SILStage ms = getModule().getStage();
+  return fs > ms ? fs : ms;
 }
 
 SILFunction::~SILFunction() {

@@ -1007,6 +1007,11 @@ public:
   void setStage(SILStage s) {
     assert(s >= Stage && "regressing stage?!");
     Stage = s;
+    // Propagate the stage to all functions so that per-function stage
+    // tracking stays consistent with the module stage.
+    for (auto &F : functions)
+      if (F.getFunctionStage() < s)
+        F.setFunctionStage(s);
   }
 
   /// True if -enable-sil-opaque-values was passed. Address-only types are
