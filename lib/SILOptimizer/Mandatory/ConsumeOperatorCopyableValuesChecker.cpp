@@ -586,7 +586,7 @@ class ConsumeOperatorCopyableValuesCheckerPass : public SILFunctionTransform {
     auto *fn = getFunction();
 
     // Don't rerun diagnostics on deserialized functions.
-    if (fn->wasDeserializedCanonical())
+    if (fn->isAlreadyCanonical())
       return;
 
     assert(fn->getModule().getStage() == SILStage::Raw &&
