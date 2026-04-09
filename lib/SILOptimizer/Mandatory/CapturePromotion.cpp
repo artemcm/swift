@@ -1674,7 +1674,7 @@ class CapturePromotionPass : public SILClosureGroupTransform {
   void run() override {
     SmallVector<SILFunction *, 8> worklist;
     for (SILFunction *f : getGroup()) {
-      if (f->wasDeserializedCanonical() || !f->hasOwnership())
+      if (f->isAlreadyCanonical() || !f->hasOwnership())
         continue;
 
       processFunction(f, worklist);
