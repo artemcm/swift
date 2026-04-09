@@ -1100,6 +1100,10 @@ bool BridgedFunction::wasDeserializedCanonical() const {
   return getFunction()->wasDeserializedCanonical();
 }
 
+bool BridgedFunction::isAlreadyCanonical() const {
+  return getFunction()->isAlreadyCanonical();
+}
+
 void BridgedFunction::setNeedStackProtection(bool needSP) const {
   getFunction()->setNeedStackProtection(needSP);
 }
