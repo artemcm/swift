@@ -380,7 +380,7 @@ private:
   void run() override {
     SILFunction *function = getFunction();
     // Don't rerun diagnostics on deserialized functions.
-    if (function->wasDeserializedCanonical())
+    if (function->isAlreadyCanonical())
       return;
 
     if (!function->hasOwnership())
