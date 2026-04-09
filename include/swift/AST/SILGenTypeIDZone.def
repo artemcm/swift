@@ -23,3 +23,6 @@ SWIFT_REQUEST(SILGen, ParseSILModuleRequest,
 SWIFT_REQUEST(SILGen, SILFunctionBodyRequest,
               SILFunction *(SILFunctionEmissionDescriptor),
               SeparatelyCached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, SILFunctionInterfaceRequest,
+              SILFunction *(SILFunctionEmissionDescriptor),
+              SeparatelyCached, NoLocationInfo)

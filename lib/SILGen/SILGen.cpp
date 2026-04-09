@@ -2313,27 +2313,53 @@ SILFunction *SILGenModule::emitFunctionOnDemand(SILDeclRef constant) {
   if (!f->empty())
     return f;
 
-  // Emit the function body.
+  // Emit the function body. Callee references discovered during emission
+  // may queue functions in pendingForcedFunctions; the caller is responsible
+  // for draining that queue.
   emitFunctionDefinition(constant, f);
+  return f;
+}
 
-  // Drain any transitively-forced functions and conformances.
-  // Emitting a function body may reference other internal functions or
-  // protocol conformances, which get queued for forced emission.
-  while (!pendingForcedFunctions.empty()
-         || !pendingConformances.empty()) {
-    while (!pendingForcedFunctions.empty()) {
-      auto &front = pendingForcedFunctions.front();
-      emitFunctionDefinition(front,
-                             getEmittedFunction(front, ForDefinition));
-      pendingForcedFunctions.pop_front();
-    }
-    while (!pendingConformances.empty()) {
-      (void)getWitnessTable(pendingConformances.front());
-      pendingConformances.pop_front();
+/// Request-based emission path for testing demand-driven SIL generation.
+/// Type-checks each source file, emits each top-level function via
+/// SILFunctionBodyRequest (which depends on SILFunctionInterfaceRequest),
+/// then drains transitively-discovered internal functions and conformances.
+static void emitOnDemandViaRequests(Evaluator &evaluator,
+                                    ASTLoweringDescriptor desc,
+                                    Lowering::SILGenModule &SGM) {
+  // Emit each top-level function via SILFunctionBodyRequest.
+  for (auto file : desc.getFilesToEmit()) {
+    if (auto *sf = dyn_cast<SourceFile>(file)) {
+      performTypeChecking(*sf);
+      for (auto *D : sf->getTopLevelDecls()) {
+        if (auto *fd = dyn_cast<FuncDecl>(D)) {
+          SILFunctionEmissionDescriptor emitDesc{SILDeclRef(fd), &SGM};
+          (void)evaluateOrFatal(evaluator,
+                                SILFunctionBodyRequest{emitDesc});
+        }
+      }
     }
   }
 
-  return f;
+  // Drain: emit bodies for transitively-discovered internal functions.
+  // Body emission may reference internal callees (whose interfaces were
+  // created inline via SILFunctionInterfaceRequest) and queue them in
+  // pendingForcedFunctions. Each body is emitted via SILFunctionBodyRequest
+  // so the evaluator tracks all dependencies.
+  while (!SGM.pendingForcedFunctions.empty()
+         || !SGM.pendingConformances.empty()) {
+    while (!SGM.pendingForcedFunctions.empty()) {
+      auto ref = SGM.pendingForcedFunctions.front();
+      SGM.pendingForcedFunctions.pop_front();
+      SILFunctionEmissionDescriptor emitDesc{ref, &SGM};
+      (void)evaluateOrFatal(evaluator,
+                            SILFunctionBodyRequest{emitDesc});
+    }
+    while (!SGM.pendingConformances.empty()) {
+      (void)SGM.getWitnessTable(SGM.pendingConformances.front());
+      SGM.pendingConformances.pop_front();
+    }
+  }
 }
 
 std::unique_ptr<SILModule>
@@ -2369,55 +2395,40 @@ ASTLoweringRequest::evaluate(Evaluator &evaluator,
   }
 
   if (SILGenOnDemandEmission) {
-    // On-demand test path: type-check each source file, then emit each
-    // top-level function via SILFunctionBodyRequest, bypassing emitSourceFile
-    // entirely. This exercises the request evaluator's tracking, cycle
-    // detection, and dependency recording for per-function SIL generation.
-    for (auto file : desc.getFilesToEmit()) {
-      if (auto *sf = dyn_cast<SourceFile>(file)) {
-        performTypeChecking(*sf);
-        for (auto *D : sf->getTopLevelDecls()) {
-          if (auto *fd = dyn_cast<FuncDecl>(D)) {
-            SILFunctionEmissionDescriptor emitDesc{SILDeclRef(fd), &SGM};
-            (void)evaluateOrFatal(evaluator,
-                                  SILFunctionBodyRequest{emitDesc});
-          }
-        }
-      }
-    }
+    emitOnDemandViaRequests(evaluator, desc, SGM);
   } else {
     // Normal emission path.
     for (auto file : desc.getFilesToEmit()) {
       if (auto *nextSF = dyn_cast<SourceFile>(file))
         SGM.emitSourceFile(nextSF);
     }
-  }
 
-  // Also make sure to process any intermediate files that may contain SIL.
-  bool shouldDeserialize =
-      llvm::any_of(desc.getFilesToEmit(), [](const FileUnit *File) -> bool {
-        return isa<SerializedASTFile>(File);
-      });
-  if (shouldDeserialize) {
-    auto *primary = desc.context.dyn_cast<FileUnit *>();
-    silMod->getSILLoader()->getAllForModule(silMod->getSwiftModule()->getName(),
-                                            primary);
-  }
-
-  // Emit any delayed definitions that were forced.
-  // Emitting these may in turn force more definitions, so we have to take
-  // care to keep pumping the queues.
-  while (!SGM.pendingForcedFunctions.empty()
-         || !SGM.pendingConformances.empty()) {
-    while (!SGM.pendingForcedFunctions.empty()) {
-      auto &front = SGM.pendingForcedFunctions.front();
-      SGM.emitFunctionDefinition(
-          front, SGM.getEmittedFunction(front, ForDefinition));
-      SGM.pendingForcedFunctions.pop_front();
+    // Also make sure to process any intermediate files that may contain SIL.
+    bool shouldDeserialize =
+        llvm::any_of(desc.getFilesToEmit(), [](const FileUnit *File) -> bool {
+          return isa<SerializedASTFile>(File);
+        });
+    if (shouldDeserialize) {
+      auto *primary = desc.context.dyn_cast<FileUnit *>();
+      silMod->getSILLoader()->getAllForModule(
+          silMod->getSwiftModule()->getName(), primary);
     }
-    while (!SGM.pendingConformances.empty()) {
-      (void)SGM.getWitnessTable(SGM.pendingConformances.front());
-      SGM.pendingConformances.pop_front();
+
+    // Emit any delayed definitions that were forced.
+    // Emitting these may in turn force more definitions, so we have to take
+    // care to keep pumping the queues.
+    while (!SGM.pendingForcedFunctions.empty()
+           || !SGM.pendingConformances.empty()) {
+      while (!SGM.pendingForcedFunctions.empty()) {
+        auto &front = SGM.pendingForcedFunctions.front();
+        SGM.emitFunctionDefinition(
+            front, SGM.getEmittedFunction(front, ForDefinition));
+        SGM.pendingForcedFunctions.pop_front();
+      }
+      while (!SGM.pendingConformances.empty()) {
+        (void)SGM.getWitnessTable(SGM.pendingConformances.front());
+        SGM.pendingConformances.pop_front();
+      }
     }
   }
 

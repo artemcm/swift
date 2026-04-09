@@ -119,9 +119,42 @@ swift::extractNearestSourceLoc(const SILFunctionEmissionDescriptor &desc) {
 }
 
 SILFunction *
+SILFunctionInterfaceRequest::evaluate(Evaluator &evaluator,
+                                      SILFunctionEmissionDescriptor desc) const {
+  return desc.SGM->getFunction(desc.constant, ForDefinition);
+}
+
+std::optional<SILFunction *>
+SILFunctionInterfaceRequest::getCachedResult() const {
+  auto &desc = std::get<0>(getStorage());
+  auto *f = desc.SGM->getEmittedFunction(desc.constant, ForDefinition);
+  if (f)
+    return f;
+  return std::nullopt;
+}
+
+void SILFunctionInterfaceRequest::cacheResult(SILFunction *f) const {
+  // No-op: getFunction already registers the function in
+  // SILGenModule::emittedFunctions and SILModule::FunctionTable.
+}
+
+SILFunction *
 SILFunctionBodyRequest::evaluate(Evaluator &evaluator,
                                  SILFunctionEmissionDescriptor desc) const {
-  return desc.SGM->emitFunctionOnDemand(desc.constant);
+  // Get or create the function declaration via the interface request.
+  auto *f = evaluateOrFatal(evaluator,
+                            SILFunctionInterfaceRequest{desc});
+
+  // If the function already has a body, it was already emitted.
+  if (!f->empty())
+    return f;
+
+  // Emit the function body. Callee references discovered during emission
+  // will trigger SILFunctionInterfaceRequest for each callee (creating their
+  // declarations and potentially queuing them in pendingForcedFunctions).
+  // The drain loop in ASTLoweringRequest handles emitting those bodies.
+  desc.SGM->emitFunctionDefinition(desc.constant, f);
+  return f;
 }
 
 std::optional<SILFunction *>
@@ -134,7 +167,7 @@ SILFunctionBodyRequest::getCachedResult() const {
 }
 
 void SILFunctionBodyRequest::cacheResult(SILFunction *f) const {
-  // No-op: emitFunctionOnDemand already registers the function in
+  // No-op: emitFunctionDefinition already registers the function body in
   // SILGenModule::emittedFunctions and SILModule::FunctionTable.
 }
 

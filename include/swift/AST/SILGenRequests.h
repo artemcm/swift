@@ -174,9 +174,39 @@ void simple_display(llvm::raw_ostream &out,
 
 SourceLoc extractNearestSourceLoc(const SILFunctionEmissionDescriptor &desc);
 
-/// Emits a single function body on demand, producing Raw SIL. This includes
-/// any transitively-forced functions and conformances discovered during
-/// emission.
+/// Creates a SILFunction declaration (empty body) for a given SILDeclRef,
+/// with correct lowered type, linkage, generic environment, and attributes.
+/// The function is registered in SILModule's function table but has no body.
+///
+/// This is the "interface" half of function emission. SILFunctionBodyRequest
+/// depends on this request to obtain the declaration before filling in the body.
+class SILFunctionInterfaceRequest
+    : public SimpleRequest<SILFunctionInterfaceRequest,
+                           SILFunction *(SILFunctionEmissionDescriptor),
+                           RequestFlags::SeparatelyCached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+private:
+  friend SimpleRequest;
+
+  // Evaluation.
+  SILFunction *evaluate(Evaluator &evaluator,
+                        SILFunctionEmissionDescriptor desc) const;
+
+public:
+  // Separate caching.
+  bool isCached() const { return true; }
+  std::optional<SILFunction *> getCachedResult() const;
+  void cacheResult(SILFunction *f) const;
+};
+
+/// Emits a single function body on demand, producing Raw SIL. Depends on
+/// SILFunctionInterfaceRequest for the function declaration. Callee references
+/// discovered during body emission trigger SILFunctionInterfaceRequest for
+/// each callee (creating their declarations); the caller
+/// (ASTLoweringRequest) is responsible for draining pendingForcedFunctions
+/// and firing SILFunctionBodyRequest for each discovered callee.
 ///
 /// Results are cached externally: getCachedResult checks whether the function
 /// already has a body (isDefinition), and cacheResult is a no-op since the
