@@ -20,3 +20,6 @@ SWIFT_REQUEST(SILGen, ASTLoweringRequest,
 SWIFT_REQUEST(SILGen, ParseSILModuleRequest,
               std::unique_ptr<SILModule>(ASTLoweringDescriptor),
               Uncached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, SILFunctionBodyRequest,
+              SILFunction *(SILFunctionEmissionDescriptor),
+              SeparatelyCached, NoLocationInfo)
