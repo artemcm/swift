@@ -136,6 +136,16 @@ public:
   /// Lazy entry point for Feature::LazyImmediate.
   void emitSymbolSource(SymbolSource Source);
 
+  /// Emit a single function on demand, including any transitively-forced
+  /// functions and conformances. Intended as the entry point for future
+  /// request-driven SIL generation.
+  ///
+  /// The declaration referenced by \p constant must already be type-checked.
+  ///
+  /// \returns The emitted SILFunction, or nullptr if the function was already
+  /// emitted.
+  SILFunction *emitFunctionOnDemand(SILDeclRef constant);
+
   llvm::StringMap<std::pair<std::string, /*isWinner=*/bool>> FileIDsByFilePath;
 
   static DeclName getMagicFunctionName(SILDeclRef ref);

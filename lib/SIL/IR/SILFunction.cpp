@@ -289,6 +289,7 @@ void SILFunction::init(
   this->Zombie = false;
   this->HasOwnership = true,
   this->WasDeserializedCanonical = false;
+  this->FunctionStage = unsigned(SILStage::Raw);
   this->IsWithoutActuallyEscapingThunk = false;
   this->OptMode = unsigned(OptimizationMode::NotSet);
   this->perfConstraints = PerformanceConstraints::None;
@@ -297,6 +298,12 @@ void SILFunction::init(
   validateSubclassScope(classSubclassScope, isThunk, nullptr);
   setDebugScope(DebugScope);
   setGenericEnvironment(genericEnv);
+}
+
+SILStage SILFunction::getEffectiveStage() const {
+  SILStage fs = getFunctionStage();
+  SILStage ms = getModule().getStage();
+  return fs > ms ? fs : ms;
 }
 
 SILFunction::~SILFunction() {
