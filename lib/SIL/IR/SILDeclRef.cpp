@@ -2077,3 +2077,13 @@ ActorIsolation SILDeclRef::getActorIsolation() const {
 
   return getActorIsolationOfContext(getInnermostDeclContext());
 }
+
+void swift::simple_display(llvm::raw_ostream &out, const SILDeclRef &ref) {
+  ref.print(out);
+}
+
+SourceLoc swift::extractNearestSourceLoc(const SILDeclRef &ref) {
+  if (ref.hasDecl())
+    return ref.getDecl()->getLoc();
+  return SourceLoc();
+}

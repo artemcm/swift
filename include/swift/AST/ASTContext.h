@@ -87,6 +87,7 @@ namespace swift {
   class DefaultArgumentInitializer;
   class DerivativeAttr;
   class DifferentiableAttr;
+  namespace Lowering { class SILGenModule; }
   class ExtensionDecl;
   struct ExplicitSwiftModuleMap;
   struct ExplicitClangModuleMap;
@@ -1654,6 +1655,33 @@ public:
   /// there isn't a `PlatformKind` associated with the current target triple,
   /// then this returns the universal domain (`*`).
   AvailabilityDomain getTargetAvailabilityDomain() const;
+
+private:
+  /// Active SILGenModule for demand-driven SIL generation requests.
+  /// Non-null only during ASTLoweringRequest evaluation.
+  Lowering::SILGenModule *ActiveSILGenModule = nullptr;
+
+public:
+  Lowering::SILGenModule *getActiveSILGenModule() const {
+    return ActiveSILGenModule;
+  }
+  friend class ActiveSILGenModuleScope;
+};
+
+/// RAII guard that installs a SILGenModule as the active one on ASTContext.
+class ActiveSILGenModuleScope {
+  ASTContext &Ctx;
+  Lowering::SILGenModule *Previous;
+public:
+  ActiveSILGenModuleScope(ASTContext &ctx, Lowering::SILGenModule &sgm)
+      : Ctx(ctx), Previous(ctx.ActiveSILGenModule) {
+    assert(!Previous &&
+           "Nested ActiveSILGenModuleScope is not supported");
+    ctx.ActiveSILGenModule = &sgm;
+  }
+  ~ActiveSILGenModuleScope() { Ctx.ActiveSILGenModule = Previous; }
+  ActiveSILGenModuleScope(const ActiveSILGenModuleScope &) = delete;
+  ActiveSILGenModuleScope &operator=(const ActiveSILGenModuleScope &) = delete;
 };
 
 inline SourceLoc extractNearestSourceLoc(const ASTContext *ctx) {
