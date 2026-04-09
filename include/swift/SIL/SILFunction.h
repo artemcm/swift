@@ -444,6 +444,12 @@ private:
   /// Set if the function body was deserialized from canonical SIL. This implies
   /// that the function's home module performed SIL diagnostics prior to
   /// serialization.
+  ///
+  /// Most pipeline-stage checks should use \c isAlreadyCanonical() or
+  /// \c getFunctionStage() instead. This bit is retained for a few uses that
+  /// check serialization identity rather than pipeline stage: closure/parent
+  /// consistency in ClosureScope, optimization-aware IR generation in IRGenSIL,
+  /// and the verifier's per-function stage consistency assertion.
   unsigned WasDeserializedCanonical : 1;
 
   /// The SIL pipeline stage this function has reached. Allows functions within
@@ -755,11 +761,23 @@ public:
   /// Returns true if this function was deserialized from canonical
   /// SIL. (.swiftmodule files contain canonical SIL; .sib files may be 'raw'
   /// SIL). If so, diagnostics should not be reapplied.
+  ///
+  /// Most callers should use \c isAlreadyCanonical() instead, which generalizes
+  /// this check to also cover functions that have reached canonical stage
+  /// through the normal pipeline. The remaining uses of this method check
+  /// serialization identity (e.g. closure/parent consistency in ClosureScope)
+  /// or optimization-aware IR generation decisions, which are distinct from
+  /// pipeline stage.
   bool wasDeserializedCanonical() const { return WasDeserializedCanonical; }
 
   void setWasDeserializedCanonical(bool val = true) {
     WasDeserializedCanonical = val;
   }
+
+  /// Returns true if this function has already reached canonical SIL stage,
+  /// either through deserialization or through normal pipeline progression.
+  /// Mandatory diagnostic passes should skip such functions.
+  bool isAlreadyCanonical() const;
 
   /// Returns the SIL pipeline stage this function has individually reached.
   SILStage getFunctionStage() const { return SILStage(FunctionStage); }

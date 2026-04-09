@@ -2509,7 +2509,7 @@ class PredictableDeadAllocationElimination : public SILFunctionTransform {
     LLVM_DEBUG(llvm::dbgs() << "Looking at: " << func->getName() << "\n");
     auto *da = getAnalysis<DominanceAnalysis>();
     // If we are already canonical or do not have ownership, just bail.
-    if (func->wasDeserializedCanonical() || !func->hasOwnership())
+    if (func->isAlreadyCanonical() || !func->hasOwnership())
       return;
     if (eliminateDeadAllocations(func, da->get(func)))
       invalidateAnalysis(SILAnalysis::InvalidationKind::FunctionBody);

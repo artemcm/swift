@@ -1316,7 +1316,7 @@ class AllocBoxToStack : public SILFunctionTransform {
   /// The entry point to the transformation.
   void run() override {
     // Don't rerun on deserialized functions. Nothing should have changed.
-    if (getFunction()->wasDeserializedCanonical())
+    if (getFunction()->isAlreadyCanonical())
       return;
 
     AllocBoxToStackState pass(this);

@@ -301,6 +301,10 @@ SILStage SILFunction::getEffectiveStage() const {
   return fs > ms ? fs : ms;
 }
 
+bool SILFunction::isAlreadyCanonical() const {
+  return getFunctionStage() >= SILStage::Canonical;
+}
+
 SILFunction::~SILFunction() {
   // If the function is recursive, a function_ref inst inside of the function
   // will give the function a non-zero ref count triggering the assertion. Thus

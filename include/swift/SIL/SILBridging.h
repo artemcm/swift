@@ -581,6 +581,7 @@ struct BridgedFunction {
   BRIDGED_INLINE bool shouldOptimize() const;
   BRIDGED_INLINE bool isReferencedInModule() const;
   BRIDGED_INLINE bool wasDeserializedCanonical() const;
+  BRIDGED_INLINE bool isAlreadyCanonical() const;
   BRIDGED_INLINE void setNeedStackProtection(bool needSP) const;
   BRIDGED_INLINE void setIsPerformanceConstraint(bool isPerfConstraint) const;
   BRIDGED_INLINE bool isResilientNominalDecl(BridgedDeclObj decl) const;
