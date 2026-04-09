@@ -979,6 +979,11 @@ public:
   void setStage(SILStage s) {
     assert(s >= Stage && "regressing stage?!");
     Stage = s;
+    // Propagate the stage to all functions so that per-function stage
+    // tracking stays consistent with the module stage.
+    for (auto &F : functions)
+      if (F.getFunctionStage() < s)
+        F.setFunctionStage(s);
   }
 
   /// True if SIL conventions force address-only to be passed by address.

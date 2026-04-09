@@ -36,6 +36,7 @@ namespace swift {
 class ASTContext;
 class SILInstruction;
 class SILModule;
+enum class SILStage;
 class SILFunctionBuilder;
 class SILProfiler;
 class BasicBlockBitfield;
@@ -445,6 +446,15 @@ private:
   /// serialization.
   unsigned WasDeserializedCanonical : 1;
 
+  /// The SIL pipeline stage this function has reached. Allows functions within
+  /// the same module to be at different pipeline stages, which is a prerequisite
+  /// for demand-driven SIL generation.
+  ///
+  /// Invariant: For non-deserialized functions, this equals the module stage.
+  /// For deserialized-canonical functions, this may be Canonical while the
+  /// module is still Raw.
+  unsigned FunctionStage : 2;
+
   /// True if this is a reabstraction thunk of escaping function type whose
   /// single argument is a potentially non-escaping closure. This is an escape
   /// hatch to allow non-escaping functions to be stored or passed as an
@@ -750,6 +760,23 @@ public:
   void setWasDeserializedCanonical(bool val = true) {
     WasDeserializedCanonical = val;
   }
+
+  /// Returns the SIL pipeline stage this function has individually reached.
+  SILStage getFunctionStage() const { return SILStage(FunctionStage); }
+
+  /// Advance this function to a further pipeline stage.
+  void setFunctionStage(SILStage s) {
+    assert(s >= getFunctionStage() && "regressing function stage");
+    FunctionStage = unsigned(s);
+  }
+
+  /// Returns the effective SIL stage for this function, accounting for both
+  /// the per-function stage and the module stage. This is the stage that
+  /// verification and pass gating should use.
+  ///
+  /// During the transition to per-function staging, this returns the maximum
+  /// of the function's own stage and the module's stage.
+  SILStage getEffectiveStage() const;
 
   ForceEnableLexicalLifetimes_t forceEnableLexicalLifetimes() const {
     return ForceEnableLexicalLifetimes_t(ForceEnableLexicalLifetimes);

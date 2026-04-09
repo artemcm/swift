@@ -55,6 +55,11 @@ llvm::cl::list<std::string> PrintFunctionAST(
     "print-function-ast", llvm::cl::CommaSeparated,
     llvm::cl::desc("Only print out the ast for this function"));
 
+static llvm::cl::opt<bool> SILGenOnDemandEmission(
+    "sil-on-demand-emission", llvm::cl::init(false),
+    llvm::cl::desc("Use emitFunctionOnDemand instead of emitSourceFile "
+                   "(for testing the on-demand SILGen path)"));
+
 //===----------------------------------------------------------------------===//
 // SILGenModule Class implementation
 //===----------------------------------------------------------------------===//
@@ -2300,6 +2305,37 @@ void SILGenModule::emitSymbolSource(SymbolSource Source) {
   }
 }
 
+SILFunction *SILGenModule::emitFunctionOnDemand(SILDeclRef constant) {
+  // Get or create the SILFunction declaration.
+  SILFunction *f = getFunction(constant, ForDefinition);
+
+  // If the function already has a body, it was already emitted.
+  if (!f->empty())
+    return f;
+
+  // Emit the function body.
+  emitFunctionDefinition(constant, f);
+
+  // Drain any transitively-forced functions and conformances.
+  // Emitting a function body may reference other internal functions or
+  // protocol conformances, which get queued for forced emission.
+  while (!pendingForcedFunctions.empty()
+         || !pendingConformances.empty()) {
+    while (!pendingForcedFunctions.empty()) {
+      auto &front = pendingForcedFunctions.front();
+      emitFunctionDefinition(front,
+                             getEmittedFunction(front, ForDefinition));
+      pendingForcedFunctions.pop_front();
+    }
+    while (!pendingConformances.empty()) {
+      (void)getWitnessTable(pendingConformances.front());
+      pendingConformances.pop_front();
+    }
+  }
+
+  return f;
+}
+
 std::unique_ptr<SILModule>
 ASTLoweringRequest::evaluate(Evaluator &evaluator,
                              ASTLoweringDescriptor desc) const {
@@ -2332,10 +2368,28 @@ ASTLoweringRequest::evaluate(Evaluator &evaluator,
       SGM.emitSymbolSource(std::move(Source));
   }
 
-  // Emit any whole-files needed.
-  for (auto file : desc.getFilesToEmit()) {
-    if (auto *nextSF = dyn_cast<SourceFile>(file))
-      SGM.emitSourceFile(nextSF);
+  if (SILGenOnDemandEmission) {
+    // On-demand test path: type-check each source file, then emit each
+    // top-level function individually via emitFunctionOnDemand, bypassing
+    // emitSourceFile entirely. This tests that emitFunctionOnDemand can
+    // produce correct SIL from scratch for programs with free functions.
+    // Transitive dependencies (e.g. private callees) are pulled in
+    // automatically by emitFunctionOnDemand's drain loop.
+    for (auto file : desc.getFilesToEmit()) {
+      if (auto *sf = dyn_cast<SourceFile>(file)) {
+        performTypeChecking(*sf);
+        for (auto *D : sf->getTopLevelDecls()) {
+          if (auto *fd = dyn_cast<FuncDecl>(D))
+            SGM.emitFunctionOnDemand(SILDeclRef(fd));
+        }
+      }
+    }
+  } else {
+    // Normal emission path.
+    for (auto file : desc.getFilesToEmit()) {
+      if (auto *nextSF = dyn_cast<SourceFile>(file))
+        SGM.emitSourceFile(nextSF);
+    }
   }
 
   // Also make sure to process any intermediate files that may contain SIL.
@@ -2364,6 +2418,18 @@ ASTLoweringRequest::evaluate(Evaluator &evaluator,
       (void)SGM.getWitnessTable(SGM.pendingConformances.front());
       SGM.pendingConformances.pop_front();
     }
+  }
+
+  // Clear pass-notification flags on all functions. These flags
+  // (needBreakInfiniteLoops, needCompleteLifetimes) are set automatically by
+  // eraseBlock() and createUnreachable() during SIL construction. They are
+  // meaningful as pass-pipeline notifications but not during initial SILGen.
+  // The SILGenCleanup pass unconditionally handles these concerns regardless
+  // of flag values. We clear them here so the pass manager's pre-condition
+  // (flags must be false before any function pass) is satisfied.
+  for (auto &F : *silMod) {
+    F.setNeedBreakInfiniteLoops(false);
+    F.setNeedCompleteLifetimes(false);
   }
 
   return silMod;

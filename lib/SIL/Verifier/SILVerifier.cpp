@@ -7560,6 +7560,13 @@ void SILFunction::verify(CalleeCache *calleeCache,
     return;
   }
 
+  // Verify per-function stage consistency: a function's stage should not exceed
+  // the module stage unless it was deserialized at a later stage.
+  assert((getFunctionStage() <= getModule().getStage()
+          || wasDeserializedCanonical())
+         && "per-function stage exceeds module stage for "
+            "non-deserialized function");
+
   // Please put all checks in visitSILFunction in SILVerifier, not here. This
   // ensures that the pretty stack trace in the verifier is included with the
   // back trace when the verifier crashes.

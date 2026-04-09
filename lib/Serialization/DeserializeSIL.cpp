@@ -1019,8 +1019,10 @@ llvm::Expected<SILFunction *> SILDeserializer::readSILFunctionChecked(
   // Mark this function as deserialized. This avoids rerunning diagnostic
   // passes. Certain passes in the mandatory pipeline may not work as expected
   // after arbitrary optimization and lowering.
-  if (!MF->isSIB())
+  if (!MF->isSIB()) {
     fn->setWasDeserializedCanonical();
+    fn->setFunctionStage(SILStage::Canonical);
+  }
 
   fn->setBare(IsBare);
   if (!fn->getDebugScope()) {
