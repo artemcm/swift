@@ -28,12 +28,14 @@ namespace swift {
 
 class LangOptions;
 class ModuleDecl;
+class SILFunction;
 class SILModule;
 class SILOptions;
 class IRGenOptions;
 
 namespace Lowering {
   class TypeConverter;
+  class SILGenModule;
 }
 
 /// Report that a request of the given kind is being evaluated, so it
@@ -142,6 +144,63 @@ private:
   // Evaluation.
   std::unique_ptr<SILModule> evaluate(Evaluator &evaluator,
                                       ASTLoweringDescriptor desc) const;
+};
+
+/// Describes a single function to be emitted on demand during SIL generation.
+/// The SILGenModule pointer is not part of the identity (hash/equality) of the
+/// descriptor; it is carried as context for the evaluation.
+struct SILFunctionEmissionDescriptor {
+  SILDeclRef constant;
+  Lowering::SILGenModule *SGM;
+
+  friend llvm::hash_code
+  hash_value(const SILFunctionEmissionDescriptor &desc) {
+    return hash_value(desc.constant);
+  }
+
+  friend bool operator==(const SILFunctionEmissionDescriptor &lhs,
+                          const SILFunctionEmissionDescriptor &rhs) {
+    return lhs.constant == rhs.constant;
+  }
+
+  friend bool operator!=(const SILFunctionEmissionDescriptor &lhs,
+                          const SILFunctionEmissionDescriptor &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+void simple_display(llvm::raw_ostream &out,
+                    const SILFunctionEmissionDescriptor &desc);
+
+SourceLoc extractNearestSourceLoc(const SILFunctionEmissionDescriptor &desc);
+
+/// Emits a single function body on demand, producing Raw SIL. This includes
+/// any transitively-forced functions and conformances discovered during
+/// emission.
+///
+/// Results are cached externally: getCachedResult checks whether the function
+/// already has a body (isDefinition), and cacheResult is a no-op since the
+/// SILFunction is already registered in SILModule's function table by the
+/// time evaluate() returns.
+class SILFunctionBodyRequest
+    : public SimpleRequest<SILFunctionBodyRequest,
+                           SILFunction *(SILFunctionEmissionDescriptor),
+                           RequestFlags::SeparatelyCached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+private:
+  friend SimpleRequest;
+
+  // Evaluation.
+  SILFunction *evaluate(Evaluator &evaluator,
+                        SILFunctionEmissionDescriptor desc) const;
+
+public:
+  // Separate caching.
+  bool isCached() const { return true; }
+  std::optional<SILFunction *> getCachedResult() const;
+  void cacheResult(SILFunction *f) const;
 };
 
 /// The zone number for SILGen.
