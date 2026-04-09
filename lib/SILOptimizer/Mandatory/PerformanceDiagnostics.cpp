@@ -801,7 +801,7 @@ private:
         annotatedFunctionsFound = true;
       
         // Don't rerun diagnostics on deserialized functions.
-        if (function.wasDeserializedCanonical())
+        if (function.isAlreadyCanonical())
           continue;
 
         diagnoser.visitFunction(&function, function.getPerfConstraints());
@@ -813,7 +813,7 @@ private:
 
     for (SILFunction &function : *module) {
       // Don't rerun diagnostics on deserialized functions.
-      if (function.wasDeserializedCanonical())
+      if (function.isAlreadyCanonical())
         continue;
 
       if (function.getPerfConstraints() == PerformanceConstraints::None) {

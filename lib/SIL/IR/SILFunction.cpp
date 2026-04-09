@@ -371,6 +371,14 @@ SILAddressConventions SILAddressConventions::forFunctionWithOverride(
   return SILAddressConventions::withLoweredAddresses(M, loweredAddresses);
 }
 
+bool SILFunction::isAlreadyCanonical() const {
+  // The provenance bit keeps every existing skip: a deserialized body is
+  // skipped even when its recorded stage is behind the floor. The stage test
+  // adds only functions that advanced ahead of the floor on their own.
+  return wasDeserializedCanonical() ||
+         getFunctionStage() > getModule().getStageFloor();
+}
+
 SILFunction::~SILFunction() {
   // If the function is recursive, a function_ref inst inside of the function
   // will give the function a non-zero ref count triggering the assertion. Thus

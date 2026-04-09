@@ -80,6 +80,8 @@ final public class Function : CustomStringConvertible, HasShortDescription, Hash
     return stage
   }
 
+  public var isAlreadyCanonical: Bool { bridged.isAlreadyCanonical() }
+
   public var isTrapNoReturn: Bool { bridged.isTrapNoReturn() }
 
   public var isAutodiffVJP: Bool { bridged.isAutodiffVJP() }

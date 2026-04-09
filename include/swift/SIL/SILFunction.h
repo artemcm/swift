@@ -472,6 +472,12 @@ private:
   /// Set if the function body was deserialized from canonical SIL. This implies
   /// that the function's home module performed SIL diagnostics prior to
   /// serialization.
+  ///
+  /// Most pipeline-stage checks should use \c isAlreadyCanonical() or
+  /// \c getFunctionStage() instead. This bit is retained for a few uses that
+  /// check serialization identity rather than pipeline stage: closure/parent
+  /// consistency in ClosureScope, optimization-aware IR generation in IRGenSIL,
+  /// and a debug assertion in AccessEnforcementSelection.
   unsigned WasDeserializedCanonical : 1;
 
   /// True if this is a reabstraction thunk of escaping function type whose
@@ -789,6 +795,13 @@ public:
   /// Returns true if this function was deserialized from canonical
   /// SIL. (.swiftmodule files contain canonical SIL; .sib files may be 'raw'
   /// SIL). If so, diagnostics should not be reapplied.
+  ///
+  /// Most callers should use \c isAlreadyCanonical() instead, which generalizes
+  /// this check to also cover functions that have advanced ahead of the stage
+  /// floor. The remaining uses of this method check
+  /// serialization identity (e.g. closure/parent consistency in ClosureScope)
+  /// or optimization-aware IR generation decisions, which are distinct from
+  /// pipeline stage.
   bool wasDeserializedCanonical() const { return WasDeserializedCanonical; }
 
   void setWasDeserializedCanonical(bool val = true) {
@@ -819,6 +832,16 @@ public:
   /// such as whether an instruction is still legal here. It is never below the
   /// module's stage floor, and may be ahead of it.
   SILStage getFunctionStage() const;
+
+  /// Returns true if this function has already cleared the mandatory pipeline,
+  /// so a mandatory diagnostic pass should skip it: its body was deserialized
+  /// from canonical SIL, or it has advanced ahead of the module's stage floor.
+  ///
+  /// A function that is merely at the floor does not count, even when the floor
+  /// is Canonical. The pipeline gates skip an already-canonical input as a
+  /// whole, and a pass run directly on such an input must still see its
+  /// functions.
+  bool isAlreadyCanonical() const;
 
   /// Advance this function's stage. A stage only ever moves forward.
   void setFunctionStage(SILStage stage);
