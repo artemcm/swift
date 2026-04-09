@@ -2370,17 +2370,18 @@ ASTLoweringRequest::evaluate(Evaluator &evaluator,
 
   if (SILGenOnDemandEmission) {
     // On-demand test path: type-check each source file, then emit each
-    // top-level function individually via emitFunctionOnDemand, bypassing
-    // emitSourceFile entirely. This tests that emitFunctionOnDemand can
-    // produce correct SIL from scratch for programs with free functions.
-    // Transitive dependencies (e.g. private callees) are pulled in
-    // automatically by emitFunctionOnDemand's drain loop.
+    // top-level function via SILFunctionBodyRequest, bypassing emitSourceFile
+    // entirely. This exercises the request evaluator's tracking, cycle
+    // detection, and dependency recording for per-function SIL generation.
     for (auto file : desc.getFilesToEmit()) {
       if (auto *sf = dyn_cast<SourceFile>(file)) {
         performTypeChecking(*sf);
         for (auto *D : sf->getTopLevelDecls()) {
-          if (auto *fd = dyn_cast<FuncDecl>(D))
-            SGM.emitFunctionOnDemand(SILDeclRef(fd));
+          if (auto *fd = dyn_cast<FuncDecl>(D)) {
+            SILFunctionEmissionDescriptor emitDesc{SILDeclRef(fd), &SGM};
+            (void)evaluateOrFatal(evaluator,
+                                  SILFunctionBodyRequest{emitDesc});
+          }
         }
       }
     }

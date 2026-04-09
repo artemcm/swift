@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "swift/AST/SILGenRequests.h"
+#include "SILGen.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/Module.h"
 #include "swift/AST/FileUnit.h"
@@ -102,6 +103,39 @@ SourceFile *ASTLoweringDescriptor::getSourceFileToParse() const {
     }
   }
   return nullptr;
+}
+
+void swift::simple_display(llvm::raw_ostream &out,
+                           const SILFunctionEmissionDescriptor &desc) {
+  out << "Emitting SIL for ";
+  desc.constant.print(out);
+}
+
+SourceLoc
+swift::extractNearestSourceLoc(const SILFunctionEmissionDescriptor &desc) {
+  if (desc.constant.hasDecl())
+    return desc.constant.getDecl()->getLoc();
+  return SourceLoc();
+}
+
+SILFunction *
+SILFunctionBodyRequest::evaluate(Evaluator &evaluator,
+                                 SILFunctionEmissionDescriptor desc) const {
+  return desc.SGM->emitFunctionOnDemand(desc.constant);
+}
+
+std::optional<SILFunction *>
+SILFunctionBodyRequest::getCachedResult() const {
+  auto &desc = std::get<0>(getStorage());
+  auto *f = desc.SGM->getEmittedFunction(desc.constant, ForDefinition);
+  if (f && !f->empty())
+    return f;
+  return std::nullopt;
+}
+
+void SILFunctionBodyRequest::cacheResult(SILFunction *f) const {
+  // No-op: emitFunctionOnDemand already registers the function in
+  // SILGenModule::emittedFunctions and SILModule::FunctionTable.
 }
 
 // Define request evaluation functions for each of the SILGen requests.
