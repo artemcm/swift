@@ -13,11 +13,10 @@
 #include "swift/AST/SILGenRequests.h"
 #include "SILGen.h"
 #include "swift/AST/ASTContext.h"
-#include "swift/AST/Module.h"
 #include "swift/AST/FileUnit.h"
+#include "swift/AST/Module.h"
 #include "swift/AST/SourceFile.h"
 #include "swift/Basic/Assertions.h"
-#include "swift/SIL/SILModule.h"
 #include "swift/Subsystems.h"
 
 using namespace swift;
@@ -105,70 +104,35 @@ SourceFile *ASTLoweringDescriptor::getSourceFileToParse() const {
   return nullptr;
 }
 
-void swift::simple_display(llvm::raw_ostream &out,
-                           const SILFunctionEmissionDescriptor &desc) {
-  out << "Emitting SIL for ";
-  desc.constant.print(out);
-}
-
-SourceLoc
-swift::extractNearestSourceLoc(const SILFunctionEmissionDescriptor &desc) {
-  if (desc.constant.hasDecl())
-    return desc.constant.getDecl()->getLoc();
-  return SourceLoc();
-}
-
 SILFunction *
 SILFunctionInterfaceRequest::evaluate(Evaluator &evaluator,
-                                      SILFunctionEmissionDescriptor desc) const {
-  return desc.SGM->getFunction(desc.constant, ForDefinition);
-}
-
-std::optional<SILFunction *>
-SILFunctionInterfaceRequest::getCachedResult() const {
-  auto &desc = std::get<0>(getStorage());
-  auto *f = desc.SGM->getEmittedFunction(desc.constant, ForDefinition);
-  if (f)
-    return f;
-  return std::nullopt;
-}
-
-void SILFunctionInterfaceRequest::cacheResult(SILFunction *f) const {
-  // No-op: getFunction already registers the function in
-  // SILGenModule::emittedFunctions and SILModule::FunctionTable.
+                                      SILDeclRef constant) const {
+  auto *SGM = constant.getASTContext().getActiveSILGenModule();
+  ASSERT(SGM && "SILFunctionInterfaceRequest evaluated outside SILGen scope");
+  return SGM->getFunction(constant, ForDefinition);
 }
 
 SILFunction *
 SILFunctionBodyRequest::evaluate(Evaluator &evaluator,
-                                 SILFunctionEmissionDescriptor desc) const {
+                                 SILDeclRef constant) const {
+  auto *SGM = constant.getASTContext().getActiveSILGenModule();
+  ASSERT(SGM && "SILFunctionBodyRequest evaluated outside SILGen scope");
+
   // Get or create the function declaration via the interface request.
   auto *f = evaluateOrFatal(evaluator,
-                            SILFunctionInterfaceRequest{desc});
+                            SILFunctionInterfaceRequest{constant});
 
-  // If the function already has a body, it was already emitted.
+  // If the function already has a body (e.g., already emitted via the
+  // non-request path), skip emission.
   if (!f->empty())
     return f;
 
   // Emit the function body. Callee references discovered during emission
-  // will trigger SILFunctionInterfaceRequest for each callee (creating their
-  // declarations and potentially queuing them in pendingForcedFunctions).
-  // The drain loop in ASTLoweringRequest handles emitting those bodies.
-  desc.SGM->emitFunctionDefinition(desc.constant, f);
+  // are created via SILGenModule::getFunction and may be queued in
+  // pendingForcedFunctions. The drain loop in ASTLoweringRequest handles
+  // emitting those bodies.
+  SGM->emitFunctionDefinition(constant, f);
   return f;
-}
-
-std::optional<SILFunction *>
-SILFunctionBodyRequest::getCachedResult() const {
-  auto &desc = std::get<0>(getStorage());
-  auto *f = desc.SGM->getEmittedFunction(desc.constant, ForDefinition);
-  if (f && !f->empty())
-    return f;
-  return std::nullopt;
-}
-
-void SILFunctionBodyRequest::cacheResult(SILFunction *f) const {
-  // No-op: emitFunctionDefinition already registers the function body in
-  // SILGenModule::emittedFunctions and SILModule::FunctionTable.
 }
 
 // Define request evaluation functions for each of the SILGen requests.

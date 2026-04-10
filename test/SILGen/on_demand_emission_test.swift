@@ -3,6 +3,22 @@
 // RUN: %FileCheck %s < %t.normal.sil
 // RUN: %FileCheck %s < %t.ondemand.sil
 
+// Verify request evaluator cache counts for the on-demand path.
+// RUN: %target-swift-emit-silgen -parse-as-library -Xllvm -sil-on-demand-emission -analyze-request-evaluator %s -o /dev/null 2>&1 | %FileCheck --check-prefix=REQUESTS %s
+
+// The on-demand path emits foo, helper, and caller via SILFunctionBodyRequest.
+// Each body request first evaluates SILFunctionInterfaceRequest for the same
+// SILDeclRef to get or create the declaration. Thus 3 body + 3 interface.
+//
+// foo and caller are top-level functions visited directly by
+// emitOnDemandViaRequests. helper is private and discovered transitively:
+// caller's body emission references helper via SILGenModule::getFunction,
+// which queues it in pendingForcedFunctions; the drain loop then fires
+// SILFunctionBodyRequest for it.
+//
+// REQUESTS-DAG: SILFunctionBodyRequest{{[[:space:]]}}3
+// REQUESTS-DAG: SILFunctionInterfaceRequest{{[[:space:]]}}3
+
 // Both paths must produce SIL containing the same functions.
 // The on-demand path bypasses emitSourceFile entirely and uses
 // emitFunctionOnDemand as the sole emission mechanism.

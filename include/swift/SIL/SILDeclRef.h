@@ -676,6 +676,9 @@ inline llvm::raw_ostream &operator<<(llvm::raw_ostream &OS, SILDeclRef C) {
   return OS;
 }
 
+void simple_display(llvm::raw_ostream &out, const SILDeclRef &ref);
+SourceLoc extractNearestSourceLoc(const SILDeclRef &ref);
+
 } // end swift namespace
 
 namespace llvm {

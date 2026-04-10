@@ -2333,17 +2333,16 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
       performTypeChecking(*sf);
       for (auto *D : sf->getTopLevelDecls()) {
         if (auto *fd = dyn_cast<FuncDecl>(D)) {
-          SILFunctionEmissionDescriptor emitDesc{SILDeclRef(fd), &SGM};
           (void)evaluateOrFatal(evaluator,
-                                SILFunctionBodyRequest{emitDesc});
+                                SILFunctionBodyRequest{SILDeclRef(fd)});
         }
       }
     }
   }
 
   // Drain: emit bodies for transitively-discovered internal functions.
-  // Body emission may reference internal callees (whose interfaces were
-  // created inline via SILFunctionInterfaceRequest) and queue them in
+  // Body emission may reference internal callees (whose declarations were
+  // created via SILGenModule::getFunction) and queue them in
   // pendingForcedFunctions. Each body is emitted via SILFunctionBodyRequest
   // so the evaluator tracks all dependencies.
   while (!SGM.pendingForcedFunctions.empty()
@@ -2351,9 +2350,8 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
     while (!SGM.pendingForcedFunctions.empty()) {
       auto ref = SGM.pendingForcedFunctions.front();
       SGM.pendingForcedFunctions.pop_front();
-      SILFunctionEmissionDescriptor emitDesc{ref, &SGM};
       (void)evaluateOrFatal(evaluator,
-                            SILFunctionBodyRequest{emitDesc});
+                            SILFunctionBodyRequest{ref});
     }
     while (!SGM.pendingConformances.empty()) {
       (void)SGM.getWitnessTable(SGM.pendingConformances.front());
@@ -2387,6 +2385,7 @@ ASTLoweringRequest::evaluate(Evaluator &evaluator,
     return silMod;
 
   SILGenModule SGM(*silMod, silMod->getSwiftModule());
+  ActiveSILGenModuleScope activeScope(ctx, SGM);
 
   // Emit a specific set of SILDeclRefs if needed.
   if (auto Sources = desc.SourcesToEmit) {
