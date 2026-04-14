@@ -862,6 +862,11 @@ SILFunction *SILGenModule::getFunction(SILDeclRef constant,
   return F;
 }
 
+SILFunction *SILGenModule::getFunctionInterface(SILDeclRef constant) {
+  return evaluateOrFatal(getASTContext().evaluator,
+                         SILFunctionInterfaceRequest{constant});
+}
+
 bool SILGenModule::hasFunction(SILDeclRef constant) {
   return emittedFunctions.count(constant);
 }
