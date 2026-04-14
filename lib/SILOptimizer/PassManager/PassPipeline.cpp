@@ -342,6 +342,124 @@ SILPassPipelinePlan::getDiagnosticPassPipeline(const SILOptions &Options) {
   return P;
 }
 
+/// Mirrors addMandatoryDiagnosticOptPipeline with all module passes removed.
+/// Used by the per-function request pipeline for on-demand SIL generation.
+static void
+addFunctionOnlyMandatoryDiagnosticOptPipeline(SILPassPipelinePlan &P) {
+  P.startPipeline("Function-Only Mandatory Diagnostic Passes",
+                   /*isFunctionPassPipeline=*/true);
+
+  P.addMarkNeverWrittenMutableClosureBoxesAsImmutable();
+  P.addDiagnoseInvalidEscapingCaptures();
+  P.addReferenceBindingTransform();
+  P.addNestedSemanticFunctionCheck();
+  // CapturePromotion: module pass, omitted.
+  // AccessEnforcementSelection: module pass, omitted.
+  // Always use the C++ function pass variant regardless of
+  // SWIFT_ENABLE_SWIFT_IN_SWIFT (the Swift variant is a module pass).
+  P.addLegacyAllocBoxToStack();
+  // DiagnoseStaticExclusivity: module pass, omitted.
+
+  P.addNoReturnFolding();
+  P.addBooleanLiteralFolding();
+
+  P.addDefiniteInitialization();
+  P.addLetPropertyLowering();
+  P.addRawSILInstLowering();
+
+  P.addAddressLowering();
+
+  P.addDiagnosticDeadFunctionElimination();
+
+  P.addFlowIsolation();
+
+  P.addSendNonSendable();
+  P.addRegionAnalysisInvalidationTransform();
+  // DiagnoseUnnecessaryPreconcurrencyImports: module pass, omitted.
+
+  P.addLowerTupleAddrConstructor();
+
+  // Differentiation: module pass, omitted.
+
+  const auto &Options = P.getOptions();
+  P.addClosureLifetimeFixup();
+
+  P.addMoveOnlyChecker();
+  P.addConsumeOperatorCopyableAddressesChecker();
+  P.addConsumeOperatorCopyableValuesChecker();
+
+  if (P.getOptions().EnableLifetimeDependenceDiagnostics) {
+    P.addLifetimeDependenceDiagnostics();
+  }
+
+  P.addMoveOnlyTypeEliminator();
+
+#ifndef NDEBUG
+  if (Options.SkipFunctionBodies != FunctionBodySkipping::None)
+    P.addSILSkippingChecker();
+#endif
+
+  if (Options.shouldOptimize()) {
+    if (P.getOptions().DestroyHoisting == DestroyHoistingOption::On) {
+      P.addDestroyAddrHoisting();
+    }
+  }
+  // MandatoryInlining: module pass, omitted.
+  // MandatorySILLinker: module pass, omitted.
+
+  P.addMandatoryRedundantLoadElimination();
+  P.addOSLogOptimization();
+  P.addDiagnosticConstantPropagation();
+  P.addPredictableDeadAllocationElimination();
+
+  if (Options.LexicalLifetimes != LexicalLifetimesOption::On) {
+    P.addLexicalLifetimeEliminator();
+  }
+
+  P.addOptimizeHopToExecutor();
+  P.addDiagnoseUnreachable();
+  P.addDiagnoseInfiniteRecursion();
+  P.addYieldOnceCheck();
+  P.addEmitDFDiagnostics();
+
+  if (P.getOptions().CopyPropagation >= CopyPropagationOption::Optimizing) {
+    P.addDiagnoseLifetimeIssues();
+  }
+
+  P.addSplitNonCondBrCriticalEdges();
+  // MandatoryPerformanceOptimizations: module pass, omitted.
+  P.addOnoneSimplification();
+  P.addInitializeStaticGlobals();
+  P.addEmbeddedWitnessCallSpecialization();
+
+  P.addMandatoryDestroyHoisting();
+
+  if (P.getOptions().EmbeddedSwift) {
+    P.addDeadFunctionAndGlobalElimination();
+  }
+
+  // DiagnoseUnknownConstValues: module pass, omitted.
+  // EmbeddedSwiftDiagnostics: module pass, omitted.
+
+  if (P.getOptions().CopyPropagation == CopyPropagationOption::Always) {
+#ifdef SWIFT_ENABLE_SWIFT_IN_SWIFT
+    P.addComputeSideEffects();
+#endif
+    P.addMandatoryCopyPropagation();
+  }
+
+  // PerformanceDiagnostics: module pass, omitted.
+  // InlineAlwaysInlining: module pass, omitted.
+}
+
+SILPassPipelinePlan
+SILPassPipelinePlan::getFunctionOnlyDiagnosticPassPipeline(
+    const SILOptions &Options) {
+  SILPassPipelinePlan P(Options);
+  addFunctionOnlyMandatoryDiagnosticOptPipeline(P);
+  return P;
+}
+
 SILPassPipelinePlan SILPassPipelinePlan::getLowerHopToActorPassPipeline(
     const SILOptions &Options) {
   SILPassPipelinePlan P(Options);

@@ -1016,6 +1016,84 @@ void SILPassManager::executePassPipelinePlan(const SILPassPipelinePlan &Plan) {
   }
 }
 
+void SILPassManager::executePassPipelinePlan(const SILPassPipelinePlan &Plan,
+                                             SILFunction *targetFn) {
+  for (const SILPassPipeline &Pipeline : Plan.getPipelines()) {
+    setStageName(Pipeline.Name);
+    resetAndRemoveTransformations();
+    for (PassKind Kind : Plan.getPipelinePasses(Pipeline)) {
+      addPass(Kind);
+      assert(!Pipeline.isFunctionPassPipeline
+             || isa<SILFunctionTransform>(Transformations.back()));
+    }
+    executeScopedForFunction(targetFn);
+  }
+}
+
+void SILPassManager::executeScopedForFunction(SILFunction *targetFn) {
+  unsigned Idx = 0, NumTransforms = Transformations.size();
+
+  while (Idx < NumTransforms && continueTransforming()) {
+    unsigned FirstFuncTrans = Idx;
+    while (Idx < NumTransforms &&
+           isa<SILFunctionTransform>(Transformations[Idx]))
+      ++Idx;
+
+    runFunctionPassesOnFunction(FirstFuncTrans, Idx, targetFn);
+
+    // Module passes are not supported in scoped execution. Each module
+    // pass must be converted to a function pass before it can participate
+    // in per-function execution.
+    ASSERT(Idx >= NumTransforms ||
+           !isa<SILModuleTransform>(Transformations[Idx]));
+  }
+}
+
+void SILPassManager::runFunctionPassesOnFunction(unsigned FromTransIdx,
+                                                 unsigned ToTransIdx,
+                                                 SILFunction *targetFn) {
+  if (ToTransIdx <= FromTransIdx)
+    return;
+
+  assert(FunctionWorklist.empty() && "Expected empty function worklist!");
+  FunctionWorklist.push_back(targetFn);
+
+  DerivationLevels.clear();
+
+  const unsigned MaxNumRestarts = 20;
+
+  if (SILPrintPassName)
+    llvm::dbgs() << "Start function passes at stage: " << StageName
+                 << " for " << targetFn->getName() << "\n";
+
+  while (!FunctionWorklist.empty() && continueTransforming()) {
+    unsigned TailIdx = FunctionWorklist.size() - 1;
+    unsigned PipelineIdx = FunctionWorklist[TailIdx].PipelineIdx;
+    SILFunction *F = FunctionWorklist[TailIdx].F;
+
+    if (PipelineIdx >= (ToTransIdx - FromTransIdx)) {
+      FunctionWorklist.pop_back();
+      continue;
+    }
+    assert(!shouldRestartPipeline() &&
+        "Did not expect function pipeline set up to restart!");
+
+    runPassOnFunction(FromTransIdx + PipelineIdx, F);
+
+    // Note: Don't get entry reference prior to runPassOnFunction().
+    // A pass can push a new function to the worklist which may cause a
+    // reallocation of the buffer and that would invalidate the reference.
+    WorklistEntry &Entry = FunctionWorklist[TailIdx];
+    if (shouldRestartPipeline() && Entry.NumRestarts < MaxNumRestarts) {
+      ++Entry.NumRestarts;
+      Entry.PipelineIdx = 0;
+    } else {
+      ++Entry.PipelineIdx;
+    }
+    clearRestartPipeline();
+  }
+}
+
 void SILPassManager::execute() {
   const SILOptions &Options = getOptions();
 
