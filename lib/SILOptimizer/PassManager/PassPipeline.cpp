@@ -349,7 +349,7 @@ addFunctionOnlyMandatoryDiagnosticOptPipeline(SILPassPipelinePlan &P) {
   P.startPipeline("Function-Only Mandatory Diagnostic Passes",
                    /*isFunctionPassPipeline=*/true);
 
-  P.addMarkNeverWrittenMutableClosureBoxesAsImmutable();
+  // MarkNeverWrittenMutableClosureBoxesAsImmutable: module pass, omitted.
   P.addDiagnoseInvalidEscapingCaptures();
   P.addReferenceBindingTransform();
   P.addNestedSemanticFunctionCheck();
@@ -392,10 +392,7 @@ addFunctionOnlyMandatoryDiagnosticOptPipeline(SILPassPipelinePlan &P) {
 
   P.addMoveOnlyTypeEliminator();
 
-#ifndef NDEBUG
-  if (Options.SkipFunctionBodies != FunctionBodySkipping::None)
-    P.addSILSkippingChecker();
-#endif
+  // SILSkippingChecker: module pass, omitted.
 
   if (Options.shouldOptimize()) {
     if (P.getOptions().DestroyHoisting == DestroyHoistingOption::On) {
@@ -431,9 +428,7 @@ addFunctionOnlyMandatoryDiagnosticOptPipeline(SILPassPipelinePlan &P) {
 
   P.addMandatoryDestroyHoisting();
 
-  if (P.getOptions().EmbeddedSwift) {
-    P.addDeadFunctionAndGlobalElimination();
-  }
+  // DeadFunctionAndGlobalElimination: module pass, omitted.
 
   // DiagnoseUnknownConstValues: module pass, omitted.
   // EmbeddedSwiftDiagnostics: module pass, omitted.
