@@ -7915,7 +7915,7 @@ RValue SILGenFunction::emitUnappliedKeyPathMethod(
 
     switch (callee->kind) {
     case Callee::Kind::StandaloneFunction: {
-      SILFunction *silMethod = SGM.getFunction(calleeMethod, NotForDefinition);
+      SILFunction *silMethod = SGM.getFunctionInterface(calleeMethod);
       methodRef = B.createFunctionRef(loc, silMethod);
       break;
     }

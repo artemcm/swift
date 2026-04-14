@@ -91,7 +91,7 @@ SILGenFunction::emitDynamicMethodRef(SILLocation loc, SILDeclRef constant,
     if (!SGM.hasFunction(constant))
       SGM.emitForeignToNativeThunk(constant);
     return ManagedValue::forObjectRValueWithoutOwnership(B.createFunctionRefFor(
-        loc, SGM.getFunction(constant, NotForDefinition)));
+        loc, SGM.getFunctionInterface(constant)));
   }
 
   // Otherwise, we need a dynamic dispatch thunk.
@@ -199,7 +199,7 @@ SILGenFunction::emitGlobalFunctionRef(SILLocation loc, SILDeclRef constant,
     }
   }
 
-  auto f = SGM.getFunction(constant, NotForDefinition);
+  auto f = SGM.getFunctionInterface(constant);
 
   auto constantFnTypeInContext =
       SGM.Types
