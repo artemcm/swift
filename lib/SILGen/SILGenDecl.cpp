@@ -1951,7 +1951,7 @@ void SILGenFunction::emitStmtCondition(StmtCondition Cond, JumpDest FalseDest,
       // the decl are emitted so that they can be referenced during IRGen.
       enumerateFunctionsForHasSymbol(
           getModule(), decl, [this](SILDeclRef declRef) {
-            (void)SGM.getFunction(declRef, NotForDefinition);
+            (void)SGM.getFunctionInterface(declRef);
           });
 
       break;

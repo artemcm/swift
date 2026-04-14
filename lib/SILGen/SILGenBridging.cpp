@@ -2126,7 +2126,7 @@ static SILValue getThunkedForeignFunctionRef(SILGenFunction &SGF,
         dyn_cast_or_null<clang::ObjCMethodDecl>(fd->getClangDecl());
     const bool isObjCDirect = objcDecl && objcDecl->isDirectMethod();
     if (isObjCDirect) {
-      auto *fn = SGF.SGM.getFunction(foreign, NotForDefinition);
+      auto *fn = SGF.SGM.getFunctionInterface(foreign);
       return SGF.B.createFunctionRef(fd, fn);
     }
 

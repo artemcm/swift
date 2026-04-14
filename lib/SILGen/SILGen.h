@@ -150,6 +150,11 @@ public:
   SILFunction *getFunction(SILDeclRef constant,
                            ForDefinition_t forDefinition);
 
+  /// Get or create a function declaration via SILFunctionInterfaceRequest.
+  /// Use this instead of getFunction(ref, NotForDefinition) during body
+  /// emission so the evaluator records callee-interface dependencies.
+  SILFunction *getFunctionInterface(SILDeclRef constant);
+
   /// Get the dynamic dispatch thunk for a SILDeclRef.
   SILFunction *getDynamicThunk(SILDeclRef constant,
                                CanSILFunctionType constantTy);
