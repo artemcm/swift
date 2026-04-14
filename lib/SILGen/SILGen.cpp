@@ -2310,42 +2310,72 @@ void SILGenModule::emitSymbolSource(SymbolSource Source) {
   }
 }
 
+/// Scan a function body for function_ref instructions and add discovered
+/// callees to the worklist if they need SILGen body emission and haven't
+/// been resolved yet.
+static void discoverCallees(SILFunction *f,
+                            std::deque<SILDeclRef> &worklist,
+                            llvm::DenseSet<SILDeclRef> &resolved) {
+  for (auto &bb : *f) {
+    for (auto &inst : bb) {
+      auto *fri = dyn_cast<FunctionRefBaseInst>(&inst);
+      if (!fri)
+        continue;
+
+      SILFunction *callee = fri->getInitiallyReferencedFunction();
+
+      // Only queue functions created by SILGen that need body emission.
+      // External declarations (stdlib, cross-module) are skipped.
+      auto calleeRef = callee->getDeclRef();
+      if (!calleeRef)
+        continue;
+      if (!resolved.count(calleeRef))
+        worklist.push_back(calleeRef);
+    }
+  }
+}
+
 /// Request-based emission path for demand-driven SIL generation.
-/// Type-checks each source file, emits and canonicalizes each top-level
-/// function via CanonicalSILFunctionRequest (which chains through
-/// Diagnosed -> Cleaned -> Body -> Interface requests), then drains
-/// transitively-discovered internal functions and conformances.
+/// Type-checks each source file, then processes functions via a body-scan
+/// worklist: for each function, fire SILFunctionBodyRequest (to get the
+/// raw body), scan it for function_ref instructions to discover callees,
+/// then fire CanonicalSILFunctionRequest (to run the mandatory pipeline).
 /// After all functions are canonicalized, sets the module-level flags
 /// so the legacy pipeline (runSILDiagnosticPasses) is a no-op.
 static void emitOnDemandViaRequests(Evaluator &evaluator,
                                     ASTLoweringDescriptor desc,
                                     Lowering::SILGenModule &SGM) {
-  // Emit and canonicalize each top-level function.
+  std::deque<SILDeclRef> worklist;
+  llvm::DenseSet<SILDeclRef> resolved;
+
+  // Seed the worklist with top-level declarations.
   for (auto file : desc.getFilesToEmit()) {
     if (auto *sf = dyn_cast<SourceFile>(file)) {
       performTypeChecking(*sf);
       for (auto *D : sf->getTopLevelDecls()) {
-        if (auto *fd = dyn_cast<FuncDecl>(D)) {
-          (void)evaluateOrFatal(evaluator,
-                                CanonicalSILFunctionRequest{SILDeclRef(fd)});
-        }
+        if (auto *fd = dyn_cast<FuncDecl>(D))
+          worklist.push_back(SILDeclRef(fd));
       }
     }
   }
 
-  // Drain: canonicalize transitively-discovered internal functions.
-  // Body emission may reference internal callees (whose declarations were
-  // created via SILGenModule::getFunction) and queue them in
-  // pendingForcedFunctions. Each is fully canonicalized via
-  // CanonicalSILFunctionRequest so the evaluator tracks all dependencies.
-  while (!SGM.pendingForcedFunctions.empty()
-         || !SGM.pendingConformances.empty()) {
-    while (!SGM.pendingForcedFunctions.empty()) {
-      auto ref = SGM.pendingForcedFunctions.front();
-      SGM.pendingForcedFunctions.pop_front();
-      (void)evaluateOrFatal(evaluator,
-                            CanonicalSILFunctionRequest{ref});
-    }
+  // Process the worklist.
+  while (!worklist.empty()) {
+    auto ref = worklist.front();
+    worklist.pop_front();
+    if (!resolved.insert(ref).second)
+      continue;
+
+    // Step A: Emit the raw body.
+    auto *f = evaluateOrFatal(evaluator, SILFunctionBodyRequest{ref});
+
+    // Step B: Discover callees by scanning the raw body.
+    discoverCallees(f, worklist, resolved);
+
+    // Step C: Canonicalize (body request cache-hits; pipelines run).
+    (void)evaluateOrFatal(evaluator, CanonicalSILFunctionRequest{ref});
+
+    // Drain conformances discovered during body emission.
     while (!SGM.pendingConformances.empty()) {
       (void)SGM.getWitnessTable(SGM.pendingConformances.front());
       SGM.pendingConformances.pop_front();
