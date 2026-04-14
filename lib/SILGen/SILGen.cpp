@@ -2305,44 +2305,53 @@ void SILGenModule::emitSymbolSource(SymbolSource Source) {
   }
 }
 
-/// Request-based emission path for testing demand-driven SIL generation.
-/// Type-checks each source file, emits each top-level function via
-/// SILFunctionBodyRequest (which depends on SILFunctionInterfaceRequest),
-/// then drains transitively-discovered internal functions and conformances.
+/// Request-based emission path for demand-driven SIL generation.
+/// Type-checks each source file, emits and canonicalizes each top-level
+/// function via CanonicalSILFunctionRequest (which chains through
+/// Diagnosed -> Cleaned -> Body -> Interface requests), then drains
+/// transitively-discovered internal functions and conformances.
+/// After all functions are canonicalized, sets the module-level flags
+/// so the legacy pipeline (runSILDiagnosticPasses) is a no-op.
 static void emitOnDemandViaRequests(Evaluator &evaluator,
                                     ASTLoweringDescriptor desc,
                                     Lowering::SILGenModule &SGM) {
-  // Emit each top-level function via SILFunctionBodyRequest.
+  // Emit and canonicalize each top-level function.
   for (auto file : desc.getFilesToEmit()) {
     if (auto *sf = dyn_cast<SourceFile>(file)) {
       performTypeChecking(*sf);
       for (auto *D : sf->getTopLevelDecls()) {
         if (auto *fd = dyn_cast<FuncDecl>(D)) {
           (void)evaluateOrFatal(evaluator,
-                                SILFunctionBodyRequest{SILDeclRef(fd)});
+                                CanonicalSILFunctionRequest{SILDeclRef(fd)});
         }
       }
     }
   }
 
-  // Drain: emit bodies for transitively-discovered internal functions.
+  // Drain: canonicalize transitively-discovered internal functions.
   // Body emission may reference internal callees (whose declarations were
   // created via SILGenModule::getFunction) and queue them in
-  // pendingForcedFunctions. Each body is emitted via SILFunctionBodyRequest
-  // so the evaluator tracks all dependencies.
+  // pendingForcedFunctions. Each is fully canonicalized via
+  // CanonicalSILFunctionRequest so the evaluator tracks all dependencies.
   while (!SGM.pendingForcedFunctions.empty()
          || !SGM.pendingConformances.empty()) {
     while (!SGM.pendingForcedFunctions.empty()) {
       auto ref = SGM.pendingForcedFunctions.front();
       SGM.pendingForcedFunctions.pop_front();
       (void)evaluateOrFatal(evaluator,
-                            SILFunctionBodyRequest{ref});
+                            CanonicalSILFunctionRequest{ref});
     }
     while (!SGM.pendingConformances.empty()) {
       (void)SGM.getWitnessTable(SGM.pendingConformances.front());
       SGM.pendingConformances.pop_front();
     }
   }
+
+  // Set module-level flags. The legacy runSILDiagnosticPasses checks
+  // Module.getStage() != SILStage::Raw and returns early.
+  if (!SGM.M.useLoweredAddresses())
+    SGM.M.setLoweredAddresses(true);
+  SGM.M.setStage(SILStage::Canonical);
 }
 
 std::unique_ptr<SILModule>

@@ -74,7 +74,8 @@ bool swift::runSILDiagnosticPasses(SILModule &Module) {
   // individually within the pipeline. The module-level flag must be set
   // after all functions have been address-lowered, before the module stage
   // advances to Canonical.
-  Module.setLoweredAddresses(true);
+  if (!Module.useLoweredAddresses())
+    Module.setLoweredAddresses(true);
 
   // Generate diagnostics.
   Module.setStage(SILStage::Canonical);
