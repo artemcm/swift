@@ -70,6 +70,12 @@ bool swift::runSILDiagnosticPasses(SILModule &Module) {
   if (opts.DebugSerialization)
     return Ctx.hadError();
 
+  // AddressLowering is now a function pass that processes each function
+  // individually within the pipeline. The module-level flag must be set
+  // after all functions have been address-lowered, before the module stage
+  // advances to Canonical.
+  Module.setLoweredAddresses(true);
+
   // Generate diagnostics.
   Module.setStage(SILStage::Canonical);
 
