@@ -4585,14 +4585,12 @@ static void deleteRewrittenInstructions(AddressLoweringState &pass) {
 }
 
 //===----------------------------------------------------------------------===//
-//                        AddressLowering: Module Pass
+//                     AddressLowering: Function Pass
 //===----------------------------------------------------------------------===//
 
 namespace {
-// Note: the only reason this is not a FunctionTransform is to change the SIL
-// stage for all functions at once.
-class AddressLowering : public SILModuleTransform {
-  /// The entry point to this module transformation.
+class AddressLowering : public SILFunctionTransform {
+  /// The entry point to this function transformation.
   void run() override;
 
   void runOnFunction(SILFunction *F);
@@ -4655,21 +4653,15 @@ void AddressLowering::runOnFunction(SILFunction *function) {
 
   // The CFG may change because of criticalEdge splitting during
   // createStackAllocation or StackNesting.
-  invalidateAnalysis(function,
-                     SILAnalysis::InvalidationKind::BranchesAndInstructions);
+  invalidateAnalysis(SILAnalysis::InvalidationKind::BranchesAndInstructions);
 }
 
-/// The entry point to this module transformation.
+/// The entry point to this function transformation.
 void AddressLowering::run() {
-  if (getModule()->useLoweredAddresses())
+  if (getFunction()->getModule().useLoweredAddresses())
     return;
 
-  for (auto &F : *getModule()) {
-    runOnFunction(&F);
-  }
-  // Update the SILModule before the PassManager has a chance to run
-  // verification.
-  getModule()->setLoweredAddresses(true);
+  runOnFunction(getFunction());
 }
 
 SILTransform *swift::createAddressLowering() { return new AddressLowering(); }
