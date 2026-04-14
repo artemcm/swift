@@ -26,3 +26,12 @@ SWIFT_REQUEST(SILGen, SILFunctionBodyRequest,
 SWIFT_REQUEST(SILGen, SILFunctionInterfaceRequest,
               SILFunction *(SILDeclRef),
               Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, CleanedSILFunctionRequest,
+              SILFunction *(SILDeclRef),
+              Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, DiagnosedSILFunctionRequest,
+              SILFunction *(SILDeclRef),
+              Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, CanonicalSILFunctionRequest,
+              SILFunction *(SILDeclRef),
+              Cached, NoLocationInfo)
