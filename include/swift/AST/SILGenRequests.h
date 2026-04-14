@@ -187,6 +187,58 @@ private:
   SILFunction *evaluate(Evaluator &evaluator, SILDeclRef constant) const;
 };
 
+/// Runs the SILGen cleanup pipeline on a single function, producing
+/// cleaned Raw SIL. Depends on SILFunctionBodyRequest.
+class CleanedSILFunctionRequest
+    : public SimpleRequest<CleanedSILFunctionRequest,
+                           SILFunction *(SILDeclRef),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  SILFunction *evaluate(Evaluator &evaluator, SILDeclRef constant) const;
+};
+
+/// Runs the function-only mandatory diagnostic pipeline on a single
+/// function, producing diagnosed SIL. Depends on
+/// CleanedSILFunctionRequest.
+class DiagnosedSILFunctionRequest
+    : public SimpleRequest<DiagnosedSILFunctionRequest,
+                           SILFunction *(SILDeclRef),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  SILFunction *evaluate(Evaluator &evaluator, SILDeclRef constant) const;
+};
+
+/// Sets the per-function stage to Canonical after all mandatory passes
+/// have been applied. Depends on DiagnosedSILFunctionRequest.
+class CanonicalSILFunctionRequest
+    : public SimpleRequest<CanonicalSILFunctionRequest,
+                           SILFunction *(SILDeclRef),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  SILFunction *evaluate(Evaluator &evaluator, SILDeclRef constant) const;
+};
+
 /// The zone number for SILGen.
 #define SWIFT_TYPEID_ZONE SILGen
 #define SWIFT_TYPEID_HEADER "swift/AST/SILGenTypeIDZone.def"
