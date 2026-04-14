@@ -396,6 +396,14 @@ public:
 
   void executePassPipelinePlan(const SILPassPipelinePlan &Plan);
 
+  /// Load a pipeline plan and run it scoped to a single function.
+  void executePassPipelinePlan(const SILPassPipelinePlan &Plan,
+                               SILFunction *targetFn);
+
+  /// Run the loaded pipeline scoped to a single function.
+  /// Only function passes are supported; asserts on module passes.
+  void executeScopedForFunction(SILFunction *targetFn);
+
   using Transformee = llvm::PointerUnion<SILValue, SILInstruction *>;
   bool continueWithNextSubpassRun(std::optional<Transformee> forTransformee,
                                   SILFunction *function, SILTransform *trans);
@@ -436,6 +444,10 @@ private:
 
   /// Run the passes in Transform from \p FromTransIdx to \p ToTransIdx.
   void runFunctionPasses(unsigned FromTransIdx, unsigned ToTransIdx);
+
+  /// Run consecutive function passes on a single function.
+  void runFunctionPassesOnFunction(unsigned FromTransIdx, unsigned ToTransIdx,
+                                   SILFunction *targetFn);
 
   /// Helper function to check if the function pass should be run mandatorily
   /// All passes in mandatory pass pipeline and ownership model elimination are
