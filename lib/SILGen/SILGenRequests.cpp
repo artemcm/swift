@@ -17,7 +17,12 @@
 #include "swift/AST/Module.h"
 #include "swift/AST/SourceFile.h"
 #include "swift/Basic/Assertions.h"
+#include "swift/SIL/SILFunction.h"
+#include "swift/SIL/SILModule.h"
+#include "swift/SILOptimizer/PassManager/PassManager.h"
+#include "swift/SILOptimizer/PassManager/PassPipeline.h"
 #include "swift/Subsystems.h"
+#include "llvm/Support/Debug.h"
 
 using namespace swift;
 
@@ -132,6 +137,55 @@ SILFunctionBodyRequest::evaluate(Evaluator &evaluator,
   // pendingForcedFunctions. The drain loop in ASTLoweringRequest handles
   // emitting those bodies.
   SGM->emitFunctionDefinition(constant, f);
+  return f;
+}
+
+SILFunction *
+CleanedSILFunctionRequest::evaluate(Evaluator &evaluator,
+                                    SILDeclRef constant) const {
+  auto *f = evaluateOrFatal(evaluator,
+                            SILFunctionBodyRequest{constant});
+  if (f->isAlreadyCanonical())
+    return f;
+
+  // Clear pass-notification flags set during SIL construction.
+  // SILGenCleanup handles these concerns unconditionally, but the pass
+  // manager asserts flags are false before starting.
+  f->setNeedBreakInfiniteLoops(false);
+  f->setNeedCompleteLifetimes(false);
+
+  auto &silMod = f->getModule();
+  SILPassManager PM(&silMod, /*isMandatory=*/true, /*IRMod=*/nullptr);
+  PM.executePassPipelinePlan(
+      SILPassPipelinePlan::getSILGenPassPipeline(silMod.getOptions()),
+      f);
+  return f;
+}
+
+SILFunction *
+DiagnosedSILFunctionRequest::evaluate(Evaluator &evaluator,
+                                      SILDeclRef constant) const {
+  auto *f = evaluateOrFatal(evaluator,
+                            CleanedSILFunctionRequest{constant});
+  if (f->isAlreadyCanonical())
+    return f;
+
+  auto &silMod = f->getModule();
+  SILPassManager PM(&silMod, /*isMandatory=*/true, /*IRMod=*/nullptr);
+  PM.executePassPipelinePlan(
+      SILPassPipelinePlan::getFunctionOnlyDiagnosticPassPipeline(
+          silMod.getOptions()),
+      f);
+  return f;
+}
+
+SILFunction *
+CanonicalSILFunctionRequest::evaluate(Evaluator &evaluator,
+                                      SILDeclRef constant) const {
+  auto *f = evaluateOrFatal(evaluator,
+                            DiagnosedSILFunctionRequest{constant});
+  if (!f->isAlreadyCanonical())
+    f->setFunctionStage(SILStage::Canonical);
   return f;
 }
 
