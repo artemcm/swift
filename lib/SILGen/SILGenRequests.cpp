@@ -115,7 +115,7 @@ SILFunctionInterfaceRequest::evaluate(Evaluator &evaluator,
                                       SILDeclRef constant) const {
   auto *SGM = constant.getASTContext().getActiveSILGenModule();
   ASSERT(SGM && "SILFunctionInterfaceRequest evaluated outside SILGen scope");
-  return SGM->getFunction(constant, ForDefinition);
+  return SGM->getFunction(constant, NotForDefinition);
 }
 
 SILFunction *
@@ -127,6 +127,11 @@ SILFunctionBodyRequest::evaluate(Evaluator &evaluator,
   // Get or create the function declaration via the interface request.
   auto *f = evaluateOrFatal(evaluator,
                             SILFunctionInterfaceRequest{constant});
+
+  // The interface request uses NotForDefinition linkage. Upgrade to
+  // definition linkage before emitting the body.
+  if (isAvailableExternally(f->getLinkage()))
+    f->setLinkage(constant.getLinkage(ForDefinition));
 
   // If the function already has a body (e.g., already emitted via the
   // non-request path), skip emission.

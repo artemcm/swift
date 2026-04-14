@@ -212,7 +212,7 @@ void SILGenFunction::emitCallToMain(FuncDecl *mainFunc) {
 
   SILDeclRef mainFunctionDeclRef(mainFunc, SILDeclRef::Kind::Func);
   SILFunction *mainFunction =
-      SGM.getFunction(mainFunctionDeclRef, NotForDefinition);
+      SGM.getFunctionInterface(mainFunctionDeclRef);
 
   NominalTypeDecl *mainType =
       mainFunc->getDeclContext()->getSelfNominalTypeDecl();

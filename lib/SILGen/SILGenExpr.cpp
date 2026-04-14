@@ -4678,7 +4678,7 @@ getIdForKeyPathComponentComputedProperty(SILGenModule &SGM,
     // TODO: If the getter has shared linkage (say it's synthesized for a
     // Clang-imported thing), we'll need some other sort of
     // stable identifier.
-    return SGM.getFunction(ref, NotForDefinition);
+    return SGM.getFunctionInterface(ref);
   };
 
   switch (strategy.getKind()) {
@@ -4713,7 +4713,7 @@ getIdForKeyPathComponentComputedProperty(SILGenModule &SGM,
 
   case AccessStrategy::DispatchToDistributedThunk: {
     auto thunkRef = SILDeclRef(storage->getAccessor(AccessorKind::Get)).getDistributedThunkDeclRef();
-    return SGM.getFunction(thunkRef, NotForDefinition);
+    return SGM.getFunctionInterface(thunkRef);
   }
   }
   llvm_unreachable("unhandled access strategy");
@@ -4865,7 +4865,7 @@ KeyPathPatternComponent SILGenModule::emitKeyPathComponentForDecl(
     }
     SILDeclRef representative(storage, kind,
                               /*isForeign*/ storage->isImportAsMember());
-    auto id = getFunction(representative, NotForDefinition);
+    auto id = getFunctionInterface(representative);
 
     SILFunction *func = nullptr;
     if (isApplied) {
