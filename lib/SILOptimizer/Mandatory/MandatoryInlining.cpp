@@ -13,6 +13,7 @@
 #define DEBUG_TYPE "mandatory-inlining"
 #include "swift/AST/DiagnosticEngine.h"
 #include "swift/AST/DiagnosticsSIL.h"
+#include "swift/AST/SILGenRequests.h"
 #include "swift/Basic/Assertions.h"
 #include "swift/Basic/BlotSetVector.h"
 #include "swift/SIL/BasicBlockUtils.h"
@@ -1158,6 +1159,197 @@ public:
   MandatoryInlining(MandatoryInlining_t whatToInline) :
     whatToInline(whatToInline) {}
 };
+
+/// On-demand variant of MandatoryInlining for the per-function request
+/// pipeline. Coexists with the module pass; used only in the function-only
+/// diagnostic pipeline behind -sil-on-demand-emission.
+///
+/// Instead of recursively calling runOnFunctionRecursively on callees,
+/// triggers CanonicalSILFunctionRequest(callee) via the evaluator. The
+/// evaluator's cache replaces FullyInlinedSet; its activeRequests replaces
+/// CurrentInliningSet for cycle detection.
+class OnDemandMandatoryInlining : public SILFunctionTransform {
+
+  MandatoryInlining_t whatToInline;
+
+  void run() override {
+    SILFunction *F = getFunction();
+    if (F->isAlreadyCanonical())
+      return;
+
+    // Skip thunks (except back-deployed).
+    switch (F->isThunk()) {
+    case IsThunk_t::IsThunk:
+    case IsThunk_t::IsReabstractionThunk:
+    case IsThunk_t::IsSignatureOptimizedThunk:
+    case IsThunk_t::IsDistributedThunk:
+      return;
+    case IsThunk_t::IsNotThunk:
+    case IsThunk_t::IsBackDeployedThunk:
+      break;
+    }
+
+    ClassHierarchyAnalysis *CHA = PM->getAnalysis<ClassHierarchyAnalysis>();
+    auto &evaluator = F->getModule().getASTContext().evaluator;
+
+    SmallVector<ParameterConvention, 16> CapturedArgConventions;
+    SmallVector<SILValue, 32> FullArgs;
+    bool invalidatedStackNesting = false;
+    bool changed = false;
+
+    SILOptFunctionBuilder FuncBuilder(*this);
+
+    // Preserve the iteration algorithm from runOnFunctionRecursively:
+    // reverse block order, reverse instruction order. This ensures
+    // linear time complexity and correct handling of block splitting.
+    for (auto BI = F->rbegin(), BE = F->rend(), nextBB = BI; BI != BE;
+         BI = nextBB) {
+      nextBB = std::next(BI);
+
+      for (auto II = BI->rbegin(); II != BI->rend(); ++II) {
+        FullApplySite InnerAI = FullApplySite::isa(&*II);
+        if (!InnerAI)
+          continue;
+
+        // Devirtualize before callee resolution (same as module pass).
+        auto *devirtInst =
+            tryDevirtualizeApplyHelper(PM, InnerAI, CHA);
+        if (devirtInst != InnerAI.getInstruction())
+          changed = true;
+        II = devirtInst->getReverseIterator();
+        InnerAI = FullApplySite::isa(devirtInst);
+        if (!InnerAI)
+          continue;
+
+        SILValue CalleeValue = InnerAI.getCallee();
+        bool IsThick;
+        PartialApplyInst *PAI;
+        SILFunction *CalleeFunction = getCalleeFunction(
+            F, InnerAI, IsThick, CapturedArgConventions, FullArgs, PAI,
+            whatToInline);
+
+        if (!CalleeFunction) {
+          // getCalleeFunction may fail for @_transparent functions from
+          // non-primary files in the same module (no serialized SIL to
+          // load). Try the request system to SILGen the body on demand.
+          if (auto *FRI = dyn_cast<FunctionRefInst>(
+                  lookThroughOwnershipInsts(InnerAI.getCallee()))) {
+            auto *callee = FRI->getReferencedFunctionOrNull();
+            if (callee && callee->isTransparent() == IsTransparent
+                && callee->empty()) {
+              auto calleeRef = callee->getDeclRef();
+              if (calleeRef) {
+                auto *result = evaluateOrDefault(evaluator,
+                    CanonicalSILFunctionRequest{calleeRef}, nullptr);
+                if (result && !result->empty()) {
+                  // Re-try getCalleeFunction now that the body exists.
+                  CalleeFunction = getCalleeFunction(
+                      F, InnerAI, IsThick, CapturedArgConventions, FullArgs,
+                      PAI, whatToInline);
+                }
+              }
+            }
+          }
+          if (!CalleeFunction)
+            continue;
+        }
+
+        // getCalleeFunction may have deserialized the callee via loadFunction,
+        // which does not update linkage to match the serialized form (unlike
+        // linkFunction/MandatorySILLinker). Run linkFunction to fix linkage
+        // and transitively deserialize referenced declarations.
+        F->getModule().linkFunction(CalleeFunction,
+                                    SILModule::LinkingMode::LinkNormal);
+
+        // Ensure callee is fully canonicalized via the request system.
+        // Deserialized stdlib @transparent callees are already canonical.
+        if (!CalleeFunction->isAlreadyCanonical()) {
+          auto calleeRef = CalleeFunction->getDeclRef();
+          if (calleeRef) {
+            // Use evaluateOrDefault: on cycle, the evaluator emits
+            // diagnostics and returns nullptr.
+            auto *result = evaluateOrDefault(evaluator,
+                CanonicalSILFunctionRequest{calleeRef}, nullptr);
+            if (!result || !result->isAlreadyCanonical())
+              continue;  // Cycle or failure: skip inlining.
+          }
+        }
+
+        // Get substitutions.
+        auto Subs = (PAI ? PAI->getSubstitutionMap()
+                         : InnerAI.getSubstitutionMap());
+
+        // Register callback for dead function cleanup after inlining.
+        ClosureCleanup closureCleanup;
+        InstructionDeleter deleter(InstModCallbacks().onNotifyWillBeDeleted(
+          [&closureCleanup](SILInstruction *I) {
+            closureCleanup.recordDeadFunction(I);
+          }));
+
+        SILInliner Inliner(FuncBuilder, deleter,
+                           whatToInline == MandatoryInlining_t::transparent ?
+                             SILInliner::InlineKind::MandatoryInline :
+                             SILInliner::InlineKind::InlineAlwaysInline,
+                           Subs);
+        if (!Inliner.canInlineApplySite(InnerAI))
+          continue;
+
+        // Balance reference counts for non-stack partial applies.
+        if (PAI && PAI->isOnStack() == PartialApplyInst::NotOnStack) {
+          bool IsCalleeGuaranteed =
+              PAI->getType().castTo<SILFunctionType>()->isCalleeGuaranteed();
+          auto CapturedArgs = MutableArrayRef<SILValue>(FullArgs).take_back(
+              CapturedArgConventions.size());
+          invalidatedStackNesting |= fixupReferenceCounts(PAI, InnerAI,
+                                            CalleeValue, CapturedArgConventions,
+                                            CapturedArgs, IsCalleeGuaranteed);
+        }
+
+        invalidatedStackNesting |= Inliner.invalidatesStackNesting(InnerAI);
+
+        LLVM_DEBUG(llvm::errs() << "On-demand inlining @"
+                                << CalleeFunction->getName()
+                                << " into @" << F->getName() << "\n");
+
+        // Inline. Deletes the apply, may split blocks.
+        SILBasicBlock *lastBB =
+            Inliner.inlineFunction(CalleeFunction, InnerAI, FullArgs);
+
+        invalidatedStackNesting |=
+            (CalleeFunction->hasOwnership() && !F->hasOwnership());
+
+        nextBB = lastBB->getReverseIterator();
+        ++NumMandatoryInlines;
+
+        deleter.cleanupDeadInstructions();
+        closureCleanup.cleanupDeadClosures(F);
+        invalidatedStackNesting |= closureCleanup.invalidatedStackNesting;
+        changed = true;
+
+        // Resume inlining within nextBB (inlined blocks).
+        break;
+      }
+    }
+
+    if (invalidatedStackNesting) {
+      StackNesting::fixNesting(F);
+      changed = true;
+    }
+
+    if (F->isDefinition())
+      removeUnreachableBlocks(*F);
+
+    if (mergeBasicBlocks(F))
+      changed = true;
+
+    if (changed)
+      invalidateAnalysis(SILAnalysis::InvalidationKind::FunctionBody);
+  }
+
+public:
+  OnDemandMandatoryInlining(MandatoryInlining_t whatToInline) :
+    whatToInline(whatToInline) {}
+};
 } // end anonymous namespace
 
 SILTransform *swift::createMandatoryInlining() {
@@ -1165,4 +1357,10 @@ SILTransform *swift::createMandatoryInlining() {
 }
 SILTransform *swift::createInlineAlwaysInlining() {
   return new MandatoryInlining(MandatoryInlining_t::inlineAlways);
+}
+SILTransform *swift::createOnDemandMandatoryInlining() {
+  return new OnDemandMandatoryInlining(MandatoryInlining_t::transparent);
+}
+SILTransform *swift::createOnDemandInlineAlwaysInlining() {
+  return new OnDemandMandatoryInlining(MandatoryInlining_t::inlineAlways);
 }
