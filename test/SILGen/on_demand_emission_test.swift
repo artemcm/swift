@@ -10,9 +10,8 @@
 // -> Body -> Interface. Each function produces one evaluation of each
 // request type: 3 functions x 5 request types = 15 total evaluations.
 //
-// helper is private and discovered transitively: caller's body emission
-// references helper via SILGenModule::getFunction, which queues it in
-// pendingForcedFunctions; the drain loop fires
+// helper is private and discovered transitively: caller's body scan
+// finds a function_ref to helper. The worklist fires
 // CanonicalSILFunctionRequest for it.
 //
 // REQUESTS-DAG: CanonicalSILFunctionRequest 3
@@ -22,8 +21,6 @@
 // REQUESTS-DAG: SILFunctionInterfaceRequest 3
 
 // Both paths must produce identical canonical SIL.
-// Test functions use only pass-through patterns (no arithmetic, no
-// integer literals) to avoid divergence from omitted MandatoryInlining.
 
 // CHECK-LABEL: sil hidden @$s23on_demand_emission_test3fooyS2iF
 // CHECK: bb0(%0 : $Int):
