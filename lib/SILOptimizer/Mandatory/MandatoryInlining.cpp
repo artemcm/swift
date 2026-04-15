@@ -1273,6 +1273,10 @@ class OnDemandMandatoryInlining : public SILFunctionTransform {
             if (!result || !result->isAlreadyCanonical())
               continue;  // Cycle or failure: skip inlining.
           }
+        } else {
+          DEBUG_WITH_TYPE("silgen-requests",
+            llvm::dbgs() << "    (inlining already-canonical: "
+                         << CalleeFunction->getName() << ")\n");
         }
 
         // Get substitutions.

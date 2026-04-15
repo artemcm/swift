@@ -26,7 +26,28 @@
 #include "swift/Subsystems.h"
 #include "llvm/Support/Debug.h"
 
+#define DEBUG_TYPE "silgen-requests"
+
 using namespace swift;
+
+#ifndef NDEBUG
+/// Indentation depth for nested request tracing.
+static unsigned requestTraceDepth = 0;
+static llvm::raw_ostream &traceIndent() {
+  for (unsigned i = 0; i < requestTraceDepth; ++i)
+    llvm::dbgs() << "  ";
+  return llvm::dbgs();
+}
+struct TraceScope {
+  bool active;
+  TraceScope() : active(llvm::DebugFlag && llvm::isCurrentDebugType(DEBUG_TYPE)) {
+    if (active) ++requestTraceDepth;
+  }
+  ~TraceScope() { if (active) --requestTraceDepth; }
+};
+#else
+struct TraceScope { };
+#endif
 
 namespace swift {
 // Implement the SILGen type zone (zone 12).
@@ -114,6 +135,9 @@ SourceFile *ASTLoweringDescriptor::getSourceFileToParse() const {
 SILFunction *
 SILFunctionInterfaceRequest::evaluate(Evaluator &evaluator,
                                       SILDeclRef constant) const {
+  LLVM_DEBUG(traceIndent() << "-> SILFunctionInterfaceRequest: ";
+             constant.print(llvm::dbgs()); llvm::dbgs() << "\n");
+  TraceScope _ts1;
   auto *SGM = constant.getASTContext().getActiveSILGenModule();
   ASSERT(SGM && "SILFunctionInterfaceRequest evaluated outside SILGen scope");
   return SGM->getFunction(constant, NotForDefinition);
@@ -122,6 +146,9 @@ SILFunctionInterfaceRequest::evaluate(Evaluator &evaluator,
 SILFunction *
 SILFunctionBodyRequest::evaluate(Evaluator &evaluator,
                                  SILDeclRef constant) const {
+  LLVM_DEBUG(traceIndent() << "-> SILFunctionBodyRequest: ";
+             constant.print(llvm::dbgs()); llvm::dbgs() << "\n");
+  TraceScope _ts2;
   auto *SGM = constant.getASTContext().getActiveSILGenModule();
   ASSERT(SGM && "SILFunctionBodyRequest evaluated outside SILGen scope");
 
@@ -156,6 +183,9 @@ SILFunctionBodyRequest::evaluate(Evaluator &evaluator,
 SILFunction *
 CleanedSILFunctionRequest::evaluate(Evaluator &evaluator,
                                     SILDeclRef constant) const {
+  LLVM_DEBUG(traceIndent() << "-> CleanedSILFunctionRequest: ";
+             constant.print(llvm::dbgs()); llvm::dbgs() << "\n");
+  TraceScope _ts3;
   auto *f = evaluateOrFatal(evaluator,
                             SILFunctionBodyRequest{constant});
   if (f->isAlreadyCanonical())
@@ -178,6 +208,9 @@ CleanedSILFunctionRequest::evaluate(Evaluator &evaluator,
 SILFunction *
 DiagnosedSILFunctionRequest::evaluate(Evaluator &evaluator,
                                       SILDeclRef constant) const {
+  LLVM_DEBUG(traceIndent() << "-> DiagnosedSILFunctionRequest: ";
+             constant.print(llvm::dbgs()); llvm::dbgs() << "\n");
+  TraceScope _ts4;
   auto *f = evaluateOrFatal(evaluator,
                             CleanedSILFunctionRequest{constant});
   if (f->isAlreadyCanonical())
@@ -195,6 +228,9 @@ DiagnosedSILFunctionRequest::evaluate(Evaluator &evaluator,
 SILFunction *
 CanonicalSILFunctionRequest::evaluate(Evaluator &evaluator,
                                       SILDeclRef constant) const {
+  LLVM_DEBUG(traceIndent() << "-> CanonicalSILFunctionRequest: ";
+             constant.print(llvm::dbgs()); llvm::dbgs() << "\n");
+  TraceScope _ts5;
   auto *f = evaluateOrFatal(evaluator,
                             DiagnosedSILFunctionRequest{constant});
   if (!f->isAlreadyCanonical())
