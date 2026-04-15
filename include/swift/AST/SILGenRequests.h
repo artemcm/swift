@@ -224,6 +224,7 @@ private:
 
 /// Sets the per-function stage to Canonical after all mandatory passes
 /// have been applied. Depends on DiagnosedSILFunctionRequest.
+/// Implements cycle diagnostics for circular @transparent / @inline(__always).
 class CanonicalSILFunctionRequest
     : public SimpleRequest<CanonicalSILFunctionRequest,
                            SILFunction *(SILDeclRef),
@@ -232,6 +233,9 @@ public:
   using SimpleRequest::SimpleRequest;
 
   bool isCached() const { return true; }
+
+  void diagnoseCycle(DiagnosticEngine &diags) const;
+  void noteCycleStep(DiagnosticEngine &diags) const;
 
 private:
   friend SimpleRequest;

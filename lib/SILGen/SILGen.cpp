@@ -2315,7 +2315,8 @@ void SILGenModule::emitSymbolSource(SymbolSource Source) {
 /// been resolved yet.
 static void discoverCallees(SILFunction *f,
                             std::deque<SILDeclRef> &worklist,
-                            llvm::DenseSet<SILDeclRef> &resolved) {
+                            llvm::DenseSet<SILDeclRef> &resolved,
+                            ArrayRef<FileUnit *> filesToEmit) {
   for (auto &bb : *f) {
     for (auto &inst : bb) {
       auto *fri = dyn_cast<FunctionRefBaseInst>(&inst);
@@ -2329,6 +2330,23 @@ static void discoverCallees(SILFunction *f,
       auto calleeRef = callee->getDeclRef();
       if (!calleeRef)
         continue;
+
+      // Only emit functions from the files being compiled (primary files).
+      // Functions from other modules (no parent source file) or from
+      // non-primary files in the same module are skipped.
+      if (calleeRef.hasDecl()) {
+        auto *dc = calleeRef.getDecl()->getDeclContext();
+        auto *sf = dc->getParentSourceFile();
+        if (!sf)
+          continue;  // Cross-module (stdlib, etc.): no source file.
+        bool inPrimaryFiles = false;
+        for (auto *file : filesToEmit) {
+          if (file == sf) { inPrimaryFiles = true; break; }
+        }
+        if (!inPrimaryFiles)
+          continue;  // Non-primary file in same module.
+      }
+
       if (!resolved.count(calleeRef))
         worklist.push_back(calleeRef);
     }
@@ -2370,7 +2388,7 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
     auto *f = evaluateOrFatal(evaluator, SILFunctionBodyRequest{ref});
 
     // Step B: Discover callees by scanning the raw body.
-    discoverCallees(f, worklist, resolved);
+    discoverCallees(f, worklist, resolved, desc.getFilesToEmit());
 
     // Step C: Canonicalize (body request cache-hits; pipelines run).
     (void)evaluateOrFatal(evaluator, CanonicalSILFunctionRequest{ref});
@@ -2380,6 +2398,23 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
       (void)SGM.getWitnessTable(SGM.pendingConformances.front());
       SGM.pendingConformances.pop_front();
     }
+  }
+
+  // Strip bodies from cross-primary functions that were SILGen'd on demand
+  // for @_transparent inlining. These functions have definition linkage
+  // (hidden) but should not produce symbols in this compilation unit; the
+  // real definition is emitted when their source file is the primary.
+  // Convert them back to hidden_external declarations.
+  for (auto &f : SGM.M) {
+    if (f.empty() || isAvailableExternally(f.getLinkage()))
+      continue;
+    auto *dc = f.getDeclContext();
+    if (!dc) continue;
+    auto *sf = dc->getParentSourceFile();
+    if (!sf || sf->isPrimary())
+      continue;
+    f.convertToDeclaration();
+    f.setLinkage(SILLinkage::HiddenExternal);
   }
 
   // Set module-level flags. The legacy runSILDiagnosticPasses checks
