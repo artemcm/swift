@@ -26,6 +26,7 @@
 #include "swift/SILOptimizer/Analysis/BasicCalleeAnalysis.h"
 #include "swift/SILOptimizer/Analysis/DominanceAnalysis.h"
 #include "swift/SILOptimizer/Analysis/FunctionOrder.h"
+#include "swift/SILOptimizer/Analysis/PassManagerVerifierAnalysis.h"
 #include "swift/SILOptimizer/PassManager/PrettyStackTrace.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
 #include "swift/SILOptimizer/Utils/OptimizerStatsUtils.h"
@@ -1031,6 +1032,11 @@ void SILPassManager::executePassPipelinePlan(const SILPassPipelinePlan &Plan,
 }
 
 void SILPassManager::executeScopedForFunction(SILFunction *targetFn) {
+  // Recursive request evaluation during the pipeline may add new functions
+  // to the module that this PM's verifier analysis never saw at
+  // construction. Opt out of its module-wide check.
+  isScopedForFunction = true;
+
   unsigned Idx = 0, NumTransforms = Transformations.size();
 
   while (Idx < NumTransforms && continueTransforming()) {
@@ -1179,6 +1185,15 @@ SILPassManager::~SILPassManager() {
   // either by changing the verifier or treating those asserts as signs of a
   // bug.
   for (auto *A : Analyses) {
+    // Skip the module-wide PassManagerVerifierAnalysis when running scoped
+    // to a single function. Nested request evaluation during the pipeline
+    // (e.g., OnDemandMandatoryInlining triggering
+    // CanonicalSILFunctionRequest on callees) can add new SILFunctions to
+    // the module that this PM's snapshot did not capture, which would
+    // trigger a false-positive assertion at destruction.
+    if (isScopedForFunction &&
+        isa<PassManagerVerifierAnalysis>(A))
+      continue;
     // We use verify full instead of just verify to ensure that passes that want
     // to run more expensive verification after a pass manager is destroyed
     // properly trigger.

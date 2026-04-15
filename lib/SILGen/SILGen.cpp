@@ -2315,6 +2315,9 @@ static void discoverCallees(SILFunction *f,
                             std::deque<SILDeclRef> &worklist,
                             llvm::DenseSet<SILDeclRef> &resolved,
                             ArrayRef<FileUnit *> filesToEmit) {
+  SmallVector<SILFunction *, 8> allRefs;
+  SmallVector<SILDeclRef, 4> queued;
+
   for (auto &bb : *f) {
     for (auto &inst : bb) {
       auto *fri = dyn_cast<FunctionRefBaseInst>(&inst);
@@ -2322,6 +2325,7 @@ static void discoverCallees(SILFunction *f,
         continue;
 
       SILFunction *callee = fri->getInitiallyReferencedFunction();
+      allRefs.push_back(callee);
 
       // Only queue functions created by SILGen that need body emission.
       // External declarations (stdlib, cross-module) are skipped.
@@ -2345,10 +2349,30 @@ static void discoverCallees(SILFunction *f,
           continue;  // Non-primary file in same module.
       }
 
-      if (!resolved.count(calleeRef))
+      if (!resolved.count(calleeRef)) {
         worklist.push_back(calleeRef);
+        queued.push_back(calleeRef);
+      }
     }
   }
+
+  DEBUG_WITH_TYPE("silgen-requests", {
+    if (!allRefs.empty()) {
+      llvm::dbgs() << "[body scan] found " << allRefs.size()
+                   << " callee ref(s):";
+      for (auto *callee : allRefs)
+        llvm::dbgs() << " " << callee->getName();
+      llvm::dbgs() << "\n";
+    }
+    if (!queued.empty()) {
+      llvm::dbgs() << "[body scan] queued " << queued.size()
+                   << " for worklist:";
+      for (auto ref : queued) {
+        llvm::dbgs() << " "; ref.print(llvm::dbgs());
+      }
+      llvm::dbgs() << "\n";
+    }
+  });
 }
 
 /// Request-based emission path for demand-driven SIL generation.
@@ -2369,8 +2393,13 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
     if (auto *sf = dyn_cast<SourceFile>(file)) {
       performTypeChecking(*sf);
       for (auto *D : sf->getTopLevelDecls()) {
-        if (auto *fd = dyn_cast<FuncDecl>(D))
+        if (auto *fd = dyn_cast<FuncDecl>(D)) {
           worklist.push_back(SILDeclRef(fd));
+          DEBUG_WITH_TYPE("silgen-requests",
+                          llvm::dbgs() << "[worklist] seed: ";
+                          SILDeclRef(fd).print(llvm::dbgs());
+                          llvm::dbgs() << "\n");
+        }
       }
     }
   }
@@ -2382,6 +2411,10 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
     if (!resolved.insert(ref).second)
       continue;
 
+    DEBUG_WITH_TYPE("silgen-requests",
+                    llvm::dbgs() << "\n[worklist] processing: ";
+                    ref.print(llvm::dbgs()); llvm::dbgs() << "\n");
+
     // Step A: Emit the raw body.
     auto *f = evaluateOrFatal(evaluator, SILFunctionBodyRequest{ref});
 
@@ -2389,7 +2422,12 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
     discoverCallees(f, worklist, resolved, desc.getFilesToEmit());
 
     // Step C: Canonicalize (body request cache-hits; pipelines run).
-    (void)evaluateOrFatal(evaluator, CanonicalSILFunctionRequest{ref});
+    // evaluateOrDefault a cyclic @_transparent / @inline(__always) chain at the
+    // top level is diagnosed by the evaluator via
+    // CanonicalSILFunctionRequest::diagnoseCycle and the outer request returns
+    // its default.
+    (void)evaluateOrDefault(evaluator,
+                            CanonicalSILFunctionRequest{ref}, nullptr);
 
     // Drain conformances discovered during body emission.
     while (!SGM.pendingConformances.empty()) {

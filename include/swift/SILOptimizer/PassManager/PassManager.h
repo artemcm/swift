@@ -229,6 +229,12 @@ class SILPassManager {
   /// OptimizationMode::NoOptimization.
   bool isMandatory = false;
 
+  /// If true, this pass manager is running scoped to a single function.
+  /// Suppresses the module-wide `PassManagerVerifierAnalysis` check, which
+  /// would fire when recursive request evaluation adds new functions to the
+  /// module during the scoped pipeline.
+  bool isScopedForFunction = false;
+
   /// The notification handler for this specific SILPassManager.
   ///
   /// This is not owned by the pass manager, it is owned by the SILModule which
