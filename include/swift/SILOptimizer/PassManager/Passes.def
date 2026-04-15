@@ -365,6 +365,10 @@ LEGACY_PASS(MandatoryInlining, "mandatory-inlining",
      "Mandatory Inlining of Transparent Functions")
 LEGACY_PASS(InlineAlwaysInlining, "inline-always-inlining",
      "Inlining of '@inline(always)' Functions")
+LEGACY_PASS(OnDemandMandatoryInlining, "on-demand-mandatory-inlining",
+     "On-Demand Mandatory Inlining of Transparent Functions")
+LEGACY_PASS(OnDemandInlineAlwaysInlining, "on-demand-inline-always-inlining",
+     "On-Demand Inlining of '@inline(always)' Functions")
 LEGACY_PASS(MoveCondFailToPreds, "move-cond-fail-to-preds",
      "Move SIL cond_fail by Hoisting Checks")
 LEGACY_PASS(NoReturnFolding, "noreturn-folding",

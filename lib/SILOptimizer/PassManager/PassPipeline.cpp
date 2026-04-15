@@ -397,7 +397,7 @@ addFunctionOnlyMandatoryDiagnosticOptPipeline(SILPassPipelinePlan &P) {
       P.addDestroyAddrHoisting();
     }
   }
-  // MandatoryInlining: module pass, omitted.
+  P.addOnDemandMandatoryInlining();
   // MandatorySILLinker: module pass, omitted.
 
   P.addMandatoryRedundantLoadElimination();
@@ -439,7 +439,7 @@ addFunctionOnlyMandatoryDiagnosticOptPipeline(SILPassPipelinePlan &P) {
   }
 
   // PerformanceDiagnostics: module pass, omitted.
-  // InlineAlwaysInlining: module pass, omitted.
+  P.addOnDemandInlineAlwaysInlining();
 }
 
 SILPassPipelinePlan
