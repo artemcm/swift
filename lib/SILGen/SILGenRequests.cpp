@@ -13,6 +13,8 @@
 #include "swift/AST/SILGenRequests.h"
 #include "SILGen.h"
 #include "swift/AST/ASTContext.h"
+#include "swift/AST/Decl.h"
+#include "swift/AST/DiagnosticsSIL.h"
 #include "swift/AST/FileUnit.h"
 #include "swift/AST/Module.h"
 #include "swift/AST/SourceFile.h"
@@ -127,13 +129,19 @@ SILFunctionBodyRequest::evaluate(Evaluator &evaluator,
   auto *f = evaluateOrFatal(evaluator,
                             SILFunctionInterfaceRequest{constant});
 
+  // If the function already has a body (e.g., deserialized from a
+  // cross-module .swiftmodule or already emitted via the non-request
+  // path), skip emission. Do NOT upgrade linkage: cross-module
+  // functions should retain their external linkage.
+  if (!f->empty())
+    return f;
+
   // The interface request uses NotForDefinition linkage. Upgrade to
   // definition linkage before emitting the body.
   if (isAvailableExternally(f->getLinkage()))
     f->setLinkage(constant.getLinkage(ForDefinition));
 
-  // If the function already has a body (e.g., already emitted via the
-  // non-request path), skip emission.
+  // Emit the function body.
   if (!f->empty())
     return f;
 
@@ -192,6 +200,27 @@ CanonicalSILFunctionRequest::evaluate(Evaluator &evaluator,
   if (!f->isAlreadyCanonical())
     f->setFunctionStage(SILStage::Canonical);
   return f;
+}
+
+void CanonicalSILFunctionRequest::diagnoseCycle(
+    DiagnosticEngine &diags) const {
+  auto constant = std::get<0>(getStorage());
+  if (constant.hasDecl()) {
+    if (auto *afd = dyn_cast<AbstractFunctionDecl>(constant.getDecl())) {
+      if (afd->isTransparent()) {
+        diags.diagnose(afd->getLoc(), diag::circular_transparent);
+        return;
+      }
+    }
+    diags.diagnose(constant.getDecl()->getLoc(), diag::circular_inlineAlways);
+  }
+}
+
+void CanonicalSILFunctionRequest::noteCycleStep(
+    DiagnosticEngine &diags) const {
+  auto constant = std::get<0>(getStorage());
+  if (constant.hasDecl())
+    diags.diagnose(constant.getDecl()->getLoc(), diag::note_while_inlining);
 }
 
 // Define request evaluation functions for each of the SILGen requests.
