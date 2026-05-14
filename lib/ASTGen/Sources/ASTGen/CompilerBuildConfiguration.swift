@@ -34,11 +34,22 @@ struct CompilerBuildConfiguration: BuildConfiguration {
   let staticBuildConfiguration: StaticBuildConfiguration
   let sourceBuffer: UnsafeBufferPointer<UInt8>
 
-  /// When `true`, `canImport` calls skip diagnostic emission and do not
-  /// populate `ASTContext::CanImportModuleVersions`. Use this for analysis
-  /// paths (e.g. building `ConfiguredRegions` for warning-group-control)
-  /// that re-evaluate `#if canImport(...)` after the parser's primary
-  /// `EvaluateIfConditionRequest` has already produced those side effects.
+  /// When `true`, `canImport` calls route through a side-effect-free query
+  /// that emits no diagnostics and does not populate
+  /// `ASTContext::CanImportModuleVersions`.
+  ///
+  /// Required when the configuration is built from a path that can run
+  /// while a diagnostic is being emitted, notably the warning-group-control
+  /// region tree, which is constructed lazily on the first grouped
+  /// diagnostic from the source file.
+  ///
+  /// Emitting a grouped diagnostic from an initial `canImportModule`
+  /// would re-enter warning-group control before the configuredRegions
+  /// cached value is populated and recurse.
+  ///
+  /// The parser's `EvaluateIfConditionRequest` remains the canonical
+  /// emission site for `#if canImport` diagnostics, so the secondary walk
+  /// loses no information.
   let suppressCanImportSideEffects: Bool
 
   init(
@@ -179,13 +190,13 @@ extension ExportedSourceFile {
       return _configuredRegions
     }
 
-    // Use the diagnostics-suppressing `canImport` variant: the parser's
-    // primary `EvaluateIfConditionRequest` path is responsible for emitting
-    // `canImport` diagnostics and populating `CanImportModuleVersions`, so
-    // this secondary walk must not duplicate those side effects.
     let configuration = CompilerBuildConfiguration(
       ctx: astContext,
       sourceBuffer: buffer,
+      // Suppress `canImport` side effects: this build can be triggered from
+      // inside `DiagnosticEngine::diagnose`, and a grouped diagnostic emitted
+      // here would re-enter warning-group control before `_configuredRegions`
+      // is populated.
       suppressCanImportSideEffects: true
     )
 
