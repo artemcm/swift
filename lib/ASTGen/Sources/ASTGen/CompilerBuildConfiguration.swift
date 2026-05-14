@@ -34,10 +34,22 @@ struct CompilerBuildConfiguration: BuildConfiguration {
   let staticBuildConfiguration: StaticBuildConfiguration
   let sourceBuffer: UnsafeBufferPointer<UInt8>
 
-  init(ctx: BridgedASTContext, sourceBuffer: UnsafeBufferPointer<UInt8>) {
+  /// When `true`, `canImport` calls skip diagnostic emission and do not
+  /// populate `ASTContext::CanImportModuleVersions`. Use this for analysis
+  /// paths (e.g. building `ConfiguredRegions` for warning-group-control)
+  /// that re-evaluate `#if canImport(...)` after the parser's primary
+  /// `EvaluateIfConditionRequest` has already produced those side effects.
+  let suppressCanImportSideEffects: Bool
+
+  init(
+    ctx: BridgedASTContext,
+    sourceBuffer: UnsafeBufferPointer<UInt8>,
+    suppressCanImportSideEffects: Bool = false
+  ) {
     self.ctx = ctx
     self.staticBuildConfiguration = ctx.staticBuildConfiguration
     self.sourceBuffer = sourceBuffer
+    self.suppressCanImportSideEffects = suppressCanImportSideEffects
   }
 
   func isCustomConditionSet(name: String) -> Bool {
@@ -76,7 +88,15 @@ struct CompilerBuildConfiguration: BuildConfiguration {
 
     return importPathStr.withBridgedString { bridgedImportPathStr in
       versionComponents.withUnsafeBufferPointer { versionComponentsBuf in
-        ctx.canImport(
+        if suppressCanImportSideEffects {
+          return ctx.testCanImport(
+            importPath: bridgedImportPathStr,
+            versionKind: cVersionKind,
+            versionComponents: versionComponentsBuf.baseAddress,
+            numVersionComponents: versionComponentsBuf.count
+          )
+        }
+        return ctx.canImport(
           importPath: bridgedImportPathStr,
           location: SourceLoc(
             at: importPath.first!.0.position,
@@ -159,9 +179,14 @@ extension ExportedSourceFile {
       return _configuredRegions
     }
 
+    // Use the diagnostics-suppressing `canImport` variant: the parser's
+    // primary `EvaluateIfConditionRequest` path is responsible for emitting
+    // `canImport` diagnostics and populating `CanImportModuleVersions`, so
+    // this secondary walk must not duplicate those side effects.
     let configuration = CompilerBuildConfiguration(
       ctx: astContext,
-      sourceBuffer: buffer
+      sourceBuffer: buffer,
+      suppressCanImportSideEffects: true
     )
 
     let regions = syntax.configuredRegions(in: configuration)
