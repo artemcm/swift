@@ -31,6 +31,7 @@ namespace swift {
   class SILBasicBlock;
   class ForeignAsyncConvention;
   class SymbolSource;
+  class DerivativeAttr;
 
 namespace Lowering {
   class TypeConverter;
@@ -460,13 +461,31 @@ public:
 
   /// Emit the differentiability witness for the given original function
   /// declaration and SIL function, autodiff configuration, and JVP and VJP
-  /// functions (null if undefined).
-  void emitDifferentiabilityWitness(AbstractFunctionDecl *originalAFD,
-                                    SILFunction *originalFunction,
-                                    DifferentiabilityKind diffKind,
-                                    const AutoDiffConfig &config,
-                                    SILFunction *jvp, SILFunction *vjp,
-                                    const DeclAttribute *diffAttr);
+  /// functions (null if undefined). Returns the resulting witness, or
+  /// nullptr if no witness was created.
+  SILDifferentiabilityWitness *
+  emitDifferentiabilityWitness(AbstractFunctionDecl *originalAFD,
+                               SILFunction *originalFunction,
+                               DifferentiabilityKind diffKind,
+                               const AutoDiffConfig &config,
+                               SILFunction *jvp, SILFunction *vjp,
+                               const DeclAttribute *diffAttr);
+
+  /// Emit the differentiability witness produced by a single
+  /// @derivative(of:) attribute attached to \p afd. \p afd is the
+  /// derivative declaration carrying the attribute. Returns the
+  /// witness, or nullptr if no witness was created.
+  SILDifferentiabilityWitness *
+  emitWitnessForDerivativeAttr(AbstractFunctionDecl *afd,
+                               DerivativeAttr *derivAttr);
+
+  /// Run the per-function pipeline directly on a SILFunction that has no
+  /// SILDeclRef and therefore cannot flow through CanonicalSILFunctionRequest.
+  /// Used for synthesized auxiliary thunks (derivative thunks, reabstraction
+  /// thunks) created via getOrCreateSharedFunction-style factories. This is
+  /// a transitional carve-out; long-term those thunks should carry a
+  /// synthesized SILDeclRef.
+  void canonicalizeSynthesizedAuxFunction(SILFunction *f);
 
   /// Emit a deinit table for a noncopyable type.
   void emitNonCopyableTypeDeinitTable(NominalTypeDecl *decl);

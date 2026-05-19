@@ -28,6 +28,9 @@ namespace swift {
 
 class LangOptions;
 class ModuleDecl;
+class AbstractFunctionDecl;
+class DerivativeAttr;
+class SILDifferentiabilityWitness;
 class SILFunction;
 class SILModule;
 class SILOptions;
@@ -241,6 +244,127 @@ private:
   friend SimpleRequest;
 
   SILFunction *evaluate(Evaluator &evaluator, SILDeclRef constant) const;
+};
+
+/// Orchestrates the emission of all auxiliary SIL functions and
+/// SIL-module side effects associated with an AbstractFunctionDecl.
+/// Mirrors the structure of legacy `SILGenModule::emitAbstractFuncDecl`
+/// but routes each auxiliary kind through a per-feature sub-request,
+/// which in turn fires `CanonicalSILFunctionRequest` for each
+/// auxiliary SILDeclRef.
+class AuxiliaryDeclEmissionRequest
+    : public SimpleRequest<AuxiliaryDeclEmissionRequest,
+                           evaluator::SideEffect(AbstractFunctionDecl *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  evaluator::SideEffect
+  evaluate(Evaluator &evaluator, AbstractFunctionDecl *afd) const;
+};
+
+/// Emits default-argument generators and property-wrapper backing
+/// initializers for an AbstractFunctionDecl, by walking the parameter
+/// list in order and firing CanonicalSILFunctionRequest for each.
+class ArgumentGeneratorsRequest
+    : public SimpleRequest<ArgumentGeneratorsRequest,
+                           evaluator::SideEffect(AbstractFunctionDecl *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  evaluator::SideEffect
+  evaluate(Evaluator &evaluator, AbstractFunctionDecl *afd) const;
+};
+
+/// Emits the native-to-foreign thunk for a `@_cdecl` (Underscored)
+/// declaration. No-op for other declarations.
+class CDeclThunkRequest
+    : public SimpleRequest<CDeclThunkRequest,
+                           evaluator::SideEffect(AbstractFunctionDecl *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  evaluator::SideEffect
+  evaluate(Evaluator &evaluator, AbstractFunctionDecl *afd) const;
+};
+
+/// Emits the distributed thunk for a `@distributed` declaration.
+/// No-op for non-distributed declarations.
+class DistributedThunkRequest
+    : public SimpleRequest<DistributedThunkRequest,
+                           evaluator::SideEffect(AbstractFunctionDecl *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  evaluator::SideEffect
+  evaluate(Evaluator &evaluator, AbstractFunctionDecl *afd) const;
+};
+
+/// Emits the back-deployment fallback and dispatch thunk for a
+/// `@backDeployed` declaration. No-op for declarations without the
+/// attribute.
+class BackDeploymentRequest
+    : public SimpleRequest<BackDeploymentRequest,
+                           evaluator::SideEffect(AbstractFunctionDecl *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  evaluator::SideEffect
+  evaluate(Evaluator &evaluator, AbstractFunctionDecl *afd) const;
+};
+
+/// Emits a SILDifferentiabilityWitness registered by a single
+/// `@derivative(of:)` attribute. Returns the witness pointer, or
+/// nullptr if creation failed. Canonicalizes the resulting JVP/VJP
+/// derivative thunks via CanonicalSILFunctionRequest (or
+/// canonicalizeSynthesizedAuxFunction for thunks lacking a
+/// SILDeclRef).
+class SILDifferentiabilityWitnessRequest
+    : public SimpleRequest<SILDifferentiabilityWitnessRequest,
+                           SILDifferentiabilityWitness *(
+                               AbstractFunctionDecl *,
+                               DerivativeAttr *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  SILDifferentiabilityWitness *
+  evaluate(Evaluator &evaluator, AbstractFunctionDecl *afd,
+           DerivativeAttr *derivAttr) const;
 };
 
 /// The zone number for SILGen.
