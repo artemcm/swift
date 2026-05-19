@@ -35,3 +35,22 @@ SWIFT_REQUEST(SILGen, DiagnosedSILFunctionRequest,
 SWIFT_REQUEST(SILGen, CanonicalSILFunctionRequest,
               SILFunction *(SILDeclRef),
               Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, AuxiliaryDeclEmissionRequest,
+              evaluator::SideEffect(AbstractFunctionDecl *),
+              Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, ArgumentGeneratorsRequest,
+              evaluator::SideEffect(AbstractFunctionDecl *),
+              Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, CDeclThunkRequest,
+              evaluator::SideEffect(AbstractFunctionDecl *),
+              Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, DistributedThunkRequest,
+              evaluator::SideEffect(AbstractFunctionDecl *),
+              Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, BackDeploymentRequest,
+              evaluator::SideEffect(AbstractFunctionDecl *),
+              Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, SILDifferentiabilityWitnessRequest,
+              SILDifferentiabilityWitness *(AbstractFunctionDecl *,
+                                            DerivativeAttr *),
+              Cached, NoLocationInfo)
