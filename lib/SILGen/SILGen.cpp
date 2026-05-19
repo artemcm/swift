@@ -42,6 +42,8 @@
 #include "swift/SIL/SILArgument.h"
 #include "swift/SIL/SILDebugScope.h"
 #include "swift/SIL/SILProfiler.h"
+#include "swift/SILOptimizer/PassManager/PassManager.h"
+#include "swift/SILOptimizer/PassManager/PassPipeline.h"
 #include "swift/Serialization/SerializedModuleLoader.h"
 #include "swift/Serialization/SerializedSILLoader.h"
 #include "swift/Strings.h"
@@ -1446,7 +1448,7 @@ void SILGenModule::emitDifferentiabilityWitnessesForFunction(
   emitWitnesses(AFD->getAttrs());
 }
 
-void SILGenModule::emitDifferentiabilityWitness(
+SILDifferentiabilityWitness *SILGenModule::emitDifferentiabilityWitness(
     AbstractFunctionDecl *originalAFD, SILFunction *originalFunction,
     DifferentiabilityKind diffKind, const AutoDiffConfig &config,
     SILFunction *jvp, SILFunction *vjp, const DeclAttribute *attr) {
@@ -1516,6 +1518,7 @@ void SILGenModule::emitDifferentiabilityWitness(
   if (vjp)
     setDerivativeInDifferentiabilityWitness(AutoDiffDerivativeFunctionKind::VJP,
                                             vjp);
+  return diffWitness;
 }
 
 void SILGenModule::emitAbstractFuncDecl(AbstractFunctionDecl *AFD) {
@@ -1566,32 +1569,64 @@ void SILGenModule::emitAbstractFuncDecl(AbstractFunctionDecl *AFD) {
   // originating from @derivative(of:) is emitted even if we're not going to
   // emit body of the derivative.
   for (auto *derivAttr : AFD->getAttrs().getAttributes<DerivativeAttr>()) {
-      auto *f = getFunction(SILDeclRef(AFD), NotForDefinition);
-      SILFunction *jvp = nullptr, *vjp = nullptr;
-      switch (derivAttr->getDerivativeKind()) {
-      case AutoDiffDerivativeFunctionKind::JVP:
-        jvp = f;
-        break;
-      case AutoDiffDerivativeFunctionKind::VJP:
-        vjp = f;
-        break;
-      }
-      auto *origAFD = derivAttr->getOriginalFunction(getASTContext());
-      auto origDeclRef =
-          SILDeclRef(origAFD).asForeign(requiresForeignEntryPoint(origAFD));
-      auto *origFn = getFunction(origDeclRef, NotForDefinition);
-      auto witnessGenSig =
-          autodiff::getDifferentiabilityWitnessGenericSignature(
-              origAFD->getGenericSignature(), AFD->getGenericSignature());
-      auto *resultIndices =
-        autodiff::getFunctionSemanticResultIndices(origAFD,
-                                                   derivAttr->getParameterIndices());
-      AutoDiffConfig config(derivAttr->getParameterIndices(), resultIndices,
-                            witnessGenSig);
-      emitDifferentiabilityWitness(origAFD, origFn,
-                                   DifferentiabilityKind::Reverse, config, jvp,
-                                   vjp, derivAttr);
-    }
+    (void)emitWitnessForDerivativeAttr(AFD, derivAttr);
+  }
+}
+
+SILDifferentiabilityWitness *
+SILGenModule::emitWitnessForDerivativeAttr(AbstractFunctionDecl *afd,
+                                            DerivativeAttr *derivAttr) {
+  auto *f = getFunction(SILDeclRef(afd), NotForDefinition);
+  SILFunction *jvp = nullptr, *vjp = nullptr;
+  switch (derivAttr->getDerivativeKind()) {
+  case AutoDiffDerivativeFunctionKind::JVP:
+    jvp = f;
+    break;
+  case AutoDiffDerivativeFunctionKind::VJP:
+    vjp = f;
+    break;
+  }
+  auto *origAFD = derivAttr->getOriginalFunction(getASTContext());
+  auto origDeclRef =
+      SILDeclRef(origAFD).asForeign(requiresForeignEntryPoint(origAFD));
+  auto *origFn = getFunction(origDeclRef, NotForDefinition);
+  auto witnessGenSig = autodiff::getDifferentiabilityWitnessGenericSignature(
+      origAFD->getGenericSignature(), afd->getGenericSignature());
+  auto *resultIndices = autodiff::getFunctionSemanticResultIndices(
+      origAFD, derivAttr->getParameterIndices());
+  AutoDiffConfig config(derivAttr->getParameterIndices(), resultIndices,
+                        witnessGenSig);
+  return emitDifferentiabilityWitness(origAFD, origFn,
+                                      DifferentiabilityKind::Reverse, config,
+                                      jvp, vjp, derivAttr);
+}
+
+void SILGenModule::canonicalizeSynthesizedAuxFunction(SILFunction *f) {
+  if (f->isAlreadyCanonical())
+    return;
+  if (f->empty())
+    return;
+
+  // Mirror the per-function pipeline runs that CleanedSILFunctionRequest /
+  // DiagnosedSILFunctionRequest perform, but on a SILFunction without a
+  // SILDeclRef (so it cannot flow through the request chain).
+  f->setNeedBreakInfiniteLoops(false);
+  f->setNeedCompleteLifetimes(false);
+
+  auto &silMod = f->getModule();
+  {
+    SILPassManager PM(&silMod, /*isMandatory=*/true, /*IRMod=*/nullptr);
+    PM.executePassPipelinePlan(
+        SILPassPipelinePlan::getSILGenPassPipeline(silMod.getOptions()), f);
+  }
+  {
+    SILPassManager PM(&silMod, /*isMandatory=*/true, /*IRMod=*/nullptr);
+    PM.executePassPipelinePlan(
+        SILPassPipelinePlan::getFunctionOnlyDiagnosticPassPipeline(
+            silMod.getOptions()),
+        f);
+  }
+  f->setFunctionStage(SILStage::Canonical);
 }
 
 void SILGenModule::emitFunction(FuncDecl *fd) {
@@ -2388,20 +2423,43 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
   std::deque<SILDeclRef> worklist;
   llvm::DenseSet<SILDeclRef> resolved;
 
-  // Seed the worklist with top-level declarations.
+  // Seed the worklist with top-level declarations. For each FuncDecl,
+  // first fire AuxiliaryDeclEmissionRequest to route the auxiliary
+  // emissions (default args, @_cdecl thunks, @backDeployed variants,
+  // @derivative witnesses, etc.) through the request system, then queue
+  // the body's SILDeclRef for the worklist.
   for (auto file : desc.getFilesToEmit()) {
     if (auto *sf = dyn_cast<SourceFile>(file)) {
       performTypeChecking(*sf);
       for (auto *D : sf->getTopLevelDecls()) {
+        // Match legacy SILGenModule::visit: skip non-API decls and
+        // SkipNonExportableDecls candidates before doing any emission.
+        if (SGM.shouldSkipDecl(D))
+          continue;
         if (auto *fd = dyn_cast<FuncDecl>(D)) {
-          worklist.push_back(SILDeclRef(fd));
-          DEBUG_WITH_TYPE("silgen-requests",
-                          llvm::dbgs() << "[worklist] seed: ";
-                          SILDeclRef(fd).print(llvm::dbgs());
-                          llvm::dbgs() << "\n");
+          (void)evaluateOrDefault(evaluator,
+                                  AuxiliaryDeclEmissionRequest{fd}, {});
+          if (shouldEmitFunctionBody(fd)) {
+            // Match the legacy emitFunction prologue.
+            SGM.M.Types.setCaptureTypeExpansionContext(SILDeclRef(fd), SGM.M);
+            auto bodyRef = SILDeclRef(fd, fd->hasOnlyCEntryPoint());
+            worklist.push_back(bodyRef);
+            DEBUG_WITH_TYPE("silgen-requests",
+                            llvm::dbgs() << "[worklist] seed: ";
+                            bodyRef.print(llvm::dbgs());
+                            llvm::dbgs() << "\n");
+          }
         }
       }
     }
+  }
+
+  // Drain conformances accumulated during aux emission, in case the
+  // worklist iteration below never runs (e.g. no FuncDecl has
+  // shouldEmitFunctionBody true).
+  while (!SGM.pendingConformances.empty()) {
+    (void)SGM.getWitnessTable(SGM.pendingConformances.front());
+    SGM.pendingConformances.pop_front();
   }
 
   // Process the worklist.
