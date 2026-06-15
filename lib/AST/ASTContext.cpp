@@ -2987,6 +2987,10 @@ void ASTContext::setCanImportResolver(CanImportResolver *resolver) {
   getImpl().CanImportResolverPtr = resolver;
 }
 
+CanImportResolver *ASTContext::getCanImportResolver() const {
+  return getImpl().CanImportResolverPtr;
+}
+
 bool ASTContext::canImportModule(ImportPath::Module moduleName, SourceLoc loc,
                                  llvm::VersionTuple version,
                                  bool underlyingVersion) {
@@ -6904,6 +6908,8 @@ ClangTypeConverter &ASTContext::getClangTypeConverter() {
   auto &impl = getImpl();
   if (!impl.Converter) {
     auto *cml = getClangModuleLoader();
+    assert(cml && "Clang type conversion is unavailable without a Clang module "
+                  "loader (e.g. during dependency scanning)");
     impl.Converter.emplace(*this, cml->getClangASTContext(), LangOpts.Target);
   }
   return impl.Converter.value();
@@ -6934,6 +6940,8 @@ ASTContext::getClangTemplateArguments(
   auto &impl = getImpl();
   if (!impl.Converter) {
     auto *cml = getClangModuleLoader();
+    assert(cml && "Clang type conversion is unavailable without a Clang module "
+                  "loader (e.g. during dependency scanning)");
     impl.Converter.emplace(*this, cml->getClangASTContext(), LangOpts.Target);
   }
 

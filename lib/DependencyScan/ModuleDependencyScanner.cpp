@@ -577,6 +577,12 @@ ModuleDependencyScanner::create(SwiftDependencyScanningService &service,
     }
   }
 
+  // Install the scanner as the canImport resolver on the scan ASTContext, so
+  // Clang `canImport` queries are answered by the scanner rather than a
+  // heavyweight ClangImporter (which the scan context no longer registers).
+  // The destructor clears this.
+  instance->getASTContext().setCanImportResolver(scanner.get());
+
   return scanner;
 }
 
@@ -633,6 +639,9 @@ ModuleDependencyScanner::ModuleDependencyScanner(
 }
 
 ModuleDependencyScanner::~ModuleDependencyScanner() {
+  // Clear our canImport resolver installation on the scan ASTContext.
+  if (ScanASTContext.getCanImportResolver() == this)
+    ScanASTContext.setCanImportResolver(nullptr);
   if (ShareClangCompilerInstance) {
     auto finError = finalizeWorkerClangScanningTool();
     assert(!finError && "ClangScanningTool finalization must succeed.");
@@ -644,8 +653,9 @@ bool ModuleDependencyScanner::canImportModule(
     ModuleLoader::ModuleVersionInfo *versionInfo, bool isTestableImport) {
   // Answer a Clang `canImport` query by running a by-name Clang dependency scan
   // on a worker; Swift modules continue to be answered by the registered Swift
-  // loaders. Rely on the shared Clang scanning service's by-name cache so the
-  // subsequent graph resolution reuses this result. Submodule and
+  // loaders. The by-name scan is re-issued when this module is later resolved
+  // in the dependency graph, but the shared Clang scanning service's file-stat
+  // and built-module caches make that repeat cheaper. Submodule and
   // versioned-query parity (populating `versionInfo`) are handled separately.
   Identifier moduleName = getModuleImportIdentifier(path.front().Item.str());
   auto clangModuleDependencies = withDependencyScanningWorker(
@@ -659,7 +669,19 @@ bool ModuleDependencyScanner::canImportModule(
             },
             {});
       });
-  return clangModuleDependencies.has_value();
+  if (!clangModuleDependencies)
+    return false;
+
+  // Record this as a Clang-module existence result so the cross-source version
+  // arbitration in `canImportModuleImpl` treats the module as importable (it
+  // keys "found" off a valid version source kind). The concrete underlying
+  // version (read from the framework `.tbd`) is populated by a later change;
+  // an empty version with a `ClangModuleTBD` source kind is sufficient for
+  // unversioned `canImport` queries.
+  if (versionInfo)
+    versionInfo->setVersion(llvm::VersionTuple(),
+                            ModuleLoader::ModuleVersionSourceKind::ClangModuleTBD);
+  return true;
 }
 
 llvm::Error ModuleDependencyScanner::initializeWorkerClangScanningTool() {

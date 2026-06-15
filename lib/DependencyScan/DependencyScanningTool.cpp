@@ -413,8 +413,6 @@ llvm::ErrorOr<ScanQueryContext> DependencyScanningTool::createScanQueryContext(
     // Setup the caching service after the instance finishes setup.
     if (ScanningService->setupCachingDependencyScanningService(*Instance))
       return std::make_error_code(std::errc::invalid_argument);
-
-    (void)Instance->getMainModule();
   }
 
   auto SerializedDiagnosticsOutputPath =

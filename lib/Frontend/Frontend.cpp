@@ -882,23 +882,37 @@ bool CompilerInstance::setUpModuleLoaders() {
           IgnoreSourceInfoFile);
   }
 
+  // During dependency scanning the scan ASTContext does not register a
+  // ClangImporter: Clang `canImport` queries are answered by the dependency
+  // scanner (installed as a CanImportResolver), and the scanner derives its
+  // Clang configuration from compiler options rather than a live importer.
+  // This avoids the heavy ClangImporter::create on the scan pre-roll.
+  const bool isDependencyScan =
+      Invocation.getFrontendOptions().RequestedAction ==
+      FrontendOptions::ActionType::ScanDependencies;
+
   // Wire up the Clang importer. If the user has specified an SDK, use it.
   // Otherwise, we just keep it around as our interface to Clang's ABI
   // knowledge.
-  std::unique_ptr<ClangImporter> clangImporter = ClangImporter::create(
-      *Context, &Invocation.getIRGenOptions(), Invocation.getPCHHash(),
-      CASIDForPCH, getDependencyTracker(), /*ignoreFileMapping=*/false,
-      getSharedCASInstance(), getSharedCacheInstance());
-  if (!clangImporter) {
-    Diagnostics.diagnose(SourceLoc(), diag::error_clang_importer_create_fail);
-    return true;
+  std::unique_ptr<ClangImporter> clangImporter;
+  if (!isDependencyScan) {
+    clangImporter = ClangImporter::create(
+        *Context, &Invocation.getIRGenOptions(), Invocation.getPCHHash(),
+        CASIDForPCH, getDependencyTracker(), /*ignoreFileMapping=*/false,
+        getSharedCASInstance(), getSharedCacheInstance());
+    if (!clangImporter) {
+      Diagnostics.diagnose(SourceLoc(), diag::error_clang_importer_create_fail);
+      return true;
+    }
   }
 
-  // Configure ModuleInterfaceChecker for the ASTContext.
-  auto const &Clang = clangImporter->getClangInstance();
-  std::string ModuleCachePath = ModuleCachePathFromInvocation.empty()
-                                    ? getModuleCachePathFromClang(Clang)
-                                    : ModuleCachePathFromInvocation.str();
+  // Configure ModuleInterfaceChecker for the ASTContext. When scanning there is
+  // no Clang instance to derive the module cache path from, so use the
+  // invocation's path (as the dependency-scanning sub-invocation path does).
+  std::string ModuleCachePath = ModuleCachePathFromInvocation.str();
+  if (clangImporter && ModuleCachePath.empty())
+    ModuleCachePath =
+        getModuleCachePathFromClang(clangImporter->getClangInstance());
   Context->addModuleInterfaceChecker(
       std::make_unique<ModuleInterfaceCheckerImpl>(
           *Context, ModuleCachePath, FEOpts.PrebuiltModuleCachePath,
@@ -926,27 +940,8 @@ bool CompilerInstance::setUpModuleLoaders() {
     Context->addModuleLoader(std::move(ISML));
   }
 
-  Context->addModuleLoader(std::move(clangImporter), /*isClang*/ true);
-
-  // When scanning for dependencies, we must add the scanner placeholder loader in order to
-  // handle ASTContext operations such as canImportModule
-  if (Invocation.getFrontendOptions().RequestedAction ==
-      FrontendOptions::ActionType::ScanDependencies) {
-    auto ClangModuleCachePath = getModuleCachePathFromClang(
-        Context->getClangModuleLoader()->getClangInstance());
-    auto &FEOpts = Invocation.getFrontendOptions();
-    ModuleInterfaceLoaderOptions LoaderOpts(FEOpts);
-    InterfaceSubContextDelegateImpl ASTDelegate(
-        Context->SourceMgr, &Context->Diags, Context->SearchPathOpts,
-        Context->LangOpts, Context->ClangImporterOpts, Context->CASOpts,
-        LoaderOpts,
-        /*buildModuleCacheDirIfAbsent*/ false, ClangModuleCachePath,
-        FEOpts.PrebuiltModuleCachePath, FEOpts.BackupModuleInterfaceDir,
-        FEOpts.CacheReplayPrefixMap,
-        FEOpts.SerializeModuleInterfaceDependencyHashes,
-        FEOpts.shouldTrackSystemDependencies(),
-        getSharedCASInstance(), getSharedCacheInstance());
-  }
+  if (clangImporter)
+    Context->addModuleLoader(std::move(clangImporter), /*isClang*/ true);
 
   return false;
 }

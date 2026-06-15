@@ -1271,6 +1271,7 @@ public:
   /// pass nullptr to clear. Used by the dependency scanner to answer Clang
   /// `canImport` queries without a registered `ClangImporter`.
   void setCanImportResolver(CanImportResolver *resolver);
+  CanImportResolver *getCanImportResolver() const;
 
   /// \returns a module with a given name that was already loaded.  If the
   /// module was not loaded, returns nullptr.
