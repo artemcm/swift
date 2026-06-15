@@ -116,6 +116,7 @@ namespace swift {
   class PackageUnit;
   class ModuleDependenciesCache;
   class ModuleLoader;
+  class CanImportResolver;
   class NominalTypeDecl;
   class NormalProtocolConformance;
   class OpaqueTypeDecl;
@@ -1264,6 +1265,12 @@ public:
   void forEachCanImportVersionCheck(
       std::function<void(StringRef, const llvm::VersionTuple &,
                          const llvm::VersionTuple &)>) const;
+
+  /// Install a resolver consulted by `canImportModule` for module-existence
+  /// queries, in addition to the registered module loaders. Borrowed pointer;
+  /// pass nullptr to clear. Used by the dependency scanner to answer Clang
+  /// `canImport` queries without a registered `ClangImporter`.
+  void setCanImportResolver(CanImportResolver *resolver);
 
   /// \returns a module with a given name that was already loaded.  If the
   /// module was not loaded, returns nullptr.

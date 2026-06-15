@@ -453,6 +453,10 @@ struct ASTContext::Implementation {
   /// ASTContext.
   SmallVector<std::unique_ptr<swift::ModuleLoader>, 4> ModuleLoaders;
 
+  /// Optional resolver consulted by `canImportModule` in addition to the
+  /// module loaders above. Borrowed; not owned by the ASTContext.
+  CanImportResolver *CanImportResolverPtr = nullptr;
+
   /// Singleton used to cache the import graph.
   swift::namelookup::ImportCache TheImportCache;
 
@@ -2868,24 +2872,46 @@ bool ASTContext::canImportModuleImpl(
         return true;
       };
 
-  // For each module loader, attempt to discover queried module,
-  // along the way record the discovered module's version as well as
-  // the discovered module's underlying Clang module's version.
+  // Visit each canImport source: the registered module loaders, then the
+  // scanner-installed resolver, if any. `onFound` receives the version info
+  // reported by each source that can import the module; returning true stops
+  // iteration early. Loaders are visited before the resolver so an
+  // existence-only query short-circuits on a loader hit without invoking the
+  // resolver.
+  auto forEachImportingSource =
+      [&](llvm::function_ref<bool(const ModuleLoader::ModuleVersionInfo &)>
+              onFound) -> bool {
+    for (auto &importer : getImpl().ModuleLoaders) {
+      ModuleLoader::ModuleVersionInfo versionInfo;
+      if (importer->canImportModule(ModuleName, loc, &versionInfo) &&
+          onFound(versionInfo))
+        return true;
+    }
+    if (auto *resolver = getImpl().CanImportResolverPtr) {
+      ModuleLoader::ModuleVersionInfo versionInfo;
+      if (resolver->canImportModule(ModuleName, loc, &versionInfo,
+                                    /*isTestableImport=*/false) &&
+          onFound(versionInfo))
+        return true;
+    }
+    return false;
+  };
+
+  // For each source, attempt to discover the queried module, recording the
+  // best discovered version and underlying Clang module version.
   auto lookupVersionedModule =
       [&](ModuleLoader::ModuleVersionInfo &bestVersionInfo,
           ModuleLoader::ModuleVersionInfo &bestUnderlyingVersionInfo) -> bool {
-    for (auto &importer : getImpl().ModuleLoaders) {
-      ModuleLoader::ModuleVersionInfo versionInfo;
-      if (!importer->canImportModule(ModuleName, loc, &versionInfo))
-        continue; // The loader can't find the module.
-
-      if (validateVersion(bestVersionInfo, versionInfo,
-                          /* underlyingVersion */ false))
-        bestVersionInfo = versionInfo;
-      if (validateVersion(bestUnderlyingVersionInfo, versionInfo,
-                          /* underlyingVersion */ true))
-        bestUnderlyingVersionInfo = versionInfo;
-    }
+    forEachImportingSource(
+        [&](const ModuleLoader::ModuleVersionInfo &versionInfo) {
+          if (validateVersion(bestVersionInfo, versionInfo,
+                              /* underlyingVersion */ false))
+            bestVersionInfo = versionInfo;
+          if (validateVersion(bestUnderlyingVersionInfo, versionInfo,
+                              /* underlyingVersion */ true))
+            bestUnderlyingVersionInfo = versionInfo;
+          return false; // Visit every source to arbitrate the best version.
+        });
 
     if (!isUnderlyingVersion && !bestVersionInfo.isValid())
       return false;
@@ -2900,15 +2926,10 @@ bool ASTContext::canImportModuleImpl(
 
   // For queries which do not care about any kind of module information
   // such as e.g. `testImportModule`, simply return `true` as soon
-  // as *any* loader can find the queried module.
+  // as *any* source can find the queried module.
   auto lookupModule = [&]() -> bool {
-    for (auto &importer : getImpl().ModuleLoaders) {
-      ModuleLoader::ModuleVersionInfo versionInfo;
-      if (!importer->canImportModule(ModuleName, loc, &versionInfo))
-        continue; // The loader can't find the module.
-      return true;
-    }
-    return false;
+    return forEachImportingSource(
+        [](const ModuleLoader::ModuleVersionInfo &) { return true; });
   };
 
   if (version.empty()) {
@@ -2960,6 +2981,10 @@ void ASTContext::forEachCanImportVersionCheck(
         Callback) const {
   for (auto &entry : CanImportModuleVersions)
     Callback(entry.first, entry.second.Version, entry.second.UnderlyingVersion);
+}
+
+void ASTContext::setCanImportResolver(CanImportResolver *resolver) {
+  getImpl().CanImportResolverPtr = resolver;
 }
 
 bool ASTContext::canImportModule(ImportPath::Module moduleName, SourceLoc loc,

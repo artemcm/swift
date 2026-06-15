@@ -14,6 +14,7 @@
 #include "swift/Basic/SourceManager.h"
 #include "swift/AST/Identifier.h"
 #include "swift/AST/ModuleDependencies.h"
+#include "swift/AST/ModuleLoader.h"
 #include "swift/Frontend/ModuleInterfaceLoader.h"
 #include "swift/Serialization/ScanningLoaders.h"
 #include "clang/Tooling/DependencyScanningTool.h"
@@ -270,7 +271,7 @@ private:
   std::map<std::string, FileEntry> TrackedFiles;
 };
 
-class ModuleDependencyScanner {
+class ModuleDependencyScanner : public CanImportResolver {
 public:
   static llvm::ErrorOr<std::unique_ptr<ModuleDependencyScanner>>
   create(SwiftDependencyScanningService &service, CompilerInstance *instance,
@@ -286,6 +287,13 @@ public:
   /// transitive closure dependency graph.
   std::vector<ModuleDependencyID>
   performDependencyScan(ModuleDependencyID rootModuleID);
+
+  /// CanImportResolver: answer a Clang `canImport` query by running a by-name
+  /// Clang dependency scan on a worker. Installed on the scan ASTContext so
+  /// Clang `canImport` is resolved without a registered ClangImporter.
+  bool canImportModule(ImportPath::Module path, SourceLoc loc,
+                       ModuleLoader::ModuleVersionInfo *versionInfo,
+                       bool isTestableImport) override;
 
   /// How many filesystem lookups were performed by the scanner
   unsigned getNumLookups() { return NumLookups; }
@@ -464,6 +472,11 @@ private:
   
   /// Reference to a module dependency cache
   ModuleDependenciesCache &DependencyCache;
+
+  /// Options-derived Clang scanner configuration, computed once and shared by
+  /// all workers and by build-command construction. Replaces per-query use of
+  /// the scan context's ClangImporter.
+  std::unique_ptr<ClangScannerConfiguration> ClangScanConfig;
 
   /// The available pool of workers for filesystem module search
   unsigned NumThreads;

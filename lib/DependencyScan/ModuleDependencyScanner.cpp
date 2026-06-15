@@ -621,14 +621,14 @@ ModuleDependencyScanner::ModuleDependencyScanner(
         llvm::cas::createCASProvidingFileSystem(
             CAS, ScanASTContext.SourceMgr.getFileSystem()));
 
-  auto clangScannerConfig =
-      ClangImporter::computeScannerConfiguration(ScanASTContext, CAS);
+  ClangScanConfig = std::make_unique<ClangScannerConfiguration>(
+      ClangImporter::computeScannerConfiguration(ScanASTContext, CAS));
 
   // TODO: Make num threads configurable
   for (size_t i = 0; i < NumThreads; ++i)
     Workers.emplace_front(std::make_unique<ModuleDependencyScanningWorker>(
         ScanningService, ScanCompilerInvocation, SILOptions, ScanASTContext,
-        clangScannerConfig, DependencyTracker, CAS, ActionCache,
+        *ClangScanConfig, DependencyTracker, CAS, ActionCache,
         ScanDiagnosticReporter, PrefixMapper.get(), ShareClangCompilerInstance));
 }
 
@@ -637,6 +637,29 @@ ModuleDependencyScanner::~ModuleDependencyScanner() {
     auto finError = finalizeWorkerClangScanningTool();
     assert(!finError && "ClangScanningTool finalization must succeed.");
   }
+}
+
+bool ModuleDependencyScanner::canImportModule(
+    ImportPath::Module path, SourceLoc loc,
+    ModuleLoader::ModuleVersionInfo *versionInfo, bool isTestableImport) {
+  // Answer a Clang `canImport` query by running a by-name Clang dependency scan
+  // on a worker; Swift modules continue to be answered by the registered Swift
+  // loaders. Rely on the shared Clang scanning service's by-name cache so the
+  // subsequent graph resolution reuses this result. Submodule and
+  // versioned-query parity (populating `versionInfo`) are handled separately.
+  Identifier moduleName = getModuleImportIdentifier(path.front().Item.str());
+  auto clangModuleDependencies = withDependencyScanningWorker(
+      [&](ModuleDependencyScanningWorker *worker)
+          -> std::optional<clang::tooling::dependencies::TranslationUnitDeps> {
+        return worker->scanFilesystemForClangModuleDependency(
+            moduleName,
+            [this](const clang::tooling::dependencies::ModuleDeps &clangDep,
+                   clang::tooling::dependencies::ModuleOutputKind mok) {
+              return clangModuleOutputPathLookup(clangDep, mok);
+            },
+            {});
+      });
+  return clangModuleDependencies.has_value();
 }
 
 llvm::Error ModuleDependencyScanner::initializeWorkerClangScanningTool() {
@@ -678,12 +701,10 @@ ModuleDependencyScanner::getMainModuleDependencyInfo(ModuleDecl *mainModule) {
                                  .asAPINotesVersionString())
                                 .str();
 
-  auto clangImporter =
-      static_cast<ClangImporter *>(ScanASTContext.getClangModuleLoader());
   std::vector<std::string> buildArgs;
   if (ScanASTContext.ClangImporterOpts.ClangImporterDirectCC1Scan) {
     buildArgs.push_back("-direct-clang-cc1-module-build");
-    for (auto &arg : clangImporter->getSwiftExplicitModuleDirectCC1Args()) {
+    for (auto &arg : ClangScanConfig->swiftExplicitModuleDirectCC1Args) {
       buildArgs.push_back("-Xcc");
       buildArgs.push_back(arg);
     }

@@ -364,6 +364,22 @@ public:
   void findOverlayFiles(SourceLoc diagLoc, ModuleDecl *module, FileUnit *file);
 };
 
+/// An interface for answering `canImport(...)` module-existence queries without
+/// a registered `ModuleLoader`. The dependency scanner installs an
+/// implementation on the scan `ASTContext` so that Clang `canImport` queries
+/// are answered by the scanner itself rather than by a heavyweight
+/// `ClangImporter`.
+class CanImportResolver {
+public:
+  virtual ~CanImportResolver() = default;
+
+  /// Check whether the module with the given name can be imported, populating
+  /// \p versionInfo when a non-null pointer is provided.
+  virtual bool canImportModule(ImportPath::Module path, SourceLoc loc,
+                               ModuleLoader::ModuleVersionInfo *versionInfo,
+                               bool isTestableImport) = 0;
+};
+
 } // namespace swift
 
 namespace llvm {
