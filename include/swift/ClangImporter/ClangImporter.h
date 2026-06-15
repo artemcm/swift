@@ -159,6 +159,8 @@ struct ClangInvocationFileMapping {
   bool requiresBuiltinHeadersInSystemModules = false;
 };
 
+class ClangScannerConfiguration;
+
 /// Class that imports Clang modules into Swift, mapping directly
 /// from Clang ASTs over to Swift ASTs.
 class ClangImporter final : public ClangModuleLoader {
@@ -237,9 +239,34 @@ public:
   std::vector<std::string>
   getClangDepScanningInvocationArguments(ASTContext &ctx);
 
-  std::unique_ptr<clang::CompilerInvocation> createClangInvocation(
-      ASTContext &ctx, llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs,
-      bool forCodeGen = false);
+  std::optional<std::vector<std::string>>
+  getClangCC1Arguments(ASTContext &ctx,
+                       llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS,
+                       bool ignoreClangTarget = false);
+
+  /// Instance-free derivations of the Clang scanner configuration. These take
+  /// the options-derived inputs explicitly (rather than reading them off a
+  /// constructed importer) so the dependency scanner can compute its
+  /// configuration without building a `clang::CompilerInstance`.
+  static std::vector<std::string>
+  computeClangDriverArguments(ASTContext &ctx,
+                              const ClangInvocationFileMapping &fileMapping,
+                              bool ignoreClangTarget = false);
+  static std::vector<std::string>
+  computeClangDepScanningInvocationArguments(
+      ASTContext &ctx, const ClangInvocationFileMapping &fileMapping);
+  static std::vector<std::string>
+  computeSwiftExplicitModuleDirectCC1Args(ASTContext &ctx,
+                                          ArrayRef<std::string> cc1Args);
+  static ClangScannerConfiguration
+  computeScannerConfiguration(ASTContext &ctx,
+                              std::shared_ptr<llvm::cas::ObjectStore> CAS);
+
+  static std::unique_ptr<clang::CompilerInvocation>
+  createClangInvocation(ClangImporter *importer,
+                        const ClangImporterOptions &importerOpts,
+                        llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS,
+                        const std::vector<std::string> &CC1Args);
 
   /// Creates a Clang Driver based on the Swift compiler options.
   ///
@@ -713,6 +740,26 @@ public:
       llvm::cas::ObjectStore &CAS, llvm::cas::ObjectRef ChainedPCHIncludeTree);
 
   SourceLoc importSourceLocation(clang::SourceLocation loc) override;
+};
+
+/// Options-derived configuration required to drive the Clang dependency
+/// scanner, decoupled from a fully-initialized `ClangImporter`.
+///
+/// Every field is options-derived; the configuration is built by
+/// `ClangImporter::computeScannerConfiguration`, which does not construct a
+/// `clang::CompilerInstance`.
+class ClangScannerConfiguration {
+public:
+  /// Clang file mapping (modulemap overlays, redirects) for scanner file
+  /// systems. Move-only.
+  ClangInvocationFileMapping fileMapping;
+  /// Base command line for Clang by-name dependency scanner queries.
+  std::vector<std::string> baseCommandLineArgs;
+  /// Clang creation cc1 args for Swift explicit module builds (raw, before
+  /// `-Xcc` wrapping); only populated for direct-cc1 scanning.
+  std::vector<std::string> swiftExplicitModuleDirectCC1Args;
+  /// Module cache path handed to interface scanning sub-contexts.
+  std::string moduleCachePath;
 };
 
 ImportDecl *createImportDecl(ASTContext &Ctx, DeclContext *DC, ClangNode ClangN,

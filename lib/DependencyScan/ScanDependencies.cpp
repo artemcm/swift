@@ -1396,6 +1396,12 @@ performModuleScanImpl(
     DepScanInMemoryDiagnosticCollector *diagnosticCollector) {
   const ASTContext &ctx = instance->getASTContext();
   const FrontendOptions &opts = instance->getInvocation().getFrontendOptions();
+  auto expectedScannerPtr =
+      ModuleDependencyScanner::create(service, instance, cache);
+  if (!expectedScannerPtr)
+    return expectedScannerPtr.getError();
+  auto &scanner = **expectedScannerPtr;
+
   // Load the dependency cache if -reuse-dependency-scan-cache
   // is specified
   if (opts.ReuseDependencyScannerCache) {
@@ -1422,14 +1428,6 @@ performModuleScanImpl(
           opts.EmitDependencyScannerCacheRemarks);
     }
   }
-
-  auto expectedScannerPtr =
-      ModuleDependencyScanner::create(service, instance, cache);
-
-  if (!expectedScannerPtr)
-    return expectedScannerPtr.getError();
-
-  auto &scanner = **expectedScannerPtr;
 
   // Identify imports of the main module and add an entry for it
   // to the dependency graph.
@@ -1527,7 +1525,7 @@ bool swift::dependencies::scanDependencies(CompilerInstance &CI) {
   // of a module cache
   SwiftDependencyScanningService *service =
       ctx.Allocate<SwiftDependencyScanningService>();
-  ModuleDependenciesCache cache(CI.getMainModule()->getNameStr().str(),
+  ModuleDependenciesCache cache(CI.getInvocation().getModuleName().str(),
                                 CI.getInvocation().getModuleScanningHash());
   if (service->setupCachingDependencyScanningService(CI))
     return true;
@@ -1561,7 +1559,7 @@ bool swift::dependencies::prescanDependencies(CompilerInstance &instance) {
   SwiftDependencyScanningService *singleUseService =
       Context.Allocate<SwiftDependencyScanningService>();
   ModuleDependenciesCache cache(
-      instance.getMainModule()->getNameStr().str(),
+      instance.getInvocation().getModuleName().str(),
       instance.getInvocation().getModuleScanningHash());
 
   // Execute import prescan, and write JSON output to the output stream

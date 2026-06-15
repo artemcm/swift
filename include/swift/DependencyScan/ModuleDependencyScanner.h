@@ -23,6 +23,7 @@
 
 namespace swift {
 class DependencyTracker;
+class ClangScannerConfiguration;
 }
 
 namespace swift {
@@ -116,6 +117,7 @@ public:
       SwiftDependencyScanningService &globalScanningService,
       const CompilerInvocation &ScanCompilerInvocation,
       const SILOptions &SILOptions, ASTContext &ScanASTContext,
+      const ClangScannerConfiguration &ClangConfig,
       DependencyTracker &DependencyTracker,
       std::shared_ptr<llvm::cas::ObjectStore> CAS,
       std::shared_ptr<llvm::cas::ActionCache> ActionCache,

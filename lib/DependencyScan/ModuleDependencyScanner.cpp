@@ -196,12 +196,11 @@ static std::vector<std::string> inputSpecificClangScannerCommand(
 static llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem>
 getClangScanningFS(SwiftDependencyScanningService &service,
                    std::shared_ptr<llvm::cas::ObjectStore> cas,
-                   ASTContext &ctx) {
-  auto *importer = static_cast<ClangImporter *>(ctx.getClangModuleLoader());
+                   ASTContext &ctx,
+                   const ClangInvocationFileMapping &fileMapping) {
   // Dependency scanner needs to create its own file system per worker.
   auto fs = ClangImporter::computeClangImporterFileSystem(
-      ctx, importer->getClangFileMapping(),
-      llvm::vfs::createPhysicalFileSystem(), true,
+      ctx, fileMapping, llvm::vfs::createPhysicalFileSystem(), true,
       [&](StringRef str) { return service.save(str); });
 
   if (cas)
@@ -213,6 +212,7 @@ ModuleDependencyScanningWorker::ModuleDependencyScanningWorker(
     SwiftDependencyScanningService &globalScanningService,
     const CompilerInvocation &ScanCompilerInvocation,
     const SILOptions &SILOptions, ASTContext &ScanASTContext,
+    const ClangScannerConfiguration &ClangConfig,
     swift::DependencyTracker &DependencyTracker,
     std::shared_ptr<llvm::cas::ObjectStore> CAS,
     std::shared_ptr<llvm::cas::ActionCache> ActionCache,
@@ -223,7 +223,8 @@ ModuleDependencyScanningWorker::ModuleDependencyScanningWorker(
       workerSourceMgr(ScanASTContext.SourceMgr.getFileSystem()),
       clangScanningTool(
           *globalScanningService.ClangScanningService,
-          getClangScanningFS(globalScanningService, CAS, ScanASTContext)),
+          getClangScanningFS(globalScanningService, CAS, ScanASTContext,
+                             ClangConfig.fileMapping)),
       CAS(CAS), ActionCache(ActionCache),
       diagnosticReporter(DiagnosticReporter),
       ShareClangCompilerInstance(ShareClangCompilerInstance) {
@@ -256,8 +257,7 @@ ModuleDependencyScanningWorker::ModuleDependencyScanningWorker(
       workerASTContext->ClangImporterOpts, workerASTContext->CASOpts,
       workerCompilerInvocation->getFrontendOptions(),
       /* buildModuleCacheDirIfAbsent */ false,
-      getModuleCachePathFromClang(
-          ScanASTContext.getClangModuleLoader()->getClangInstance()),
+      ClangConfig.moduleCachePath,
       workerCompilerInvocation->getFrontendOptions()
           .PrebuiltModuleCachePath,
       workerCompilerInvocation->getFrontendOptions()
@@ -278,10 +278,7 @@ ModuleDependencyScanningWorker::ModuleDependencyScanningWorker(
 
   // Set up the required command-line arguments and working directory
   // configuration required for clang dependency scanner queries
-  auto scanClangImporter =
-      static_cast<ClangImporter *>(ScanASTContext.getClangModuleLoader());
-  clangScanningBaseCommandLineArgs =
-      scanClangImporter->getClangDepScanningInvocationArguments(ScanASTContext);
+  clangScanningBaseCommandLineArgs = ClangConfig.baseCommandLineArgs;
   clangScanningModuleCommandLineArgs = inputSpecificClangScannerCommand(
       clangScanningBaseCommandLineArgs, std::nullopt);
   clangScanningWorkingDirectoryPath = computeClangWorkingDirectory(
@@ -292,7 +289,7 @@ ModuleDependencyScanningWorker::ModuleDependencyScanningWorker(
   if (ScanASTContext.ClangImporterOpts.ClangImporterDirectCC1Scan) {
     swiftModuleClangCC1CommandLineArgs.push_back(
         "-direct-clang-cc1-module-build");
-    for (auto &Arg : scanClangImporter->getSwiftExplicitModuleDirectCC1Args()) {
+    for (auto &Arg : ClangConfig.swiftExplicitModuleDirectCC1Args) {
       swiftModuleClangCC1CommandLineArgs.push_back("-Xcc");
       swiftModuleClangCC1CommandLineArgs.push_back(Arg);
     }
@@ -624,12 +621,15 @@ ModuleDependencyScanner::ModuleDependencyScanner(
         llvm::cas::createCASProvidingFileSystem(
             CAS, ScanASTContext.SourceMgr.getFileSystem()));
 
+  auto clangScannerConfig =
+      ClangImporter::computeScannerConfiguration(ScanASTContext, CAS);
+
   // TODO: Make num threads configurable
   for (size_t i = 0; i < NumThreads; ++i)
     Workers.emplace_front(std::make_unique<ModuleDependencyScanningWorker>(
         ScanningService, ScanCompilerInvocation, SILOptions, ScanASTContext,
-        DependencyTracker, CAS, ActionCache, ScanDiagnosticReporter,
-        PrefixMapper.get(), ShareClangCompilerInstance));
+        clangScannerConfig, DependencyTracker, CAS, ActionCache,
+        ScanDiagnosticReporter, PrefixMapper.get(), ShareClangCompilerInstance));
 }
 
 ModuleDependencyScanner::~ModuleDependencyScanner() {

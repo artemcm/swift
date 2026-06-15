@@ -310,7 +310,7 @@ DependencyScanningTool::getDependencies(ArrayRef<const char *> Command,
 
   // Local scan cache instance, wrapping the shared global cache.
   ModuleDependenciesCache cache(
-      ScanInstance->getMainModule()->getNameStr().str(),
+      ScanInstance->getInvocation().getModuleName().str(),
       ScanInstance->getInvocation().getModuleScanningHash());
   // Execute the scanning action, retrieving the in-memory result
   auto DependenciesOrErr =
@@ -340,7 +340,7 @@ DependencyScanningTool::getImports(ArrayRef<const char *> Command,
 
   // Local scan cache instance, wrapping the shared global cache.
   ModuleDependenciesCache cache(
-      ScanInstance->getMainModule()->getNameStr().str(),
+      ScanInstance->getInvocation().getModuleName().str(),
       ScanInstance->getInvocation().getModuleScanningHash());
   // Execute the pre-scanning action, retrieving the in-memory result
   auto DependenciesOrErr =

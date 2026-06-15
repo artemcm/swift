@@ -49,9 +49,11 @@ static void addScannerPrefixMapperInvocationArguments(
 }
 
 /// Create the command line for Clang dependency scanning.
-std::vector<std::string> ClangImporter::getClangDepScanningInvocationArguments(
-    ASTContext &ctx) {
-  std::vector<std::string> commandLineArgs = getClangDriverArguments(ctx);
+std::vector<std::string>
+ClangImporter::computeClangDepScanningInvocationArguments(
+    ASTContext &ctx, const ClangInvocationFileMapping &fileMapping) {
+  std::vector<std::string> commandLineArgs =
+      computeClangDriverArguments(ctx, fileMapping);
   addScannerPrefixMapperInvocationArguments(commandLineArgs, ctx);
 
   // HACK! Drop the -fmodule-format= argument and the one that
@@ -80,6 +82,11 @@ std::vector<std::string> ClangImporter::getClangDepScanningInvocationArguments(
   commandLineArgs.push_back("-finclude-tree-preserve-pch-path");
 
   return commandLineArgs;
+}
+
+std::vector<std::string> ClangImporter::getClangDepScanningInvocationArguments(
+    ASTContext &ctx) {
+  return computeClangDepScanningInvocationArguments(ctx, clangFileMapping);
 }
 
 void ClangImporter::getBridgingHeaderOptions(
