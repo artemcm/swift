@@ -846,6 +846,13 @@ bool CompilerInstance::setUpModuleLoaders() {
     return false;
   }
 
+  // Top-level dependency scanning takes a Clang-importer-free loader policy:
+  // Clang `canImport` is answered by the dependency scanner's
+  // `CanImportResolver`, so the heavy `ClangImporter::create` is skipped.
+  if (Invocation.getFrontendOptions().RequestedAction ==
+      FrontendOptions::ActionType::ScanDependencies)
+    return setUpScanningModuleLoaders();
+
   if (hasSourceImport()) {
     Context->addModuleLoader(SourceLoader::create(*Context,
                                                   getDependencyTracker()));
@@ -882,37 +889,22 @@ bool CompilerInstance::setUpModuleLoaders() {
           IgnoreSourceInfoFile);
   }
 
-  // During dependency scanning the scan ASTContext does not register a
-  // ClangImporter: Clang `canImport` queries are answered by the dependency
-  // scanner (installed as a CanImportResolver), and the scanner derives its
-  // Clang configuration from compiler options rather than a live importer.
-  // This avoids the heavy ClangImporter::create on the scan pre-roll.
-  const bool isDependencyScan =
-      Invocation.getFrontendOptions().RequestedAction ==
-      FrontendOptions::ActionType::ScanDependencies;
-
   // Wire up the Clang importer. If the user has specified an SDK, use it.
   // Otherwise, we just keep it around as our interface to Clang's ABI
   // knowledge.
-  std::unique_ptr<ClangImporter> clangImporter;
-  if (!isDependencyScan) {
-    clangImporter = ClangImporter::create(
-        *Context, &Invocation.getIRGenOptions(), Invocation.getPCHHash(),
-        CASIDForPCH, getDependencyTracker(), /*ignoreFileMapping=*/false,
-        getSharedCASInstance(), getSharedCacheInstance());
-    if (!clangImporter) {
-      Diagnostics.diagnose(SourceLoc(), diag::error_clang_importer_create_fail);
-      return true;
-    }
+  std::unique_ptr<ClangImporter> clangImporter = ClangImporter::create(
+      *Context, &Invocation.getIRGenOptions(), Invocation.getPCHHash(),
+      CASIDForPCH, getDependencyTracker(), /*ignoreFileMapping=*/false,
+      getSharedCASInstance(), getSharedCacheInstance());
+  if (!clangImporter) {
+    Diagnostics.diagnose(SourceLoc(), diag::error_clang_importer_create_fail);
+    return true;
   }
 
-  // Configure ModuleInterfaceChecker for the ASTContext. When scanning there is
-  // no Clang instance to derive the module cache path from, so use the
-  // invocation's path (as the dependency-scanning sub-invocation path does).
-  std::string ModuleCachePath = ModuleCachePathFromInvocation.str();
-  if (clangImporter && ModuleCachePath.empty())
-    ModuleCachePath =
-        getModuleCachePathFromClang(clangImporter->getClangInstance());
+  // Configure ModuleInterfaceChecker for the ASTContext.
+  std::string ModuleCachePath = ModuleCachePathFromInvocation.empty()
+      ? getModuleCachePathFromClang(clangImporter->getClangInstance())
+      : ModuleCachePathFromInvocation.str();
   Context->addModuleInterfaceChecker(
       std::make_unique<ModuleInterfaceCheckerImpl>(
           *Context, ModuleCachePath, FEOpts.PrebuiltModuleCachePath,
@@ -940,8 +932,74 @@ bool CompilerInstance::setUpModuleLoaders() {
     Context->addModuleLoader(std::move(ISML));
   }
 
-  if (clangImporter)
-    Context->addModuleLoader(std::move(clangImporter), /*isClang*/ true);
+  Context->addModuleLoader(std::move(clangImporter), /*isClang*/ true);
+
+  return false;
+}
+
+bool CompilerInstance::setUpScanningModuleLoaders() {
+  auto ModuleCachePathFromInvocation = getInvocation().getClangModuleCachePath();
+  auto &FEOpts = Invocation.getFrontendOptions();
+  auto MLM = Invocation.getSearchPathOptions().ModuleLoadMode;
+  auto IgnoreSourceInfoFile = Invocation.getFrontendOptions().IgnoreSwiftSourceInfo;
+  ModuleInterfaceLoaderOptions LoaderOpts(FEOpts);
+
+  if (Invocation.getLangOptions().EnableMemoryBufferImporter) {
+    auto MemoryBufferLoader = MemoryBufferSerializedModuleLoader::create(
+        *Context, getDependencyTracker(), MLM, IgnoreSourceInfoFile);
+    this->MemoryBufferLoader = MemoryBufferLoader.get();
+    Context->addModuleLoader(std::move(MemoryBufferLoader));
+  }
+
+  // Build an explicit Swift module loader only when the invocation provides
+  // explicit Swift module inputs / map; scanning otherwise runs implicit
+  // module discovery (`-disable-implicit-modules` is never used with
+  // `-scan-dependencies`).
+  std::unique_ptr<SerializedModuleLoaderBase> ESML;
+  if (!Invocation.getSearchPathOptions().ExplicitSwiftModuleMapPath.empty() ||
+      !Invocation.getSearchPathOptions().ExplicitSwiftModuleInputs.empty()) {
+    if (Invocation.getCASOptions().EnableCaching ||
+        Invocation.getCASOptions().ImportModuleFromCAS)
+      ESML = ExplicitCASModuleLoader::create(
+          *Context, getObjectStore(), getActionCache(), getDependencyTracker(),
+          MLM, Invocation.getSearchPathOptions().ExplicitSwiftModuleMapPath,
+          Invocation.getSearchPathOptions().ExplicitSwiftModuleInputs,
+          IgnoreSourceInfoFile);
+    else
+      ESML = ExplicitSwiftModuleLoader::create(
+          *Context, getDependencyTracker(), MLM,
+          Invocation.getSearchPathOptions().ExplicitSwiftModuleMapPath,
+          Invocation.getSearchPathOptions().ExplicitSwiftModuleInputs,
+          IgnoreSourceInfoFile);
+  }
+
+  // Configure ModuleInterfaceChecker. With no Clang importer there is no
+  // live Clang instance to derive the cache path from, so use the
+  // invocation's path (matching the sub-invocation policy above).
+  Context->addModuleInterfaceChecker(
+      std::make_unique<ModuleInterfaceCheckerImpl>(
+          *Context, ModuleCachePathFromInvocation,
+          FEOpts.PrebuiltModuleCachePath, FEOpts.BackupModuleInterfaceDir,
+          LoaderOpts));
+
+  if (ESML) {
+    this->DefaultSerializedLoader = ESML.get();
+    Context->addModuleLoader(std::move(ESML), false, false, false, true);
+  }
+
+  // Implicit Swift module loaders.
+  if (MLM != ModuleLoadingMode::OnlySerialized) {
+    auto PIML = ModuleInterfaceLoader::create(
+        *Context, *static_cast<ModuleInterfaceCheckerImpl *>(
+                       Context->getModuleInterfaceChecker()),
+        getDependencyTracker(), MLM, FEOpts.PreferInterfaceForModules,
+        IgnoreSourceInfoFile);
+    Context->addModuleLoader(std::move(PIML), false, false, true);
+  }
+  auto ISML = ImplicitSerializedModuleLoader::create(
+      *Context, getDependencyTracker(), MLM, IgnoreSourceInfoFile);
+  this->DefaultSerializedLoader = ISML.get();
+  Context->addModuleLoader(std::move(ISML));
 
   return false;
 }

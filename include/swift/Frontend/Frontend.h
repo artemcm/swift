@@ -781,6 +781,12 @@ private:
   void setUpLLVMArguments();
   void setUpDiagnosticOptions();
   bool setUpModuleLoaders();
+
+  /// Register the module loader policy used by the dependency scanner: only
+  /// the Swift module loaders, with the module cache path taken from the
+  /// invocation. The Clang side of `canImport` is answered by the dependency
+  /// scanner's `CanImportResolver`, so no `ClangImporter` is constructed.
+  bool setUpScanningModuleLoaders();
   bool setUpPluginLoader();
   bool setUpInputs();
   bool setUpASTContextIfNeeded();
