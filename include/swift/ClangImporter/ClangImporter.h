@@ -771,6 +771,14 @@ ImportDecl *createImportDecl(ASTContext &Ctx, DeclContext *DC, ClangNode ClangN,
 std::string
 getModuleCachePathFromClang(const clang::CompilerInstance &Instance);
 
+/// Read the framework's `.tbd` file alongside the given module-defining path
+/// to recover the module's current version, mirroring the clang importer's
+/// `_underlyingVersion:` lookup. Returns an empty version if no `.tbd` is
+/// found or its contents cannot be parsed.
+llvm::VersionTuple getCurrentVersionFromTBD(llvm::vfs::FileSystem &FS,
+                                            StringRef path,
+                                            StringRef moduleName);
+
 /// Whether the given parameter name identifies a completion handler.
 bool isCompletionHandlerParamName(StringRef paramName);
 

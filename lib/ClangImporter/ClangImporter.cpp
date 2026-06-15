@@ -2518,7 +2518,7 @@ bool ClangImporter::isModuleImported(const clang::Module *M) {
   return M->NameVisibility == clang::Module::NameVisibilityKind::AllVisible;
 }
 
-static llvm::VersionTuple getCurrentVersionFromTBD(llvm::vfs::FileSystem &FS,
+llvm::VersionTuple swift::getCurrentVersionFromTBD(llvm::vfs::FileSystem &FS,
                                                    StringRef path,
                                                    StringRef moduleName) {
   std::string fwName = (moduleName + ".framework").str();

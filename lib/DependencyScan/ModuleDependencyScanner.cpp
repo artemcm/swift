@@ -655,8 +655,12 @@ bool ModuleDependencyScanner::canImportModule(
   // on a worker; Swift modules continue to be answered by the registered Swift
   // loaders. The by-name scan is re-issued when this module is later resolved
   // in the dependency graph, but the shared Clang scanning service's file-stat
-  // and built-module caches make that repeat cheaper. Submodule and
-  // versioned-query parity (populating `versionInfo`) are handled separately.
+  // and built-module caches make that repeat cheaper.
+  //
+  // TODO: Strict submodule existence (e.g. `canImport(Foo.NonexistentSub)` ->
+  // false) currently over-approximates: any successful by-name scan of `Foo`
+  // satisfies a query of any submodule. Closing this gap requires either a
+  // submodule-aware clang-scanner query or a re-walk of the modulemap.
   Identifier moduleName = getModuleImportIdentifier(path.front().Item.str());
   auto clangModuleDependencies = withDependencyScanningWorker(
       [&](ModuleDependencyScanningWorker *worker)
@@ -672,15 +676,22 @@ bool ModuleDependencyScanner::canImportModule(
   if (!clangModuleDependencies)
     return false;
 
-  // Record this as a Clang-module existence result so the cross-source version
-  // arbitration in `canImportModuleImpl` treats the module as importable (it
-  // keys "found" off a valid version source kind). The concrete underlying
-  // version (read from the framework `.tbd`) is populated by a later change;
-  // an empty version with a `ClangModuleTBD` source kind is sufficient for
-  // unversioned `canImport` queries.
-  if (versionInfo)
-    versionInfo->setVersion(llvm::VersionTuple(),
+  if (versionInfo) {
+    // Mirror `ClangImporter::canImportModule`: read the framework `.tbd`
+    // alongside the resolved module-defining file to recover the current
+    // version, tagged as `ClangModuleTBD` so cross-source arbitration in
+    // `canImportModuleImpl` agrees with the loader-backed path. An empty
+    // version (no `.tbd`, or unparseable) is still a valid existence result.
+    llvm::VersionTuple version;
+    if (!clangModuleDependencies->ModuleGraph.empty()) {
+      StringRef definingPath =
+          clangModuleDependencies->ModuleGraph[0].ClangModuleMapFile;
+      version = getCurrentVersionFromTBD(*ScanASTContext.SourceMgr.getFileSystem(),
+                                         definingPath, moduleName.str());
+    }
+    versionInfo->setVersion(version,
                             ModuleLoader::ModuleVersionSourceKind::ClangModuleTBD);
+  }
   return true;
 }
 
