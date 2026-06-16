@@ -653,28 +653,53 @@ bool ModuleDependencyScanner::canImportModule(
     ModuleLoader::ModuleVersionInfo *versionInfo, bool isTestableImport) {
   // Answer a Clang `canImport` query by running a by-name Clang dependency scan
   // on a worker; Swift modules continue to be answered by the registered Swift
-  // loaders. The by-name scan is re-issued when this module is later resolved
-  // in the dependency graph, but the shared Clang scanning service's file-stat
-  // and built-module caches make that repeat cheaper.
+  // loaders. The discovered Clang module graph is recorded into the shared
+  // dependency cache, so a repeated `canImport` probe of the same module and
+  // the module's later resolution in the dependency graph both reuse this work
+  // rather than re-scanning from scratch.
   //
   // TODO: Strict submodule existence (e.g. `canImport(Foo.NonexistentSub)` ->
   // false) currently over-approximates: any successful by-name scan of `Foo`
   // satisfies a query of any submodule. Closing this gap requires either a
   // submodule-aware clang-scanner query or a re-walk of the modulemap.
   Identifier moduleName = getModuleImportIdentifier(path.front().Item.str());
-  auto clangModuleDependencies = withDependencyScanningWorker(
-      [&](ModuleDependencyScanningWorker *worker)
-          -> std::optional<clang::tooling::dependencies::TranslationUnitDeps> {
-        return worker->scanFilesystemForClangModuleDependency(
-            moduleName,
-            [this](const clang::tooling::dependencies::ModuleDeps &clangDep,
-                   clang::tooling::dependencies::ModuleOutputKind mok) {
-              return clangModuleOutputPathLookup(clangDep, mok);
-            },
-            {});
-      });
-  if (!clangModuleDependencies)
-    return false;
+  ModuleDependencyID moduleID{moduleName.str().str(),
+                              ModuleDependencyKind::Clang};
+
+  // If a prior query (an earlier `canImport` probe or the main scan) already
+  // recorded this Clang module and its visible-module set, reuse it instead of
+  // re-running the scan. This is the same reuse gate the main scan applies in
+  // `gatherUnresolvedImports`.
+  bool alreadyResolved =
+      DependencyCache.hasClangDependency(moduleName.str()) &&
+      DependencyCache.hasVisibleClangModulesFromLookup(moduleName.str());
+
+  if (!alreadyResolved) {
+    auto clangModuleDependencies = withDependencyScanningWorker(
+        [&](ModuleDependencyScanningWorker *worker)
+            -> std::optional<clang::tooling::dependencies::TranslationUnitDeps> {
+          return worker->scanFilesystemForClangModuleDependency(
+              moduleName,
+              [this](const clang::tooling::dependencies::ModuleDeps &clangDep,
+                     clang::tooling::dependencies::ModuleOutputKind mok) {
+                return clangModuleOutputPathLookup(clangDep, mok);
+              },
+              {});
+        });
+    if (!clangModuleDependencies)
+      return false;
+
+    // Warm the shared dependency cache with the discovered Clang module graph
+    // so the main scan reuses it rather than re-scanning. This mirrors how
+    // `processBatchClangModuleQueryResult` records a by-name lookup result.
+    DependencyCache.recordClangDependencies(
+        clangModuleDependencies->ModuleGraph, ScanASTContext.Diags,
+        [this](const clang::tooling::dependencies::ModuleDeps &clangDep) {
+          return bridgeClangModuleDependency(clangDep);
+        });
+    DependencyCache.setVisibleClangModulesFromLookup(
+        moduleID, clangModuleDependencies->VisibleModules);
+  }
 
   if (versionInfo) {
     // Mirror `ClangImporter::canImportModule`: read the framework `.tbd`
@@ -683,11 +708,12 @@ bool ModuleDependencyScanner::canImportModule(
     // `canImportModuleImpl` agrees with the loader-backed path. An empty
     // version (no `.tbd`, or unparseable) is still a valid existence result.
     llvm::VersionTuple version;
-    if (!clangModuleDependencies->ModuleGraph.empty()) {
-      StringRef definingPath =
-          clangModuleDependencies->ModuleGraph[0].ClangModuleMapFile;
-      version = getCurrentVersionFromTBD(*ScanASTContext.SourceMgr.getFileSystem(),
-                                         definingPath, moduleName.str());
+    if (auto cachedInfo = DependencyCache.findDependency(
+            moduleName.str(), ModuleDependencyKind::Clang)) {
+      StringRef definingPath = (*cachedInfo)->getAsClangModule()->moduleMapFile;
+      version =
+          getCurrentVersionFromTBD(*ScanASTContext.SourceMgr.getFileSystem(),
+                                   definingPath, moduleName.str());
     }
     versionInfo->setVersion(version,
                             ModuleLoader::ModuleVersionSourceKind::ClangModuleTBD);
