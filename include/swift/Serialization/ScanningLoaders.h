@@ -100,6 +100,10 @@ private:
   std::optional<ModuleDependencyInfo> foundDependencyInfo;
   std::vector<SwiftModuleScannerQueryResult::IncompatibleCandidate>
       incompatibleCandidates;
+  /// When set, validate discovered binary modules even if
+  /// `-scanner-module-validation` is off. Used for `canImport` queries, which
+  /// must reject invalid modules to match the module loaders.
+  bool validateModulesForCanImport = false;
 public:
   SwiftModuleScanner(
       ASTContext &ctx, ModuleLoadingMode LoadMode,
@@ -113,9 +117,14 @@ public:
         explicitSwiftModuleInputs(explicitSwiftModuleInputs) {
   }
 
-  /// Perform a filesystem search for a Swift module with a given name
+  /// Perform a filesystem search for a Swift module with a given name.
+  ///
+  /// \param moduleValidation when true, reject discovered binary modules that
+  /// fail validation even if `-scanner-module-validation` is off, matching the
+  /// module loaders' `canImport` behavior.
   SwiftModuleScannerQueryResult lookupSwiftModule(Identifier moduleName,
-                                                  bool isTestableImport);
+                                                  bool isTestableImport,
+                                                  bool moduleValidation = false);
 };
 } // namespace swift
 

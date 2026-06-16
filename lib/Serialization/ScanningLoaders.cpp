@@ -324,7 +324,7 @@ llvm::ErrorOr<ModuleDependencyInfo> SwiftModuleScanner::scanBinaryModuleFile(
       Ctx.LangOpts.hasFeature(Feature::Embedded),
       Ctx.SearchPathOpts.DeserializedPathRecoverer, loadedModuleFile);
 
-  if (Ctx.SearchPathOpts.ScannerModuleValidation) {
+  if (Ctx.SearchPathOpts.ScannerModuleValidation || validateModulesForCanImport) {
     // If failed to load, just ignore and return do not found.
     if (auto loadFailureReason = invalidModuleReason(loadInfo.status)) {
       // If no textual interface was found, then for this dependency
@@ -415,12 +415,15 @@ llvm::ErrorOr<ModuleDependencyInfo> SwiftModuleScanner::scanBinaryModuleFile(
 
 SwiftModuleScannerQueryResult
 SwiftModuleScanner::lookupSwiftModule(Identifier moduleName,
-                                      bool isTestableImport) {
+                                      bool isTestableImport,
+                                      bool moduleValidation) {
   // When we exit, ensure we clear dependencies discovered on this query
   SWIFT_DEFER {
     foundDependencyInfo = std::nullopt;
     incompatibleCandidates = {};
+    validateModulesForCanImport = false;
   };
+  validateModulesForCanImport = moduleValidation;
 
   ImportPath::Module::Builder builder(moduleName);
   auto modulePath = builder.get();

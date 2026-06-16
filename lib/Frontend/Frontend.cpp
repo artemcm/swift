@@ -938,68 +938,24 @@ bool CompilerInstance::setUpModuleLoaders() {
 }
 
 bool CompilerInstance::setUpScanningModuleLoaders() {
-  auto ModuleCachePathFromInvocation = getInvocation().getClangModuleCachePath();
-  auto &FEOpts = Invocation.getFrontendOptions();
-  auto MLM = Invocation.getSearchPathOptions().ModuleLoadMode;
-  auto IgnoreSourceInfoFile = Invocation.getFrontendOptions().IgnoreSwiftSourceInfo;
-  ModuleInterfaceLoaderOptions LoaderOpts(FEOpts);
-
+  // The scan ASTContext registers no filesystem-scanning module loaders. Both
+  // Swift and Clang `canImport` queries are answered by the dependency scanner
+  // (installed as the ASTContext's `CanImportResolver`), which routes them to
+  // the worker pool and warms the shared dependency cache. The workers carry
+  // their own Swift and Clang scanners, so the scan context needs no loaders of
+  // its own for module discovery.
+  //
+  // The only loader retained is the in-memory buffer loader, which serves
+  // client-provided modules that the workers do not otherwise see.
   if (Invocation.getLangOptions().EnableMemoryBufferImporter) {
+    auto MLM = Invocation.getSearchPathOptions().ModuleLoadMode;
+    auto IgnoreSourceInfoFile =
+        Invocation.getFrontendOptions().IgnoreSwiftSourceInfo;
     auto MemoryBufferLoader = MemoryBufferSerializedModuleLoader::create(
         *Context, getDependencyTracker(), MLM, IgnoreSourceInfoFile);
     this->MemoryBufferLoader = MemoryBufferLoader.get();
     Context->addModuleLoader(std::move(MemoryBufferLoader));
   }
-
-  // Build an explicit Swift module loader only when the invocation provides
-  // explicit Swift module inputs / map; scanning otherwise runs implicit
-  // module discovery (`-disable-implicit-modules` is never used with
-  // `-scan-dependencies`).
-  std::unique_ptr<SerializedModuleLoaderBase> ESML;
-  if (!Invocation.getSearchPathOptions().ExplicitSwiftModuleMapPath.empty() ||
-      !Invocation.getSearchPathOptions().ExplicitSwiftModuleInputs.empty()) {
-    if (Invocation.getCASOptions().EnableCaching ||
-        Invocation.getCASOptions().ImportModuleFromCAS)
-      ESML = ExplicitCASModuleLoader::create(
-          *Context, getObjectStore(), getActionCache(), getDependencyTracker(),
-          MLM, Invocation.getSearchPathOptions().ExplicitSwiftModuleMapPath,
-          Invocation.getSearchPathOptions().ExplicitSwiftModuleInputs,
-          IgnoreSourceInfoFile);
-    else
-      ESML = ExplicitSwiftModuleLoader::create(
-          *Context, getDependencyTracker(), MLM,
-          Invocation.getSearchPathOptions().ExplicitSwiftModuleMapPath,
-          Invocation.getSearchPathOptions().ExplicitSwiftModuleInputs,
-          IgnoreSourceInfoFile);
-  }
-
-  // Configure ModuleInterfaceChecker. With no Clang importer there is no
-  // live Clang instance to derive the cache path from, so use the
-  // invocation's path (matching the sub-invocation policy above).
-  Context->addModuleInterfaceChecker(
-      std::make_unique<ModuleInterfaceCheckerImpl>(
-          *Context, ModuleCachePathFromInvocation,
-          FEOpts.PrebuiltModuleCachePath, FEOpts.BackupModuleInterfaceDir,
-          LoaderOpts));
-
-  if (ESML) {
-    this->DefaultSerializedLoader = ESML.get();
-    Context->addModuleLoader(std::move(ESML), false, false, false, true);
-  }
-
-  // Implicit Swift module loaders.
-  if (MLM != ModuleLoadingMode::OnlySerialized) {
-    auto PIML = ModuleInterfaceLoader::create(
-        *Context, *static_cast<ModuleInterfaceCheckerImpl *>(
-                       Context->getModuleInterfaceChecker()),
-        getDependencyTracker(), MLM, FEOpts.PreferInterfaceForModules,
-        IgnoreSourceInfoFile);
-    Context->addModuleLoader(std::move(PIML), false, false, true);
-  }
-  auto ISML = ImplicitSerializedModuleLoader::create(
-      *Context, getDependencyTracker(), MLM, IgnoreSourceInfoFile);
-  this->DefaultSerializedLoader = ISML.get();
-  Context->addModuleLoader(std::move(ISML));
 
   return false;
 }

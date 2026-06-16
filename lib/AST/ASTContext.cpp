@@ -2877,7 +2877,8 @@ bool ASTContext::canImportModuleImpl(
   // reported by each source that can import the module; returning true stops
   // iteration early. Loaders are visited before the resolver so an
   // existence-only query short-circuits on a loader hit without invoking the
-  // resolver.
+  // resolver. The resolver may report more than one source (e.g. a Swift
+  // module and its underlying Clang module), invoking `onFound` for each.
   auto forEachImportingSource =
       [&](llvm::function_ref<bool(const ModuleLoader::ModuleVersionInfo &)>
               onFound) -> bool {
@@ -2888,10 +2889,8 @@ bool ASTContext::canImportModuleImpl(
         return true;
     }
     if (auto *resolver = getImpl().CanImportResolverPtr) {
-      ModuleLoader::ModuleVersionInfo versionInfo;
-      if (resolver->canImportModule(ModuleName, loc, &versionInfo,
-                                    /*isTestableImport=*/false) &&
-          onFound(versionInfo))
+      if (resolver->canImportModule(ModuleName, loc,
+                                    /*isTestableImport=*/false, onFound))
         return true;
     }
     return false;

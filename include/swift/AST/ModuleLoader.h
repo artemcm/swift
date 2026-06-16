@@ -366,18 +366,23 @@ public:
 
 /// An interface for answering `canImport(...)` module-existence queries without
 /// a registered `ModuleLoader`. The dependency scanner installs an
-/// implementation on the scan `ASTContext` so that Clang `canImport` queries
-/// are answered by the scanner itself rather than by a heavyweight
-/// `ClangImporter`.
+/// implementation on the scan `ASTContext` so that both Swift and Clang
+/// `canImport` queries are answered by the scanner itself rather than by
+/// registered module loaders.
 class CanImportResolver {
 public:
   virtual ~CanImportResolver() = default;
 
-  /// Check whether the module with the given name can be imported, populating
-  /// \p versionInfo when a non-null pointer is provided.
-  virtual bool canImportModule(ImportPath::Module path, SourceLoc loc,
-                               ModuleLoader::ModuleVersionInfo *versionInfo,
-                               bool isTestableImport) = 0;
+  /// Report each importing source (e.g. a Swift module and an underlying Clang
+  /// module) that can import the module with the given name. \p onFound is
+  /// invoked with the version information from each such source; returning
+  /// \c true from it stops the search early (used by existence-only queries).
+  ///
+  /// \returns \c true if the search was stopped early by \p onFound.
+  virtual bool canImportModule(
+      ImportPath::Module path, SourceLoc loc, bool isTestableImport,
+      llvm::function_ref<bool(const ModuleLoader::ModuleVersionInfo &)>
+          onFound) = 0;
 };
 
 } // namespace swift

@@ -192,7 +192,8 @@ private:
   ///
   /// \returns a struct containing query results
   SwiftModuleScannerQueryResult scanFilesystemForSwiftModuleDependency(
-      Identifier moduleName, bool isTestableImport = false);
+      Identifier moduleName, bool isTestableImport = false,
+      bool moduleValidation = false);
 
   /// Store cache entry for include tree.
   llvm::Error
@@ -288,12 +289,15 @@ public:
   std::vector<ModuleDependencyID>
   performDependencyScan(ModuleDependencyID rootModuleID);
 
-  /// CanImportResolver: answer a Clang `canImport` query by running a by-name
-  /// Clang dependency scan on a worker. Installed on the scan ASTContext so
-  /// Clang `canImport` is resolved without a registered ClangImporter.
-  bool canImportModule(ImportPath::Module path, SourceLoc loc,
-                       ModuleLoader::ModuleVersionInfo *versionInfo,
-                       bool isTestableImport) override;
+  /// CanImportResolver: answer a `canImport` query by running a by-name
+  /// dependency scan on a worker, reporting each importing source (a Swift
+  /// module and/or an underlying Clang module) via \p onFound. Installed on the
+  /// scan ASTContext so `canImport` is resolved without registered module
+  /// loaders.
+  bool canImportModule(
+      ImportPath::Module path, SourceLoc loc, bool isTestableImport,
+      llvm::function_ref<bool(const ModuleLoader::ModuleVersionInfo &)> onFound)
+      override;
 
   /// How many filesystem lookups were performed by the scanner
   unsigned getNumLookups() { return NumLookups; }
@@ -389,6 +393,19 @@ private:
   llvm::Error
   performBridgingHeaderChaining(const ModuleDependencyID &rootModuleID,
                                 ModuleDependencyIDSetVector &allModules);
+
+  /// Answer a Swift `canImport` query by running a by-name Swift module scan on
+  /// a worker, warming the dependency cache with the result so the main scan
+  /// reuses it. Populates \p versionInfo with the Swift module's user version.
+  bool canImportSwiftModule(ImportPath::Module path, SourceLoc loc,
+                            bool isTestableImport,
+                            ModuleLoader::ModuleVersionInfo *versionInfo);
+
+  /// Answer a Clang `canImport` query by running a by-name Clang module scan on
+  /// a worker, warming the dependency cache with the discovered module graph.
+  /// Populates \p versionInfo with the framework `.tbd` version, if any.
+  bool canImportClangModule(ImportPath::Module path, SourceLoc loc,
+                            ModuleLoader::ModuleVersionInfo *versionInfo);
 
   /// Bridge Clang dependency scanner's dependency node
   /// to the Swift scanner's `ModuleDependencyInfo`.

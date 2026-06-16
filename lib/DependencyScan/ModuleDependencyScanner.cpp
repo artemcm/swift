@@ -319,10 +319,10 @@ llvm::Error ModuleDependencyScanningWorker::finalizeClangScanningTool() {
 
 SwiftModuleScannerQueryResult
 ModuleDependencyScanningWorker::scanFilesystemForSwiftModuleDependency(
-    Identifier moduleName, bool isTestableImport) {
+    Identifier moduleName, bool isTestableImport, bool moduleValidation) {
   diagnosticReporter.registerSwiftModuleQuery();
-  return swiftModuleScannerLoader->lookupSwiftModule(moduleName,
-                                                     isTestableImport);
+  return swiftModuleScannerLoader->lookupSwiftModule(
+      moduleName, isTestableImport, moduleValidation);
 }
 
 std::optional<clang::dependencies::TranslationUnitDeps>
@@ -648,15 +648,143 @@ ModuleDependencyScanner::~ModuleDependencyScanner() {
   }
 }
 
+/// Map a resolved Swift module's user version into \p versionInfo, tagging it
+/// with the appropriate source kind so cross-source arbitration in
+/// `ASTContext::canImportModuleImpl` prefers it over a Clang module of the same
+/// name.
+static void
+setSwiftModuleVersionInfo(const ModuleDependencyInfo &moduleInfo,
+                          ModuleLoader::ModuleVersionInfo &versionInfo) {
+  StringRef userVersion;
+  ModuleLoader::ModuleVersionSourceKind sourceKind;
+  if (auto *interfaceModule = moduleInfo.getAsSwiftInterfaceModule()) {
+    userVersion = interfaceModule->userModuleVersion;
+    sourceKind = ModuleLoader::ModuleVersionSourceKind::SwiftInterface;
+  } else if (auto *binaryModule = moduleInfo.getAsSwiftBinaryModule()) {
+    userVersion = binaryModule->userModuleVersion;
+    sourceKind = ModuleLoader::ModuleVersionSourceKind::SwiftBinaryModule;
+  } else {
+    // A Swift source module carries no user version.
+    return;
+  }
+
+  // An empty or unparseable version is still a valid existence result,
+  // mirroring `SerializedModuleLoaderBase::canImportModule`.
+  llvm::VersionTuple version;
+  if (!userVersion.empty()) {
+    llvm::VersionTuple parsed;
+    if (!parsed.tryParse(userVersion))
+      version = parsed;
+  }
+  versionInfo.setVersion(version, sourceKind);
+}
+
 bool ModuleDependencyScanner::canImportModule(
+    ImportPath::Module path, SourceLoc loc, bool isTestableImport,
+    llvm::function_ref<bool(const ModuleLoader::ModuleVersionInfo &)> onFound) {
+  // Answer a `canImport` query by scanning on a worker rather than via a
+  // registered module loader. Report the Swift module first (higher-priority
+  // source kind), then the underlying Clang module, mirroring the order in
+  // which the loaders and Clang resolver were previously consulted. Each
+  // successful by-name scan warms the shared dependency cache so the main scan
+  // reuses the work instead of re-scanning from scratch.
+  ModuleLoader::ModuleVersionInfo swiftVersionInfo;
+  if (canImportSwiftModule(path, loc, isTestableImport, &swiftVersionInfo))
+    if (onFound(swiftVersionInfo))
+      return true;
+
+  ModuleLoader::ModuleVersionInfo clangVersionInfo;
+  if (canImportClangModule(path, loc, &clangVersionInfo))
+    if (onFound(clangVersionInfo))
+      return true;
+
+  return false;
+}
+
+bool ModuleDependencyScanner::canImportSwiftModule(
+    ImportPath::Module path, SourceLoc loc, bool isTestableImport,
+    ModuleLoader::ModuleVersionInfo *versionInfo) {
+  // Swift modules have no submodules; match `SerializedModuleLoaderBase`.
+  if (path.hasSubmodule())
+    return false;
+
+  Identifier moduleName = getModuleImportIdentifier(path.front().Item.str());
+
+  // Modules provided explicitly with `-swift-module-file` exist by provision,
+  // matching `ExplicitSwiftModuleLoader::canImportModule`: the query is
+  // satisfied even if the module file is malformed (which is then diagnosed
+  // during dependency resolution), so resolve such names to `true`.
+  bool isExplicitInput = ScanASTContext.SearchPathOpts.ExplicitSwiftModuleInputs
+                             .count(ScanASTContext.getRealModuleName(moduleName)
+                                        .str());
+
+  // Reuse a prior query: a Swift module already recorded by an earlier
+  // `canImport` probe or by the main scan, or a previously-failed lookup.
+  if (DependencyCache.hasQueriedSwiftDependency(moduleName.str())) {
+    if (auto cachedInfo = DependencyCache.findSwiftDependency(moduleName.str())) {
+      if (versionInfo)
+        setSwiftModuleVersionInfo(**cachedInfo, *versionInfo);
+      return true;
+    }
+    // Negatively cached, unless the module is explicitly provided.
+    if (!isExplicitInput)
+      return false;
+  }
+
+  // Validate discovered binary modules so an invalid module is rejected by
+  // `canImport`, matching the module loaders (independent of
+  // `-scanner-module-validation`).
+  auto queryResult = withDependencyScanningWorker(
+      [&](ModuleDependencyScanningWorker *worker) {
+        return worker->scanFilesystemForSwiftModuleDependency(
+            moduleName, isTestableImport, /*moduleValidation=*/true);
+      });
+
+  if (queryResult.foundDependencyInfo) {
+    // Warm the cache only when the result is unambiguous. When the query also
+    // surfaced incompatible candidates, leave the cache untouched so the main
+    // scan re-scans and still emits its incompatible-candidate diagnostics.
+    if (queryResult.incompatibleCandidates.empty())
+      DependencyCache.recordDependency(moduleName.str(),
+                                       *queryResult.foundDependencyInfo);
+    if (versionInfo)
+      setSwiftModuleVersionInfo(*queryResult.foundDependencyInfo, *versionInfo);
+    return true;
+  }
+
+  // An explicitly-provided module exists even when its file cannot be loaded.
+  if (isExplicitInput) {
+    if (versionInfo)
+      versionInfo->setVersion(
+          llvm::VersionTuple(),
+          ModuleLoader::ModuleVersionSourceKind::SwiftBinaryModule);
+    return true;
+  }
+
+  // If the only candidate was an invalid swiftmodule (rather than a target
+  // mismatch), emit the same diagnostic the loaders do and report false.
+  for (const auto &candidate : queryResult.incompatibleCandidates) {
+    if (candidate.incompatibilityReason !=
+            SwiftModuleScannerQueryResult::BUILT_FOR_INCOMPATIBLE_TARGET &&
+        loc.isValid())
+      ScanASTContext.Diags.diagnose(loc, diag::can_import_invalid_swiftmodule,
+                                    candidate.path);
+  }
+
+  // Warm the negative cache only when nothing matched, so the main scan can
+  // still report incompatible candidates if the module is imported.
+  if (queryResult.incompatibleCandidates.empty())
+    DependencyCache.recordFailedSwiftDependencyLookup(moduleName.str());
+  return false;
+}
+
+bool ModuleDependencyScanner::canImportClangModule(
     ImportPath::Module path, SourceLoc loc,
-    ModuleLoader::ModuleVersionInfo *versionInfo, bool isTestableImport) {
-  // Answer a Clang `canImport` query by running a by-name Clang dependency scan
-  // on a worker; Swift modules continue to be answered by the registered Swift
-  // loaders. The discovered Clang module graph is recorded into the shared
-  // dependency cache, so a repeated `canImport` probe of the same module and
-  // the module's later resolution in the dependency graph both reuse this work
-  // rather than re-scanning from scratch.
+    ModuleLoader::ModuleVersionInfo *versionInfo) {
+  // Run a by-name Clang dependency scan on a worker. The discovered Clang
+  // module graph is recorded into the shared dependency cache, so a repeated
+  // `canImport` probe of the same module and the module's later resolution in
+  // the dependency graph both reuse this work rather than re-scanning.
   //
   // TODO: Strict submodule existence (e.g. `canImport(Foo.NonexistentSub)` ->
   // false) currently over-approximates: any successful by-name scan of `Foo`
