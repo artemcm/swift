@@ -26,6 +26,8 @@
 #include "clang/Lex/HeaderSearchOptions.h"
 #include "llvm/Config/config.h"
 #include "llvm/Support/Path.h"
+#include <mutex>
+#include <shared_mutex>
 using namespace swift;
 
 ModuleDependencyInfoStorageBase::~ModuleDependencyInfoStorageBase() {}
@@ -723,18 +725,18 @@ ModuleDependenciesCache::getDependenciesMap(
 }
 
 std::optional<const ModuleDependencyInfo *>
-ModuleDependenciesCache::findDependency(
-    const ModuleDependencyID moduleID) const {
-  return findDependency(moduleID.ModuleName, moduleID.Kind);
+ModuleDependenciesCache::findDependency_locked(
+    const ModuleDependencyID &moduleID) const {
+  return findDependency_locked(moduleID.ModuleName, moduleID.Kind);
 }
 
 std::optional<const ModuleDependencyInfo *>
-ModuleDependenciesCache::findDependency(
+ModuleDependenciesCache::findDependency_locked(
     StringRef moduleName, std::optional<ModuleDependencyKind> kind) const {
   if (!kind) {
     for (auto kind = ModuleDependencyKind::FirstKind;
          kind != ModuleDependencyKind::LastKind; ++kind) {
-      auto dep = findDependency(moduleName, kind);
+      auto dep = findDependency_locked(moduleName, kind);
       if (dep.has_value())
         return dep.value();
     }
@@ -751,20 +753,79 @@ ModuleDependenciesCache::findDependency(
 }
 
 std::optional<const ModuleDependencyInfo *>
+ModuleDependenciesCache::findSwiftDependency_locked(StringRef moduleName) const {
+  if (auto found = findDependency_locked(moduleName,
+                                         ModuleDependencyKind::SwiftInterface))
+    return found;
+  if (auto found =
+          findDependency_locked(moduleName, ModuleDependencyKind::SwiftBinary))
+    return found;
+  return std::nullopt;
+}
+
+const ModuleDependencyInfo &ModuleDependenciesCache::findKnownDependency_locked(
+    const ModuleDependencyID &moduleID) const {
+  auto dep = findDependency_locked(moduleID);
+  assert(dep && "dependency unknown");
+  return **dep;
+}
+
+std::optional<const ModuleDependencyInfo *>
+ModuleDependenciesCache::findDependency(
+    const ModuleDependencyID moduleID) const {
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  return findDependency_locked(moduleID);
+}
+
+std::optional<const ModuleDependencyInfo *>
+ModuleDependenciesCache::findDependency(
+    StringRef moduleName, std::optional<ModuleDependencyKind> kind) const {
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  return findDependency_locked(moduleName, kind);
+}
+
+std::optional<const ModuleDependencyInfo *>
 ModuleDependenciesCache::findSwiftDependency(StringRef moduleName) const {
-  if (auto found = findDependency(moduleName, ModuleDependencyKind::SwiftInterface))
-    return found;
-  if (auto found = findDependency(moduleName, ModuleDependencyKind::SwiftBinary))
-    return found;
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  return findSwiftDependency_locked(moduleName);
+}
+
+std::optional<ModuleDependencyKind>
+ModuleDependenciesCache::findSwiftDependencyKind(StringRef moduleName) const {
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  if (auto dep = findSwiftDependency_locked(moduleName))
+    return (*dep)->getKind();
+  return std::nullopt;
+}
+
+std::optional<bool>
+ModuleDependenciesCache::isClangModuleSystem(StringRef moduleName) const {
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  if (auto dep =
+          findDependency_locked(moduleName, ModuleDependencyKind::Clang))
+    if (auto *clangModule = (*dep)->getAsClangModule())
+      return clangModule->IsSystem;
   return std::nullopt;
 }
 
 const ModuleDependencyInfo &ModuleDependenciesCache::findKnownDependency(
     const ModuleDependencyID &moduleID) const {
-  
-  auto dep = findDependency(moduleID);
-  assert(dep && "dependency unknown");
-  return **dep;
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  return findKnownDependency_locked(moduleID);
+}
+
+ModuleDependencyInfo ModuleDependenciesCache::getDependencyInfo(
+    const ModuleDependencyID &moduleID) const {
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  // The copy is constructed before the shared lock is released, so it cannot
+  // race a concurrent writer replacing this module's entry.
+  return findKnownDependency_locked(moduleID);
+}
+
+bool ModuleDependenciesCache::hasClangDependency_locked(
+    StringRef moduleName) const {
+  return findDependency_locked(moduleName, ModuleDependencyKind::Clang)
+      .has_value();
 }
 
 bool ModuleDependenciesCache::hasDependency(const ModuleDependencyID &moduleID) const {
@@ -773,52 +834,113 @@ bool ModuleDependenciesCache::hasDependency(const ModuleDependencyID &moduleID) 
 
 bool ModuleDependenciesCache::hasDependency(
     StringRef moduleName, std::optional<ModuleDependencyKind> kind) const {
-  return findDependency(moduleName, kind).has_value();
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  return findDependency_locked(moduleName, kind).has_value();
 }
 
 bool ModuleDependenciesCache::hasClangDependency(StringRef moduleName) const {
-  return findDependency(moduleName, ModuleDependencyKind::Clang).has_value();
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  return hasClangDependency_locked(moduleName);
 }
 
 bool ModuleDependenciesCache::hasQueriedSwiftDependency(StringRef moduleName) const {
-  auto recordedDep = findSwiftDependency(moduleName).has_value();
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  auto recordedDep = findSwiftDependency_locked(moduleName).has_value();
   return recordedDep || negativeSwiftDependencyCache.contains(moduleName);
 }
 
 int ModuleDependenciesCache::numberOfClangDependencies() const {
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
   return ModuleDependenciesMap.at(ModuleDependencyKind::Clang).size();
 }
 int ModuleDependenciesCache::numberOfSwiftDependencies() const {
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
   return ModuleDependenciesMap.at(ModuleDependencyKind::SwiftInterface).size() +
          ModuleDependenciesMap.at(ModuleDependencyKind::SwiftBinary).size();
 }
-void ModuleDependenciesCache::recordDependency(
+
+llvm::DenseSet<clang::tooling::dependencies::ModuleID>
+ModuleDependenciesCache::getAlreadySeenClangModules() const {
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  return alreadySeenClangModules;
+}
+
+void ModuleDependenciesCache::addSeenClangModule_locked(
+    clang::tooling::dependencies::ModuleID newModule) {
+  alreadySeenClangModules.insert(newModule);
+}
+
+void ModuleDependenciesCache::addSeenClangModule(
+    clang::tooling::dependencies::ModuleID newModule) {
+  std::unique_lock<std::shared_mutex> lock(CacheMutex);
+  addSeenClangModule_locked(newModule);
+}
+
+void ModuleDependenciesCache::recordDependency_locked(
     StringRef moduleName, ModuleDependencyInfo dependency) {
   auto dependenciesKind = dependency.getKind();
   auto &map = getDependenciesMap(dependenciesKind);
   map.insert({moduleName, dependency});
 }
 
+void ModuleDependenciesCache::recordDependency(
+    StringRef moduleName, ModuleDependencyInfo dependency) {
+  std::unique_lock<std::shared_mutex> lock(CacheMutex);
+  recordDependency_locked(moduleName, std::move(dependency));
+}
+
 void ModuleDependenciesCache::recordClangDependencies(
     const clang::dependencies::ModuleDepsGraph &dependencies,
     DiagnosticEngine &diags,
     BridgeClangDependencyCallback bridgeClangModule) {
-  for (const auto &dep : dependencies)
-    recordClangDependency(dep, diags, bridgeClangModule);
+  llvm::SmallVector<std::function<void()>, 1> deferredDiagnostics;
+  {
+    std::unique_lock<std::shared_mutex> lock(CacheMutex);
+    for (const auto &dep : dependencies)
+      recordClangDependency_locked(dep, diags, bridgeClangModule,
+                                   deferredDiagnostics);
+  }
+  // Emit on the shared diagnostic engine under a dedicated lock: this method
+  // runs concurrently on worker threads, and `DiagnosticEngine` is not
+  // thread-safe.
+  if (!deferredDiagnostics.empty()) {
+    std::lock_guard<std::mutex> diagGuard(DiagnosticEmissionMutex);
+    for (auto &emit : deferredDiagnostics)
+      emit();
+  }
 }
 
 void ModuleDependenciesCache::recordClangDependency(
     const clang::dependencies::ModuleDeps &dependency,
     DiagnosticEngine &diags, BridgeClangDependencyCallback bridgeClangModule) {
-  if (!hasClangDependency(dependency.ID.ModuleName)) {
-    recordDependency(dependency.ID.ModuleName, bridgeClangModule(dependency));
-    addSeenClangModule(dependency.ID);
+  llvm::SmallVector<std::function<void()>, 1> deferredDiagnostics;
+  {
+    std::unique_lock<std::shared_mutex> lock(CacheMutex);
+    recordClangDependency_locked(dependency, diags, bridgeClangModule,
+                                 deferredDiagnostics);
+  }
+  if (!deferredDiagnostics.empty()) {
+    std::lock_guard<std::mutex> diagGuard(DiagnosticEmissionMutex);
+    for (auto &emit : deferredDiagnostics)
+      emit();
+  }
+}
+
+void ModuleDependenciesCache::recordClangDependency_locked(
+    const clang::tooling::dependencies::ModuleDeps &dependency,
+    DiagnosticEngine &diags, BridgeClangDependencyCallback bridgeClangModule,
+    llvm::SmallVectorImpl<std::function<void()>> &deferredDiagnostics) {
+  if (!hasClangDependency_locked(dependency.ID.ModuleName)) {
+    recordDependency_locked(dependency.ID.ModuleName,
+                            bridgeClangModule(dependency));
+    addSeenClangModule_locked(dependency.ID);
     return;
   }
 
   auto depID =
       ModuleDependencyID{dependency.ID.ModuleName, ModuleDependencyKind::Clang};
-  auto priorClangModuleDetails = findKnownDependency(depID).getAsClangModule();
+  auto priorClangModuleDetails =
+      findKnownDependency_locked(depID).getAsClangModule();
   DEBUG_ASSERT(priorClangModuleDetails);
   auto priorContextHash = priorClangModuleDetails->contextHash;
   auto newContextHash = dependency.ID.ContextHash;
@@ -831,39 +953,53 @@ void ModuleDependenciesCache::recordClangDependency(
     // header lookup queries.
     //
     // Emit a failure diagnostic here that is hopefully more actionable
-    // for the time being.
-    diags.diagnose(SourceLoc(),
-                       diag::dependency_scan_unexpected_variant,
-                   dependency.ID.ModuleName);
-    diags.diagnose(
-        SourceLoc(),
-        diag::dependency_scan_unexpected_variant_context_hash_note,
-        priorContextHash, newContextHash);
-    diags.diagnose(
-        SourceLoc(),
-        diag::dependency_scan_unexpected_variant_module_map_note,
-        priorClangModuleDetails->moduleMapFile, dependency.ClangModuleMapFile);
-
+    // for the time being. Diagnostic emission is deferred until the caller
+    // has released the cache lock (emitting under the non-recursive lock
+    // risks self-deadlock if a consumer re-enters the cache); capture
+    // everything the diagnostics need by value.
+    std::string moduleName = dependency.ID.ModuleName;
+    std::string priorModuleMapFile = priorClangModuleDetails->moduleMapFile;
+    std::string newModuleMapFile = dependency.ClangModuleMapFile;
+    std::vector<std::string> priorCommandLine =
+        priorClangModuleDetails->buildCommandLine;
     auto newClangModuleInfo = bridgeClangModule(dependency);
-    auto newClangModuleDetails = newClangModuleInfo.getAsClangModule();
-    auto diagnoseExtraCommandLineFlags =
-        [&diags](const ClangModuleDependencyStorage *checkModuleDetails,
-               const ClangModuleDependencyStorage *baseModuleDetails,
-               bool isNewlyDiscovered) -> void {
-      std::unordered_set<std::string> baseCommandLineSet(
-          baseModuleDetails->buildCommandLine.begin(),
-          baseModuleDetails->buildCommandLine.end());
-      for (const auto &checkArg : checkModuleDetails->buildCommandLine)
-        if (baseCommandLineSet.find(checkArg) == baseCommandLineSet.end())
+    std::vector<std::string> newCommandLine =
+        newClangModuleInfo.getAsClangModule()->buildCommandLine;
+
+    deferredDiagnostics.push_back(
+        [&diags, moduleName = std::move(moduleName), priorContextHash,
+         newContextHash, priorModuleMapFile = std::move(priorModuleMapFile),
+         newModuleMapFile = std::move(newModuleMapFile),
+         priorCommandLine = std::move(priorCommandLine),
+         newCommandLine = std::move(newCommandLine)]() {
+          diags.diagnose(SourceLoc(),
+                         diag::dependency_scan_unexpected_variant, moduleName);
           diags.diagnose(
               SourceLoc(),
-              diag::dependency_scan_unexpected_variant_extra_arg_note,
-              isNewlyDiscovered, checkArg);
-    };
-    diagnoseExtraCommandLineFlags(priorClangModuleDetails,
-                                  newClangModuleDetails, true);
-    diagnoseExtraCommandLineFlags(newClangModuleDetails,
-                                  priorClangModuleDetails, false);
+              diag::dependency_scan_unexpected_variant_context_hash_note,
+              priorContextHash, newContextHash);
+          diags.diagnose(
+              SourceLoc(),
+              diag::dependency_scan_unexpected_variant_module_map_note,
+              priorModuleMapFile, newModuleMapFile);
+
+          auto diagnoseExtraCommandLineFlags =
+              [&diags](const std::vector<std::string> &checkCommandLine,
+                       const std::vector<std::string> &baseCommandLine,
+                       bool isNewlyDiscovered) -> void {
+                std::unordered_set<std::string> baseCommandLineSet(
+                    baseCommandLine.begin(), baseCommandLine.end());
+                for (const auto &checkArg : checkCommandLine)
+                  if (baseCommandLineSet.find(checkArg) ==
+                      baseCommandLineSet.end())
+                    diags.diagnose(
+                        SourceLoc(),
+                        diag::dependency_scan_unexpected_variant_extra_arg_note,
+                        isNewlyDiscovered, checkArg);
+              };
+          diagnoseExtraCommandLineFlags(priorCommandLine, newCommandLine, true);
+          diagnoseExtraCommandLineFlags(newCommandLine, priorCommandLine, false);
+        });
   }
 }
 
@@ -874,17 +1010,25 @@ void ModuleDependenciesCache::setVisibleClangModulesFromLookup(
   if (visibleModules.empty())
     return;
 
+  std::unique_lock<std::shared_mutex> lock(CacheMutex);
   clangModulesVisibleFromNamedLookup[moduleID.ModuleName] = visibleModules;
 }
 
-void ModuleDependenciesCache::updateDependency(
+void ModuleDependenciesCache::updateDependency_locked(
     ModuleDependencyID moduleID, ModuleDependencyInfo dependencyInfo) {
   auto &map = getDependenciesMap(moduleID.Kind);
   assert(map.find(moduleID.ModuleName) != map.end() && "Not yet added to map");
   map.insert_or_assign(moduleID.ModuleName, std::move(dependencyInfo));
 }
 
+void ModuleDependenciesCache::updateDependency(
+    ModuleDependencyID moduleID, ModuleDependencyInfo dependencyInfo) {
+  std::unique_lock<std::shared_mutex> lock(CacheMutex);
+  updateDependency_locked(moduleID, std::move(dependencyInfo));
+}
+
 void ModuleDependenciesCache::removeDependency(ModuleDependencyID moduleID) {
+  std::unique_lock<std::shared_mutex> lock(CacheMutex);
   auto &map = getDependenciesMap(moduleID.Kind);
   map.erase(moduleID.ModuleName);
   // If we are removing a Clang module which was queried by-name
@@ -896,7 +1040,8 @@ void ModuleDependenciesCache::removeDependency(ModuleDependencyID moduleID) {
 void ModuleDependenciesCache::setImportedSwiftDependencies(
     ModuleDependencyID moduleID,
     const ArrayRef<ModuleDependencyID> dependencyIDs) {
-  auto dependencyInfo = findKnownDependency(moduleID);
+  std::unique_lock<std::shared_mutex> lock(CacheMutex);
+  auto dependencyInfo = findKnownDependency_locked(moduleID);
   assert(dependencyInfo.getImportedSwiftDependencies().empty());
 #ifndef NDEBUG
   for (const auto &depID : dependencyIDs)
@@ -906,12 +1051,13 @@ void ModuleDependenciesCache::setImportedSwiftDependencies(
   // setting its overlay dependencies.
   auto updatedDependencyInfo = dependencyInfo;
   updatedDependencyInfo.setImportedSwiftDependencies(dependencyIDs);
-  updateDependency(moduleID, updatedDependencyInfo);
+  updateDependency_locked(moduleID, updatedDependencyInfo);
 }
 void ModuleDependenciesCache::setImportedClangDependencies(
     ModuleDependencyID moduleID,
     const ArrayRef<ModuleDependencyID> dependencyIDs) {
-  auto dependencyInfo = findKnownDependency(moduleID);
+  std::unique_lock<std::shared_mutex> lock(CacheMutex);
+  auto dependencyInfo = findKnownDependency_locked(moduleID);
   assert(dependencyInfo.getImportedClangDependencies().empty());
 #ifndef NDEBUG
   for (const auto &depID : dependencyIDs)
@@ -921,12 +1067,13 @@ void ModuleDependenciesCache::setImportedClangDependencies(
   // setting its overlay dependencies.
   auto updatedDependencyInfo = dependencyInfo;
   updatedDependencyInfo.setImportedClangDependencies(dependencyIDs);
-  updateDependency(moduleID, updatedDependencyInfo);
+  updateDependency_locked(moduleID, updatedDependencyInfo);
 }
 void ModuleDependenciesCache::setHeaderClangDependencies(
     ModuleDependencyID moduleID,
     const ArrayRef<ModuleDependencyID> dependencyIDs) {
-  auto dependencyInfo = findKnownDependency(moduleID);
+  std::unique_lock<std::shared_mutex> lock(CacheMutex);
+  auto dependencyInfo = findKnownDependency_locked(moduleID);
 #ifndef NDEBUG
   for (const auto &depID : dependencyIDs)
     assert(depID.Kind == ModuleDependencyKind::Clang);
@@ -935,12 +1082,13 @@ void ModuleDependenciesCache::setHeaderClangDependencies(
   // setting its overlay dependencies.
   auto updatedDependencyInfo = dependencyInfo;
   updatedDependencyInfo.setHeaderClangDependencies(dependencyIDs);
-  updateDependency(moduleID, updatedDependencyInfo);
+  updateDependency_locked(moduleID, updatedDependencyInfo);
 }
 void ModuleDependenciesCache::setSwiftOverlayDependencies(
     ModuleDependencyID moduleID,
     const ArrayRef<ModuleDependencyID> dependencyIDs) {
-  auto dependencyInfo = findKnownDependency(moduleID);
+  std::unique_lock<std::shared_mutex> lock(CacheMutex);
+  auto dependencyInfo = findKnownDependency_locked(moduleID);
 #ifndef NDEBUG
   for (const auto &depID : dependencyIDs)
     assert(depID.Kind != ModuleDependencyKind::Clang);
@@ -949,22 +1097,24 @@ void ModuleDependenciesCache::setSwiftOverlayDependencies(
   // setting its overlay dependencies.
   auto updatedDependencyInfo = dependencyInfo;
   updatedDependencyInfo.setSwiftOverlayDependencies(dependencyIDs);
-  updateDependency(moduleID, updatedDependencyInfo);
+  updateDependency_locked(moduleID, updatedDependencyInfo);
 }
 void ModuleDependenciesCache::setCrossImportOverlayDependencies(
     ModuleDependencyID moduleID,
     const ModuleDependencyIDCollectionView dependencyIDs) {
-  auto dependencyInfo = findKnownDependency(moduleID);
+  std::unique_lock<std::shared_mutex> lock(CacheMutex);
+  auto dependencyInfo = findKnownDependency_locked(moduleID);
   // Copy the existing info to a mutable one we can then replace it with,
   // after setting its overlay dependencies.
   auto updatedDependencyInfo = dependencyInfo;
   updatedDependencyInfo.setCrossImportOverlayDependencies(dependencyIDs);
-  updateDependency(moduleID, updatedDependencyInfo);
+  updateDependency_locked(moduleID, updatedDependencyInfo);
 }
 
 ModuleDependencyIDCollectionView ModuleDependenciesCache::getAllDependencies(
     const ModuleDependencyID &moduleID) const {
-  const auto &moduleInfo = findKnownDependency(moduleID);
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  const auto &moduleInfo = findKnownDependency_locked(moduleID);
   return ModuleDependencyIDCollectionView(
       moduleInfo.getImportedSwiftDependencies(),
       moduleInfo.getHeaderClangDependencies(),
@@ -975,6 +1125,7 @@ ModuleDependencyIDCollectionView ModuleDependenciesCache::getAllDependencies(
 
 void ModuleDependenciesCache::recordFailedSwiftDependencyLookup(
     StringRef moduleIdentifier) {
+  std::unique_lock<std::shared_mutex> lock(CacheMutex);
   negativeSwiftDependencyCache.insert(moduleIdentifier);
 }
 
@@ -983,50 +1134,70 @@ llvm::StringSet<> ModuleDependenciesCache::getAllVisibleClangModules(
   ASSERT(moduleID.Kind == ModuleDependencyKind::SwiftSource ||
          moduleID.Kind == ModuleDependencyKind::SwiftInterface ||
          moduleID.Kind == ModuleDependencyKind::SwiftBinary);
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
   llvm::StringSet<> result;
-  auto headerVisibleModules = getVisibleClangModulesViaHeader(moduleID);
+  auto headerVisibleModules = getVisibleClangModulesViaHeader_locked(moduleID);
   result.insert(headerVisibleModules.begin(), headerVisibleModules.end());
   for (const auto &clangDepID :
-       findKnownDependency(moduleID).getImportedClangDependencies()) {
-    assert(hasVisibleClangModulesFromLookup(clangDepID.ModuleName));
+       findKnownDependency_locked(moduleID).getImportedClangDependencies()) {
+    assert(hasVisibleClangModulesFromLookup_locked(clangDepID.ModuleName));
     auto visibleModulesViaImport =
-      getVisibleClangModulesFromLookup(clangDepID.ModuleName);
+      getVisibleClangModulesFromLookup_locked(clangDepID.ModuleName);
     result.insert(visibleModulesViaImport.begin(),
                   visibleModulesViaImport.end());
   }
   return result;
 }
 
-ArrayRef<std::string> ModuleDependenciesCache::getVisibleClangModulesFromLookup(
+ArrayRef<std::string>
+ModuleDependenciesCache::getVisibleClangModulesFromLookup_locked(
     StringRef moduleName) const {
   return clangModulesVisibleFromNamedLookup.at(moduleName);
 }
 
-bool ModuleDependenciesCache::hasVisibleClangModulesFromLookup(
+ArrayRef<std::string> ModuleDependenciesCache::getVisibleClangModulesFromLookup(
+    StringRef moduleName) const {
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  return getVisibleClangModulesFromLookup_locked(moduleName);
+}
+
+bool ModuleDependenciesCache::hasVisibleClangModulesFromLookup_locked(
     StringRef moduleName) const {
   return clangModulesVisibleFromNamedLookup.contains(moduleName);
+}
+
+bool ModuleDependenciesCache::hasVisibleClangModulesFromLookup(
+    StringRef moduleName) const {
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  return hasVisibleClangModulesFromLookup_locked(moduleName);
+}
+
+llvm::ArrayRef<std::string>
+ModuleDependenciesCache::getVisibleClangModulesViaHeader_locked(
+    ModuleDependencyID moduleID) const {
+  assert(moduleID.Kind == ModuleDependencyKind::SwiftSource ||
+         moduleID.Kind == ModuleDependencyKind::SwiftInterface ||
+         moduleID.Kind == ModuleDependencyKind::SwiftBinary);
+  return findKnownDependency_locked(moduleID).getHeaderVisibleClangModules();
 }
 
 llvm::ArrayRef<std::string>
 ModuleDependenciesCache::getVisibleClangModulesViaHeader(
     ModuleDependencyID moduleID) const {
-  assert(moduleID.Kind == ModuleDependencyKind::SwiftSource ||
-         moduleID.Kind == ModuleDependencyKind::SwiftInterface ||
-         moduleID.Kind == ModuleDependencyKind::SwiftBinary);
-  return findKnownDependency(moduleID).getHeaderVisibleClangModules();
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  return getVisibleClangModulesViaHeader_locked(moduleID);
 }
 bool ModuleDependenciesCache::hasVisibleClangModulesViaHeader(
     ModuleDependencyID moduleID) const {
-  assert(moduleID.Kind == ModuleDependencyKind::SwiftSource ||
-         moduleID.Kind == ModuleDependencyKind::SwiftInterface ||
-         moduleID.Kind == ModuleDependencyKind::SwiftBinary);
-  return !getVisibleClangModulesViaHeader(moduleID).empty();
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  return !getVisibleClangModulesViaHeader_locked(moduleID).empty();
 }
 
 ModuleDependencyIDCollectionView
 ModuleDependenciesCache::getDirectImportedDependencies(
     const ModuleDependencyID &moduleID) const {
-  const auto &moduleInfo = findKnownDependency(moduleID);
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  const auto &moduleInfo = findKnownDependency_locked(moduleID);
   return ModuleDependencyIDCollectionView(
       moduleInfo.getImportedSwiftDependencies(),
       moduleInfo.getImportedClangDependencies());
@@ -1035,7 +1206,8 @@ ModuleDependenciesCache::getDirectImportedDependencies(
 ModuleDependencyIDCollectionView
 ModuleDependenciesCache::getAllClangDependencies(
     const ModuleDependencyID &moduleID) const {
-  const auto &moduleInfo = findKnownDependency(moduleID);
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  const auto &moduleInfo = findKnownDependency_locked(moduleID);
   return ModuleDependencyIDCollectionView(
       moduleInfo.getImportedClangDependencies(),
       moduleInfo.getHeaderClangDependencies());
@@ -1044,7 +1216,8 @@ ModuleDependenciesCache::getAllClangDependencies(
 ModuleDependencyIDCollectionView
 ModuleDependenciesCache::getAllSwiftDependencies(
     const ModuleDependencyID &moduleID) const {
-  const auto &moduleInfo = findKnownDependency(moduleID);
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  const auto &moduleInfo = findKnownDependency_locked(moduleID);
   return ModuleDependencyIDCollectionView(
       moduleInfo.getImportedSwiftDependencies(),
       moduleInfo.getSwiftOverlayDependencies(),
@@ -1054,7 +1227,8 @@ ModuleDependenciesCache::getAllSwiftDependencies(
 llvm::ArrayRef<ModuleDependencyID>
 ModuleDependenciesCache::getImportedSwiftDependencies(
     const ModuleDependencyID &moduleID) const {
-  const auto &moduleInfo = findKnownDependency(moduleID);
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  const auto &moduleInfo = findKnownDependency_locked(moduleID);
   assert(moduleInfo.isSwiftModule());
   return moduleInfo.getImportedSwiftDependencies();
 }
@@ -1062,14 +1236,16 @@ ModuleDependenciesCache::getImportedSwiftDependencies(
 llvm::ArrayRef<ModuleDependencyID>
 ModuleDependenciesCache::getImportedClangDependencies(
     const ModuleDependencyID &moduleID) const {
-  const auto &moduleInfo = findKnownDependency(moduleID);
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  const auto &moduleInfo = findKnownDependency_locked(moduleID);
   return moduleInfo.getImportedClangDependencies();
 }
 
 llvm::ArrayRef<ModuleDependencyID>
 ModuleDependenciesCache::getHeaderClangDependencies(
     const ModuleDependencyID &moduleID) const {
-  const auto &moduleInfo = findKnownDependency(moduleID);
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  const auto &moduleInfo = findKnownDependency_locked(moduleID);
   assert(moduleInfo.isSwiftModule());
   return moduleInfo.getHeaderClangDependencies();
 }
@@ -1077,7 +1253,8 @@ ModuleDependenciesCache::getHeaderClangDependencies(
 llvm::ArrayRef<ModuleDependencyID>
 ModuleDependenciesCache::getSwiftOverlayDependencies(
     const ModuleDependencyID &moduleID) const {
-  const auto &moduleInfo = findKnownDependency(moduleID);
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  const auto &moduleInfo = findKnownDependency_locked(moduleID);
   assert(moduleInfo.isSwiftModule());
   return moduleInfo.getSwiftOverlayDependencies();
 }
@@ -1085,7 +1262,8 @@ ModuleDependenciesCache::getSwiftOverlayDependencies(
 llvm::ArrayRef<ModuleDependencyID>
 ModuleDependenciesCache::getCrossImportOverlayDependencies(
     const ModuleDependencyID &moduleID) const {
-  const auto &moduleInfo = findKnownDependency(moduleID);
+  std::shared_lock<std::shared_mutex> lock(CacheMutex);
+  const auto &moduleInfo = findKnownDependency_locked(moduleID);
   assert(moduleInfo.isSwiftSourceModule());
   return moduleInfo.getCrossImportOverlayDependencies();
 }

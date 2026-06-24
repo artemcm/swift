@@ -6,7 +6,8 @@ add_swift_host_library(swiftDependencyScan STATIC
   DependencyScanningTool.cpp
   ModuleDependencyCacheSerialization.cpp
   ModuleDependencyScanner.cpp
-  ScanDependencies.cpp)
+  ScanDependencies.cpp
+  ScanWorkState.cpp)
 
 target_link_libraries(swiftDependencyScan INTERFACE
   clangBasic)

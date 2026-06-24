@@ -29,11 +29,15 @@
 #include "clang/Tooling/DependencyScanningTool.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/CAS/CASConfiguration.h"
 #include "llvm/Support/Mutex.h"
 #include "llvm/Support/StringSaver.h"
+#include <functional>
+#include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -63,6 +67,12 @@ enum class ModuleDependencyKind : int8_t {
   SwiftSource,
   LastKind = SwiftSource + 1
 };
+
+/// Whether \p kind is a Swift module dependency (i.e. anything but a Clang
+/// module). Single definition shared by the scanner and the scan scheduler.
+inline bool isSwiftDependencyKind(ModuleDependencyKind kind) {
+  return kind != ModuleDependencyKind::Clang;
+}
 
 /// This is used to idenfity a specific macro plugin dependency.
 struct MacroPluginDependency {
@@ -1123,7 +1133,7 @@ private:
   /// to discover a Swift module dependency
   llvm::StringSet<> negativeSwiftDependencyCache;
   /// Set containing all of the Clang modules that have already been seen.
-  llvm::DenseSet<clang::dependencies::ModuleID> alreadySeenClangModules;
+  llvm::DenseSet<clang::tooling::dependencies::ModuleID> alreadySeenClangModules;
   /// Name of the module under scan
   std::string mainScanModuleName;
   /// The context hash of the current scanning invocation
@@ -1139,6 +1149,60 @@ private:
   const llvm::StringMap<const ModuleDependencyInfo *> &
   getDependencyReferencesMap(ModuleDependencyKind kind) const;
 
+  /// Guards all of the mutable state above. Readers take a shared lock,
+  /// writers an exclusive lock. The dependency scanner records into this
+  /// cache concurrently from continuation handlers running on worker threads,
+  /// so every public method that touches the mutable state synchronizes
+  /// through this mutex.
+  ///
+  /// The mutex is non-recursive. Because the public methods freely compose
+  /// from one another (e.g. \c recordClangDependency calls
+  /// \c hasClangDependency / \c recordDependency / \c addSeenClangModule, and
+  /// every \c set* calls \c findKnownDependency then \c updateDependency),
+  /// they must not re-enter a second public method while holding the lock.
+  /// Instead, each public method locks once and delegates to the private
+  /// \c *_locked helpers below, which assume the caller already holds the
+  /// appropriate lock and perform no locking of their own.
+  mutable std::shared_mutex CacheMutex;
+
+  /// Serializes emission of deferred diagnostics (currently only the
+  /// `dependency_scan_unexpected_variant` Clang diagnostic) onto the shared
+  /// scan \c DiagnosticEngine, which is not itself thread-safe and may be
+  /// reached from multiple worker threads recording Clang dependencies
+  /// concurrently.
+  mutable std::mutex DiagnosticEmissionMutex;
+
+  // MARK: Unlocked internals (caller must hold CacheMutex)
+  std::optional<const ModuleDependencyInfo *>
+  findDependency_locked(const ModuleDependencyID &moduleID) const;
+  std::optional<const ModuleDependencyInfo *>
+  findDependency_locked(StringRef moduleName,
+                        std::optional<ModuleDependencyKind> kind) const;
+  std::optional<const ModuleDependencyInfo *>
+  findSwiftDependency_locked(StringRef moduleName) const;
+  const ModuleDependencyInfo &
+  findKnownDependency_locked(const ModuleDependencyID &moduleID) const;
+  bool hasClangDependency_locked(StringRef moduleName) const;
+  llvm::ArrayRef<std::string>
+  getVisibleClangModulesFromLookup_locked(StringRef moduleName) const;
+  bool hasVisibleClangModulesFromLookup_locked(StringRef moduleName) const;
+  llvm::ArrayRef<std::string>
+  getVisibleClangModulesViaHeader_locked(ModuleDependencyID moduleID) const;
+  void recordDependency_locked(StringRef moduleName,
+                               ModuleDependencyInfo dependencies);
+  void addSeenClangModule_locked(
+      clang::tooling::dependencies::ModuleID newModule);
+  void updateDependency_locked(ModuleDependencyID moduleID,
+                               ModuleDependencyInfo dependencyInfo);
+  /// Record a single Clang module dependency, deferring any
+  /// `dependency_scan_unexpected_variant` diagnostics into
+  /// \p deferredDiagnostics so they can be emitted by the caller after the
+  /// cache lock is released (diagnostic emission must not run under the lock).
+  void recordClangDependency_locked(
+      const clang::tooling::dependencies::ModuleDeps &dependency,
+      DiagnosticEngine &diags, BridgeClangDependencyCallback bridgeClangModule,
+      llvm::SmallVectorImpl<std::function<void()>> &deferredDiagnostics);
+
 public:
   ModuleDependenciesCache(const std::string &mainScanModuleName,
                           const std::string &scanningContextHash);
@@ -1148,6 +1212,11 @@ public:
 public:
   /// Retrieve the dependencies map that corresponds to the given dependency
   /// kind.
+  ///
+  /// This is an unlocked raw accessor returning a reference to live storage.
+  /// It is only safe to call from single-threaded phases of a scan (cache
+  /// serialization and post-drain bookkeeping); callers must not iterate the
+  /// returned map while continuation handlers may be mutating the cache.
   ModuleNameToDependencyMap &getDependenciesMap(ModuleDependencyKind kind);
   const ModuleNameToDependencyMap &getDependenciesMap(ModuleDependencyKind kind) const;
 
@@ -1170,13 +1239,13 @@ public:
   /// (Textual + Binary)
   int numberOfSwiftDependencies() const;
 
-  const llvm::DenseSet<clang::dependencies::ModuleID> &
-  getAlreadySeenClangModules() const {
-    return alreadySeenClangModules;
-  }
-  void addSeenClangModule(clang::dependencies::ModuleID newModule) {
-    alreadySeenClangModules.insert(newModule);
-  }
+  /// Returns a snapshot copy of the set of Clang modules already seen by this
+  /// scan. A copy (rather than a reference) is returned because the live set
+  /// may be mutated by \c addSeenClangModule on another thread while a worker
+  /// iterates the result.
+  llvm::DenseSet<clang::tooling::dependencies::ModuleID>
+  getAlreadySeenClangModules() const;
+  void addSeenClangModule(clang::tooling::dependencies::ModuleID newModule);
 
   /// Query all dependencies
   ModuleDependencyIDCollectionView
@@ -1243,11 +1312,31 @@ public:
   std::optional<const ModuleDependencyInfo *>
   findSwiftDependency(StringRef moduleName) const;
 
+  /// Look up the kind of a recorded Swift module dependency with the given
+  /// name, returned by value. Unlike \c findSwiftDependency, this does not
+  /// leak an interior pointer past the lock, so it is safe to call
+  /// concurrently with a writer that may be replacing the module's entry.
+  std::optional<ModuleDependencyKind>
+  findSwiftDependencyKind(StringRef moduleName) const;
+
+  /// Look up whether a recorded Clang module dependency with the given name is
+  /// a system module, returned by value. Like \c findSwiftDependencyKind, this
+  /// does not leak an interior pointer past the lock, so it is safe to call
+  /// concurrently. Returns \c std::nullopt if no such Clang module is recorded.
+  std::optional<bool> isClangModuleSystem(StringRef moduleName) const;
+
   /// Look for known existing dependencies.
   ///
   /// \returns the cached result.
   const ModuleDependencyInfo &
   findKnownDependency(const ModuleDependencyID &moduleID) const;
+
+  /// Return a value copy of a recorded module's dependency info, made while
+  /// holding the lock. Unlike \c findKnownDependency, the copy does not race a
+  /// concurrent writer replacing the module's entry, so it is safe to call
+  /// from the continuation scheduler's worker threads.
+  ModuleDependencyInfo
+  getDependencyInfo(const ModuleDependencyID &moduleID) const;
 
   /// Record dependencies for the given module.
   void recordDependency(StringRef moduleName,

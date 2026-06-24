@@ -10,6 +10,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#ifndef SWIFT_DEPENDENCYSCAN_MODULEDEPENDENCYSCANNER_H
+#define SWIFT_DEPENDENCYSCAN_MODULEDEPENDENCYSCANNER_H
+
 #include "swift/AST/ASTContext.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/AST/Identifier.h"
@@ -25,6 +28,7 @@
 namespace swift {
 class DependencyTracker;
 class ClangScannerConfiguration;
+class ScanWorkState;
 }
 
 namespace swift {
@@ -108,6 +112,7 @@ private:
   // Restrict access to the parent scanner classes.
   friend class ModuleDependencyScanner;
   friend class ModuleDependencyScanningWorker;
+  friend class ScanWorkState;
 };
 
 /// A dependency scanning worker which performs filesystem lookup
@@ -354,35 +359,15 @@ private:
   ModuleDependencyIDSetVector
   resolveImportedModuleDependencies(
       const ModuleDependencyID &rootModuleID);
-  void resolveSwiftModuleDependencies(
-      const ModuleDependencyID &rootModuleID,
-      ModuleDependencyIDSetVector &discoveredSwiftModules);
   void resolveClangModuleDependencies(
       ArrayRef<ModuleDependencyID> swiftModules,
       ModuleDependencyIDSetVector &discoveredClangModules);
-  void resolveHeaderDependencies(
-      ArrayRef<ModuleDependencyID> swiftModules,
-      ModuleDependencyIDSetVector &discoveredHeaderDependencyClangModules);
-  void resolveSwiftOverlayDependencies(
-      ArrayRef<ModuleDependencyID> swiftModules,
-      ModuleDependencyIDSetVector &discoveredDependencies);
-
-  /// Resolve all of a given module's imports to a Swift module, if one exists.
-  void resolveSwiftImportsForModule(
-      const ModuleDependencyID &moduleID,
-      ModuleDependencyIDSetVector &importedSwiftDependencies);
 
   /// If a module has a bridging header or other header inputs, execute a
   /// dependency scan on it and record the dependencies.
   void resolveHeaderDependenciesForModule(
       const ModuleDependencyID &moduleID,
       ModuleDependencyIDSetVector &headerClangModuleDependencies);
-
-  /// Resolve all module dependencies comprised of Swift overlays
-  /// of this module's Clang module dependencies.
-  void resolveSwiftOverlayDependenciesForModule(
-      const ModuleDependencyID &moduleID,
-      ModuleDependencyIDSetVector &swiftOverlayDependencies);
 
   /// Identify all cross-import overlay module dependencies of the
   /// source module under scan and apply an action for each.
@@ -412,6 +397,20 @@ private:
   ModuleDependencyInfo
   bridgeClangModuleDependency(
       const clang::dependencies::ModuleDeps &clangDependency);
+
+  /// Run a by-name Swift module scan on one of this scanner's workers. A
+  /// non-template entry point used by the continuation scheduler
+  /// (\c ScanWorkState), which cannot instantiate the
+  /// \c withDependencyScanningWorker template defined in the implementation
+  /// file.
+  SwiftModuleScannerQueryResult
+  scanSwiftModuleByNameOnWorker(Identifier moduleName, bool isTestableImport);
+
+  /// Run a by-name Clang module scan on one of this scanner's workers,
+  /// snapshotting the already-seen Clang module set. Counterpart to
+  /// \c scanSwiftModuleByNameOnWorker for the continuation scheduler.
+  std::optional<clang::tooling::dependencies::TranslationUnitDeps>
+  scanClangModuleByNameOnWorker(Identifier moduleName);
 
   /// Perform an operation utilizing one of the Scanning workers
   /// available to this scanner.
@@ -509,12 +508,21 @@ private:
   llvm::IntrusiveRefCntPtr<llvm::cas::CASBackedFileSystem> CacheFS;
   /// Protect worker access.
   std::mutex WorkersLock;
+  /// Protect identifier interning on the shared scan ASTContext, which the
+  /// continuation scheduler reaches concurrently from worker threads via
+  /// `getModuleImportIdentifier`. `ASTContext::getIdentifier` mutates a shared
+  /// table and is not otherwise thread-safe.
+  std::mutex ScanContextIdentifierLock;
   /// Count of filesystem queries performed
   std::atomic<unsigned> NumLookups = 0;
   /// Flag to use a single clang compiler instance to do all
   /// dependency queries during the life time of each worker this
   /// scanner owns.
   bool ShareClangCompilerInstance = true;
+
+  // The continuation scheduler drives the transitive-closure scan via this
+  // scanner's workers, cache, thread pool, and diagnostic reporter.
+  friend class ScanWorkState;
 };
 
 /// Check if a module path is under one of the known SDK private framework
@@ -524,3 +532,5 @@ LibraryLevel libraryLevelFromPath(StringRef modulePath, StringRef sdkPath,
                                   const llvm::Triple &target);
 
 } // namespace swift
+
+#endif // SWIFT_DEPENDENCYSCAN_MODULEDEPENDENCYSCANNER_H
