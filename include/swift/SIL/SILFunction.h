@@ -2009,6 +2009,11 @@ inline llvm::raw_ostream &operator<<(llvm::raw_ostream &OS,
 /// sides stay in lock-step.
 bool shouldEmitIsolationHistoryFor(const SILFunction *fn);
 
+/// Display/location hooks for SILFunction* request keys
+/// (CanonicalSynthesizedFunctionRequest).
+void simple_display(llvm::raw_ostream &out, SILFunction *f);
+SourceLoc extractNearestSourceLoc(SILFunction *f);
+
 } // end swift namespace
 
 //===----------------------------------------------------------------------===//
