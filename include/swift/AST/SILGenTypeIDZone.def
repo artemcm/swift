@@ -54,3 +54,21 @@ SWIFT_REQUEST(SILGen, SILDifferentiabilityWitnessRequest,
               SILDifferentiabilityWitness *(AbstractFunctionDecl *,
                                             DerivativeAttr *),
               Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, CanonicalSynthesizedFunctionRequest,
+              SILFunction *(SILFunction *),
+              Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, BlockToFuncThunkBodyRequest,
+              SILFunction *(BlockToFuncThunkBodyDescriptor),
+              Uncached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, ReabstractionThunkBodyRequest,
+              SILFunction *(ReabstractionThunkBodyDescriptor),
+              Uncached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, PreconditionClosureThunkBodyRequest,
+              SILFunction *(PreconditionClosureThunkBodyDescriptor),
+              Uncached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, WithoutActuallyEscapingThunkBodyRequest,
+              SILFunction *(WithoutActuallyEscapingThunkBodyDescriptor),
+              Uncached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, FuncToBlockThunkBodyRequest,
+              SILFunction *(FuncToBlockThunkBodyDescriptor),
+              Uncached, NoLocationInfo)
