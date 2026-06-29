@@ -2,7 +2,6 @@
 // @backDeployed functions. emitAbstractFuncDecl emits both the
 // fallback (BackDeploymentKind::Fallback) and the dispatch thunk
 // (BackDeploymentKind::Thunk) eagerly via emitFunctionDefinition.
-// Phase 5's bootstrap sweep should pick both up.
 //
 // The thunk variant is what callers route through; the fallback is
 // referenced from the thunk's body.
