@@ -1,7 +1,6 @@
 // Test that the on-demand SILGen path registers the
 // SILDifferentiabilityWitness for a `@derivative(of:)` declaration
-// via the new SILDifferentiabilityWitnessRequest. This is Phase 5's
-// guarantee for the @derivative path.
+// via the new SILDifferentiabilityWitnessRequest. 
 //
 // KNOWN LIMITATION: the lit harness rebuilds _Differentiation.swiftmodule
 // from its interface in a sub-compilation that inherits
@@ -41,7 +40,5 @@ public func vjpOriginal(_ x: Float)
   return (x, { v in v })
 }
 
-// VJP derivative thunk produced by getOrCreateCustomDerivativeThunk
-// and canonicalized by canonicalizeSynthesizedAuxFunction (the
-// no-DeclRef carve-out documented in Phase 5).
+// VJP derivative thunk: canonicalized by CanonicalSynthesizedFunctionRequest.
 // CHECK-LABEL: sil [thunk] [heuristic_always_inline] @$s25on_demand_derivative_test8originalyS2fFTJrSpSr :

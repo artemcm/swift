@@ -1554,3 +1554,16 @@ bool swift::shouldEmitIsolationHistoryFor(const SILFunction *fn) {
   }
   return false;
 }
+
+void swift::simple_display(llvm::raw_ostream &out, SILFunction *f) {
+  if (f)
+    out << f->getName();
+  else
+    out << "<null SILFunction>";
+}
+
+SourceLoc swift::extractNearestSourceLoc(SILFunction *f) {
+  if (f)
+    return f->getLocation().getSourceLoc();
+  return SourceLoc();
+}

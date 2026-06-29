@@ -5,8 +5,7 @@
 // emitArgumentGenerators -> emitDefaultArgGenerator -> emitOrDelayFunction.
 // The on-demand coordinator currently does not call emitAbstractFuncDecl,
 // so the generators are only created when caller bodies trigger
-// SILGenModule::getFunction. Phase 5 routes them through the request
-// system explicitly.
+// SILGenModule::getFunction.
 
 // RUN: %target-swift-emit-sil -parse-as-library %s > %t.normal.sil
 // RUN: %target-swift-emit-sil -parse-as-library -Xllvm -sil-on-demand-emission %s > %t.ondemand.sil
@@ -30,9 +29,8 @@
 // REQUESTS-DAG: SILFunctionInterfaceRequest{{.*}} 7
 // REQUESTS-DAG: AuxiliaryDeclEmissionRequest{{.*}} 3
 // REQUESTS-DAG: ArgumentGeneratorsRequest{{.*}} 3
-// REQUESTS-DAG: CDeclThunkRequest{{.*}} 3
-// REQUESTS-DAG: DistributedThunkRequest{{.*}} 3
-// REQUESTS-DAG: BackDeploymentRequest{{.*}} 3
+// Note: the @_cdecl / @distributed / @backDeployed aux sub-requests aren't
+// fired for these attribute-free functions, so they aren't asserted here.
 
 // helper: two default arguments. The default-arg generators are
 // emitted before the helper body in the SIL output.

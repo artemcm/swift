@@ -5,9 +5,7 @@
 // emitAbstractFuncDecl emits the foreign thunk eagerly via
 // emitNativeToForeignThunk -> emitFunctionDefinition. The on-demand
 // coordinator currently does not call emitAbstractFuncDecl, so the
-// thunk is missing from the on-demand output. Phase 5's bootstrap
-// sweep should pick the thunk up and route it through the request
-// system.
+// thunk is missing from the on-demand output.
 
 // RUN: %target-swift-emit-sil -parse-as-library %s > %t.normal.sil
 // RUN: %target-swift-emit-sil -parse-as-library -Xllvm -sil-on-demand-emission %s > %t.ondemand.sil
