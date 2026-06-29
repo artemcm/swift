@@ -12,6 +12,7 @@
 
 #include "swift/AST/SILGenRequests.h"
 #include "SILGen.h"
+#include "SILGenRequestTrace.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/Attr.h"
 #include "swift/AST/AutoDiff.h"
@@ -34,24 +35,10 @@
 #define DEBUG_TYPE "silgen-requests"
 
 using namespace swift;
+using namespace swift::silgen_trace;
 
 #ifndef NDEBUG
-/// Indentation depth for nested request tracing.
-static unsigned requestTraceDepth = 0;
-static llvm::raw_ostream &traceIndent() {
-  for (unsigned i = 0; i < requestTraceDepth; ++i)
-    llvm::dbgs() << "  ";
-  return llvm::dbgs();
-}
-struct TraceScope {
-  bool active;
-  TraceScope() : active(llvm::DebugFlag && llvm::isCurrentDebugType(DEBUG_TYPE)) {
-    if (active) ++requestTraceDepth;
-  }
-  ~TraceScope() { if (active) --requestTraceDepth; }
-};
-#else
-struct TraceScope { };
+unsigned swift::silgen_trace::requestTraceDepth = 0;
 #endif
 
 namespace swift {
@@ -264,6 +251,40 @@ void CanonicalSILFunctionRequest::noteCycleStep(
     diags.diagnose(constant.getDecl()->getLoc(), diag::note_while_inlining);
 }
 
+SILFunction *
+CanonicalSynthesizedFunctionRequest::evaluate(Evaluator &evaluator,
+                                              SILFunction *f) const {
+  LLVM_DEBUG(traceIndent() << "-> CanonicalSynthesizedFunctionRequest: "
+                           << f->getName() << "\n");
+  TraceScope _ts;
+
+  if (f->isAlreadyCanonical())
+    return f;
+  if (f->empty())
+    return f;
+
+  // Clear pass-notification flags; the pass manager asserts they're false
+  // (as in CleanedSILFunctionRequest::evaluate).
+  f->setNeedBreakInfiniteLoops(false);
+  f->setNeedCompleteLifetimes(false);
+
+  auto &silMod = f->getModule();
+  {
+    SILPassManager PM(&silMod, /*isMandatory=*/true, /*IRMod=*/nullptr);
+    PM.executePassPipelinePlan(
+        SILPassPipelinePlan::getSILGenPassPipeline(silMod.getOptions()), f);
+  }
+  {
+    SILPassManager PM(&silMod, /*isMandatory=*/true, /*IRMod=*/nullptr);
+    PM.executePassPipelinePlan(
+        SILPassPipelinePlan::getFunctionOnlyDiagnosticPassPipeline(
+            silMod.getOptions()),
+        f);
+  }
+  f->setFunctionStage(SILStage::Canonical);
+  return f;
+}
+
 // MARK: Auxiliary-emission requests
 
 evaluator::SideEffect
@@ -281,9 +302,13 @@ AuxiliaryDeclEmissionRequest::evaluate(Evaluator &evaluator,
          "AuxiliaryDeclEmissionRequest evaluated on ABI-only decl");
 
   (void)evaluateOrDefault(evaluator, ArgumentGeneratorsRequest{afd}, {});
-  (void)evaluateOrDefault(evaluator, CDeclThunkRequest{afd}, {});
-  (void)evaluateOrDefault(evaluator, DistributedThunkRequest{afd}, {});
-  (void)evaluateOrDefault(evaluator, BackDeploymentRequest{afd}, {});
+
+  if (afd->getAttrs().getAttribute<CDeclAttr>())
+    (void)evaluateOrDefault(evaluator, CDeclThunkRequest{afd}, {});
+  if (afd->getDistributedThunk())
+    (void)evaluateOrDefault(evaluator, DistributedThunkRequest{afd}, {});
+  if (afd->isBackDeployed())
+    (void)evaluateOrDefault(evaluator, BackDeploymentRequest{afd}, {});
   for (auto *derivAttr : afd->getAttrs().getAttributes<DerivativeAttr>()) {
     (void)evaluateOrDefault(
         evaluator,
@@ -398,9 +423,9 @@ SILDifferentiabilityWitnessRequest::evaluate(
     return nullptr;
 
   // Canonicalize each derivative thunk produced by the witness emission.
-  // Synthesized derivative thunks created by getOrCreateCustomDerivativeThunk
-  // do not have a SILDeclRef, so they cannot flow through
-  // CanonicalSILFunctionRequest. Fall back to the synthesized-aux carve-out.
+  // Derivative thunks have no SILDeclRef, so route them through
+  // CanonicalSynthesizedFunctionRequest. Idempotent safety net: normally
+  // already canonicalized by the getOrCreateCustomDerivativeThunk wrapper.
   auto canonicalize = [&](SILFunction *thunk) {
     if (!thunk)
       return;
@@ -408,7 +433,9 @@ SILDifferentiabilityWitnessRequest::evaluate(
       (void)evaluateOrDefault(evaluator,
                               CanonicalSILFunctionRequest{thunkRef}, nullptr);
     } else {
-      SGM->canonicalizeSynthesizedAuxFunction(thunk);
+      (void)evaluateOrDefault(evaluator,
+                              CanonicalSynthesizedFunctionRequest{thunk},
+                              nullptr);
     }
   };
   canonicalize(witness->getJVP());

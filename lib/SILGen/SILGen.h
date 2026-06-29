@@ -169,6 +169,14 @@ public:
   /// True if a function has been emitted for a given SILDeclRef.
   bool hasFunction(SILDeclRef constant);
 
+  /// True on the request-based on-demand path (-sil-on-demand-emission);
+  /// false on the legacy path.
+  bool isEmittingOnDemand() const;
+
+  /// Canonicalize a synthesized thunk (no SILDeclRef) via
+  /// CanonicalSynthesizedFunctionRequest. No-op on the legacy path.
+  void canonicalizeSynthesizedOnDemand(SILFunction *thunk);
+
   /// Get or create the declaration of a reabstraction thunk with the
   /// given signature.
   SILFunction *getOrCreateReabstractionThunk(
@@ -479,14 +487,6 @@ public:
   emitWitnessForDerivativeAttr(AbstractFunctionDecl *afd,
                                DerivativeAttr *derivAttr);
 
-  /// Run the per-function pipeline directly on a SILFunction that has no
-  /// SILDeclRef and therefore cannot flow through CanonicalSILFunctionRequest.
-  /// Used for synthesized auxiliary thunks (derivative thunks, reabstraction
-  /// thunks) created via getOrCreateSharedFunction-style factories. This is
-  /// a transitional carve-out; long-term those thunks should carry a
-  /// synthesized SILDeclRef.
-  void canonicalizeSynthesizedAuxFunction(SILFunction *f);
-
   /// Emit a deinit table for a noncopyable type.
   void emitNonCopyableTypeDeinitTable(NominalTypeDecl *decl);
 
@@ -666,6 +666,13 @@ public:
       SILFunction *F, GenericSignatureWithCapturedEnvironments sig);
 
 private:
+  /// Builds the thunk body; the public wrapper canonicalizes the result via
+  /// CanonicalSynthesizedFunctionRequest.
+  SILFunction *getOrCreateCustomDerivativeThunkImpl(
+      AbstractFunctionDecl *originalAFD, SILFunction *originalFn,
+      SILFunction *customDerivativeFn, const AutoDiffConfig &config,
+      AutoDiffDerivativeFunctionKind kind);
+
   /// The most recent declaration we considered for emission.
   SILDeclRef lastEmittedFunction;
 

@@ -14,7 +14,7 @@
 // finds a function_ref to helper. The worklist fires
 // CanonicalSILFunctionRequest for it.
 //
-// Phase 5 also fires AuxiliaryDeclEmissionRequest (and its sub-requests)
+// Also fires AuxiliaryDeclEmissionRequest (and its sub-requests)
 // for each top-level FuncDecl. These sub-requests early-exit when the
 // function has no relevant attribute, but the cache records the
 // evaluation.
@@ -26,9 +26,8 @@
 // REQUESTS-DAG: SILFunctionInterfaceRequest{{.*}} 3
 // REQUESTS-DAG: AuxiliaryDeclEmissionRequest{{.*}} 3
 // REQUESTS-DAG: ArgumentGeneratorsRequest{{.*}} 3
-// REQUESTS-DAG: CDeclThunkRequest{{.*}} 3
-// REQUESTS-DAG: DistributedThunkRequest{{.*}} 3
-// REQUESTS-DAG: BackDeploymentRequest{{.*}} 3
+// Note: the @_cdecl / @distributed / @backDeployed aux sub-requests aren't
+// fired for these attribute-free functions, so they aren't asserted here.
 
 // Both paths must produce identical canonical SIL.
 

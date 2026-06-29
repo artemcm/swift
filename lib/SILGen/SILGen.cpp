@@ -66,6 +66,17 @@ static llvm::cl::opt<bool> SILGenOnDemandEmission(
 // SILGenModule Class implementation
 //===----------------------------------------------------------------------===//
 
+bool SILGenModule::isEmittingOnDemand() const {
+  return SILGenOnDemandEmission;
+}
+
+void SILGenModule::canonicalizeSynthesizedOnDemand(SILFunction *thunk) {
+  if (!isEmittingOnDemand())
+    return;
+  (void)evaluateOrDefault(getASTContext().evaluator,
+                          CanonicalSynthesizedFunctionRequest{thunk}, nullptr);
+}
+
 SILGenModule::SILGenModule(SILModule &M, ModuleDecl *SM)
     : M(M), Types(M.Types), SwiftModule(SM),
       FileIDsByFilePath(SM->computeFileIDMap(/*shouldDiagnose=*/true)) {
@@ -1619,34 +1630,6 @@ SILGenModule::emitWitnessForDerivativeAttr(AbstractFunctionDecl *afd,
                                       jvp, vjp, derivAttr);
 }
 
-void SILGenModule::canonicalizeSynthesizedAuxFunction(SILFunction *f) {
-  if (f->isAlreadyCanonical())
-    return;
-  if (f->empty())
-    return;
-
-  // Mirror the per-function pipeline runs that CleanedSILFunctionRequest /
-  // DiagnosedSILFunctionRequest perform, but on a SILFunction without a
-  // SILDeclRef (so it cannot flow through the request chain).
-  f->setNeedBreakInfiniteLoops(false);
-  f->setNeedCompleteLifetimes(false);
-
-  auto &silMod = f->getModule();
-  {
-    SILPassManager PM(&silMod, /*isMandatory=*/true, /*IRMod=*/nullptr);
-    PM.executePassPipelinePlan(
-        SILPassPipelinePlan::getSILGenPassPipeline(silMod.getOptions()), f);
-  }
-  {
-    SILPassManager PM(&silMod, /*isMandatory=*/true, /*IRMod=*/nullptr);
-    PM.executePassPipelinePlan(
-        SILPassPipelinePlan::getFunctionOnlyDiagnosticPassPipeline(
-            silMod.getOptions()),
-        f);
-  }
-  f->setFunctionStage(SILStage::Canonical);
-}
-
 void SILGenModule::emitFunction(FuncDecl *fd) {
   assert(!shouldSkipDecl(fd));
 
@@ -2392,14 +2375,20 @@ static void discoverCallees(SILFunction *f,
       if (calleeRef.hasDecl()) {
         auto *dc = calleeRef.getDecl()->getDeclContext();
         auto *sf = dc->getParentSourceFile();
-        if (!sf)
-          continue;  // Cross-module (stdlib, etc.): no source file.
-        bool inPrimaryFiles = false;
-        for (auto *file : filesToEmit) {
-          if (file == sf) { inPrimaryFiles = true; break; }
+        if (!sf) {
+          // No source file: skip cross-module/imported externals (no local
+          // body); locally-synthesized thunks have a body, so fall through.
+          if (callee->isExternalDeclaration() ||
+              callee->isAvailableExternally() || callee->isAlreadyCanonical())
+            continue;
+        } else {
+          bool inPrimaryFiles = false;
+          for (auto *file : filesToEmit) {
+            if (file == sf) { inPrimaryFiles = true; break; }
+          }
+          if (!inPrimaryFiles)
+            continue;  // Non-primary file in same module.
         }
-        if (!inPrimaryFiles)
-          continue;  // Non-primary file in same module.
       }
 
       if (!resolved.count(calleeRef)) {
@@ -2455,6 +2444,11 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
         if (SGM.shouldSkipDecl(D))
           continue;
         if (auto *fd = dyn_cast<FuncDecl>(D)) {
+          DEBUG_WITH_TYPE("silgen-requests",
+                          llvm::dbgs() << "[emit auxiliary declarations] ";
+                          llvm::dbgs() << fd->getNameStr();
+                          llvm::dbgs() << "\n");
+
           (void)evaluateOrDefault(evaluator,
                                   AuxiliaryDeclEmissionRequest{fd}, {});
           if (shouldEmitFunctionBody(fd)) {
