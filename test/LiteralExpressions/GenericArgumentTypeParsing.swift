@@ -6,6 +6,8 @@
 
 struct G<T> {}
 struct Pair<T, U> {}
+protocol P {}
+protocol Q {}
 
 // =============================================================================
 // Function types
@@ -27,6 +29,22 @@ func functionTypeInExpression() {
 
 let functionTypeAlongsideValue: Pair<(Int, Int) -> Bool, (2 + 3)>? = nil
 // expected-error@-1 {{cannot use value type '5' for generic argument 'U'}}
+
+// =============================================================================
+// Protocol compositions
+//
+// A parenthesized composition reaches the expression path as an unfolded
+// SequenceExpr. The generic-argument simplifier folds it so that the
+// composition is recognized as a type.
+// =============================================================================
+
+var compositionAlone: G<(P & Q)>? { nil }
+var compositionInTuple: G<(Int, P & Q)>? { nil }
+var existentialComposition: G<(any P & Q)>? { nil }
+var existentialInTuple: G<(Int, any P)>? { nil }
+
+// A bitwise '&' between values stays a value expression. 6 & 5 == 4.
+let bitwiseAndValue: InlineArray<(6 & 5), Int> = [1, 2, 3, 4]
 
 // =============================================================================
 // Value expressions still take the expression path
