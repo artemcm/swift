@@ -315,10 +315,11 @@ bool SILFunction::hasLoweredAddresses() const {
   // - This function was individually lowered by AddressLowering
   // - This function arrived already canonical via deserialization
   // - This is a non-opaque-values build
-  // - Module has committed past Raw SIL stage 
+  // - This function's effective stage has committed past Raw SIL (its own
+  //   per-function stage, or the module floor)
   return HasLoweredAddresses || WasDeserializedCanonical ||
          !getModule().usesOpaqueValues() ||
-         getModule().getStageFloor() != SILStage::Raw;
+         getEffectiveStage() != SILStage::Raw;
 }
 
 SILStage SILFunction::getFunctionStage() const {

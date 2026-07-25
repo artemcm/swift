@@ -1162,7 +1162,7 @@ namespace {
     void emitDestroyValue(SILBuilder &B, SILLocation loc,
                           SILValue value) const override {
       if (B.getFunction().hasOwnership()
-          && B.getModule().getStageFloor() == SILStage::Raw
+          && B.getFunction().getEffectiveStage() == SILStage::Raw
           && value->isFromVarDecl()) {
         // Do not use destroy_value for trivial values. The lifetime introducer
         // may be implicitly copied and used outside of its original scope,

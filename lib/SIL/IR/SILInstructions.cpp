@@ -3135,7 +3135,7 @@ ConvertEscapeToNoEscapeInst *ConvertEscapeToNoEscapeInst::create(
   //
   // *NOTE* We purposely do not use an early return here to ensure that in
   // builds without assertions this whole if statement is optimized out.
-  if (F.getModule().getStageFloor() != SILStage::Lowered) {
+  if (F.getEffectiveStage() != SILStage::Lowered) {
     // Make sure we are not performing ABI-incompatible conversions.
     CanSILFunctionType opTI =
         CFI->getOperand()->getType().castTo<SILFunctionType>();

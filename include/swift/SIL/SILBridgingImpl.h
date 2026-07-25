@@ -826,6 +826,10 @@ bool BridgedFunction::hasOwnership() const { return getFunction()->hasOwnership(
 
 bool BridgedFunction::hasLoweredAddresses() const { return getFunction()->hasLoweredAddresses(); }
 
+SwiftInt BridgedFunction::getStage() const {
+  return (SwiftInt)getFunction()->getEffectiveStage();
+}
+
 BridgedCanType BridgedFunction::getLoweredFunctionType() const {
   return getFunction()->getLoweredFunctionType();
 }
