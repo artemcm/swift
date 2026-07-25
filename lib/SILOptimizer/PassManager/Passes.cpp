@@ -100,6 +100,16 @@ bool swift::runSILDiagnosticPasses(SILModule &Module, bool RunSILGenPasses) {
     return Ctx.hadError();
 
   // Generate diagnostics.
+  // Advance each function that cleared the mandatory pipeline to Canonical.
+  // This is the per-function analogue of the module-stage advance below and is
+  // the only well-defined per-function commit point: the mandatory pipeline
+  // interleaves module passes, so no earlier point observes a function having
+  // cleared every mandatory pass. Functions already past Raw (e.g. deserialized
+  // canonical bodies) are skipped. The module setStage below is kept as the
+  // conservative floor that getEffectiveStage() reconciles against.
+  for (auto &function : Module)
+    if (function.getFunctionStage() == SILStage::Raw)
+      function.setFunctionStage(SILStage::Canonical);
   Module.commitStage(SILStage::Canonical);
 
   // Verify the module, if required.
