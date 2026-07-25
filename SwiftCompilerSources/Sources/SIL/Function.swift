@@ -59,6 +59,14 @@ final public class Function : CustomStringConvertible, HasShortDescription, Hash
     return stage
   }
 
+  /// True if mandatory passes need not run on this function again (phase OR
+  /// provenance). Prefer over `wasDeserializedCanonical` for mandatory-pass skip
+  /// checks; use `silStage` for pure phase/legality queries. Bridges the C++
+  /// `SILFunction::isAlreadyCanonical` so the phase disjunct is the pure
+  /// per-function stage (not the module floor), matching the C++ skip checks
+  /// once a function is driven Canonical ahead of a still-Raw floor.
+  public var isAlreadyCanonical: Bool { bridged.isAlreadyCanonical() }
+
   public var isTrapNoReturn: Bool { bridged.isTrapNoReturn() }
 
   public var isAutodiffVJP: Bool { bridged.isAutodiffVJP() }

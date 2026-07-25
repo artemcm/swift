@@ -830,6 +830,10 @@ SwiftInt BridgedFunction::getStage() const {
   return (SwiftInt)getFunction()->getEffectiveStage();
 }
 
+bool BridgedFunction::isAlreadyCanonical() const {
+  return getFunction()->isAlreadyCanonical();
+}
+
 BridgedCanType BridgedFunction::getLoweredFunctionType() const {
   return getFunction()->getLoweredFunctionType();
 }

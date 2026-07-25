@@ -803,6 +803,16 @@ public:
   /// function advanced ahead of the module floor is observed at its true stage.
   SILStage getEffectiveStage() const;
 
+  /// True if mandatory passes need not run on this function again, for EITHER
+  /// reason: its own per-function stage has reached Canonical (a locally-driven-
+  /// ahead function), OR it arrived already-canonical by provenance (imported
+  /// .swiftmodule body, or a textual [canonical] attribute). This is the union
+  /// of phase and provenance, and is the correct predicate for a mandatory-pass
+  /// skip check ("do not redo work"). It is NOT a pure phase query: prefer
+  /// getEffectiveStage() for phase/legality checks (e.g. the verifier), which
+  /// must stay provenance-free.
+  bool isAlreadyCanonical() const;
+
   ForceEnableLexicalLifetimes_t forceEnableLexicalLifetimes() const {
     return ForceEnableLexicalLifetimes_t(ForceEnableLexicalLifetimes);
   }

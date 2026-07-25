@@ -338,6 +338,16 @@ SILStage SILFunction::getEffectiveStage() const {
   return functionStage > moduleStage ? functionStage : moduleStage;
 }
 
+bool SILFunction::isAlreadyCanonical() const {
+  // Union of phase and provenance, for mandatory-pass SKIP checks only: skip a
+  // function that is already past mandatory whether it reached Canonical by its
+  // own per-function progress (locally driven ahead) or arrived that way by
+  // provenance (deserialized, or a textual [canonical] attribute). Note this
+  // deliberately folds provenance; getEffectiveStage() does NOT, so phase
+  // legality checks (the verifier) stay provenance-free.
+  return getFunctionStage() >= SILStage::Canonical || wasDeserializedCanonical();
+}
+
 SILAddressConventions SILAddressConventions::forRawSIL(SILModule &M) {
   // The module's Raw-stage representation: opaque values under opaque-values
   // mode, raw addresses otherwise. No function in scope, so this is keyed to

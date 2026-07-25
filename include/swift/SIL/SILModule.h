@@ -978,7 +978,8 @@ public:
   SILStage getStageFloor() const { return StageFloor; }
 
   /// True once the whole module has committed to at least Canonical (the
-  /// mandatory phase is complete module-wide). It does not imply any specific
+  /// mandatory phase is complete module-wide). This is the module-wide analogue
+  /// of a function's isAlreadyCanonical(); it does not imply any specific
   /// function has been diagnosed.
   bool hasCommittedCanonical() const {
     return StageFloor >= SILStage::Canonical;
