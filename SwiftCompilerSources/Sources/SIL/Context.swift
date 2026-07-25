@@ -25,8 +25,10 @@ public protocol MutatingContext : Context {
 
 /// Common funcationality of all Contexts.
 extension Context {
-  public var silStage: SILStage {
-    switch _bridged.getSILStage() {
+  /// The module's stage floor: a module-wide commitment, not a per-function
+  /// phase.
+  public var stageFloor: SILStage {
+    switch _bridged.getStageFloor() {
       case .Raw:       return .raw
       case .Canonical: return .canonical
       case .Lowered:   return .lowered

@@ -318,7 +318,7 @@ bool SILFunction::hasLoweredAddresses() const {
   // - Module has committed past Raw SIL stage 
   return HasLoweredAddresses || WasDeserializedCanonical ||
          !getModule().usesOpaqueValues() ||
-         getModule().getStage() != SILStage::Raw;
+         getModule().getStageFloor() != SILStage::Raw;
 }
 
 SILStage SILFunction::getFunctionStage() const {
@@ -332,7 +332,7 @@ void SILFunction::setFunctionStage(SILStage stage) {
 
 SILStage SILFunction::getEffectiveStage() const {
   // The module stage is a conservative floor; report the further-along one.
-  SILStage moduleStage = getModule().getStage();
+  SILStage moduleStage = getModule().getStageFloor();
   SILStage functionStage = getFunctionStage();
   return functionStage > moduleStage ? functionStage : moduleStage;
 }

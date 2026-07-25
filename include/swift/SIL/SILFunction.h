@@ -798,9 +798,9 @@ public:
   void setFunctionStage(SILStage stage);
 
   /// This function's effective SIL stage: the more-advanced of its own
-  /// per-function stage and the module's stage. Every phase/legality query that
-  /// used to read \c getModule().getStage() should read this, so a function
-  /// advanced ahead of the module is observed at its true stage.
+  /// per-function stage and the module's stage floor. Every phase/legality
+  /// query that used to read \c getModule().getStageFloor() should read this, so a
+  /// function advanced ahead of the module floor is observed at its true stage.
   SILStage getEffectiveStage() const;
 
   ForceEnableLexicalLifetimes_t forceEnableLexicalLifetimes() const {
