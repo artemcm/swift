@@ -291,6 +291,10 @@ void SILFunction::init(
   // born after the module advances past Raw are reported lowered by the
   // module-stage term in hasLoweredAddresses(), so no creation-time seed is needed.
   this->HasLoweredAddresses = false;
+  // Seeded to Raw; advanced per-function ahead of the module floor by the
+  // pipeline once it commits a function to a further stage. getEffectiveStage()
+  // reconciles this with the module stage.
+  this->FunctionStage = unsigned(SILStage::Raw);
   this->stackProtection = false;
   this->Inlined = false;
   this->Zombie = false;
@@ -315,6 +319,22 @@ bool SILFunction::hasLoweredAddresses() const {
   return HasLoweredAddresses || WasDeserializedCanonical ||
          !getModule().usesOpaqueValues() ||
          getModule().getStage() != SILStage::Raw;
+}
+
+SILStage SILFunction::getFunctionStage() const {
+  return SILStage(FunctionStage);
+}
+
+void SILFunction::setFunctionStage(SILStage stage) {
+  assert(stage >= getFunctionStage() && "regressing per-function stage?!");
+  FunctionStage = unsigned(stage);
+}
+
+SILStage SILFunction::getEffectiveStage() const {
+  // The module stage is a conservative floor; report the further-along one.
+  SILStage moduleStage = getModule().getStage();
+  SILStage functionStage = getFunctionStage();
+  return functionStage > moduleStage ? functionStage : moduleStage;
 }
 
 SILAddressConventions SILAddressConventions::forRawSIL(SILModule &M) {

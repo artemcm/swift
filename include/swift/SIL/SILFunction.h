@@ -38,6 +38,7 @@ class ActorIsolation;
 enum class CodeGenerationModel: uint8_t;
 class SILInstruction;
 class SILModule;
+enum class SILStage;
 class SILFunctionBuilder;
 class SILProfiler;
 class BasicBlockBitfield;
@@ -495,6 +496,12 @@ private:
   /// address form by the AddressLowering function pass.
   unsigned HasLoweredAddresses : 1;
 
+  /// This function's own pipeline stage (a \c SILStage), tracked per-function
+  /// rather than only module-wide. The module stage is a conservative floor;
+  /// this field carries a function's own progress once it is advanced ahead of
+  /// that floor. Seeded to \c SILStage::Raw. Read via \c getEffectiveStage().
+  unsigned FunctionStage : 2;
+
   static void
   validateSubclassScope(SubclassScope scope, IsThunk_t isThunk,
                         const GenericSpecializationInformation *genericInfo) {
@@ -780,6 +787,21 @@ public:
   bool hasLoweredAddresses() const;
 
   void setHasLoweredAddresses(bool val = true) { HasLoweredAddresses = val; }
+
+  /// This function's own per-function pipeline stage. The module stage is a
+  /// conservative floor; prefer \c getEffectiveStage() for legality/phase
+  /// queries, which reconciles this with the floor.
+  SILStage getFunctionStage() const;
+
+  /// Advance this function's per-function stage. Monotonic: a function's stage
+  /// may only move forward (Raw -> Canonical -> Lowered).
+  void setFunctionStage(SILStage stage);
+
+  /// This function's effective SIL stage: the more-advanced of its own
+  /// per-function stage and the module's stage. Every phase/legality query that
+  /// used to read \c getModule().getStage() should read this, so a function
+  /// advanced ahead of the module is observed at its true stage.
+  SILStage getEffectiveStage() const;
 
   ForceEnableLexicalLifetimes_t forceEnableLexicalLifetimes() const {
     return ForceEnableLexicalLifetimes_t(ForceEnableLexicalLifetimes);
