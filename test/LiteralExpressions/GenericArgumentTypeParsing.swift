@@ -8,6 +8,8 @@ struct G<T> {}
 struct Pair<T, U> {}
 protocol P {}
 protocol Q {}
+protocol Container<Element> { associatedtype Element }
+struct Box<E>: Container { typealias Element = E }
 
 // =============================================================================
 // Function types
@@ -45,6 +47,41 @@ var existentialInTuple: G<(Int, any P)>? { nil }
 
 // A bitwise '&' between values stays a value expression. 6 & 5 == 4.
 let bitwiseAndValue: InlineArray<(6 & 5), Int> = [1, 2, 3, 4]
+
+// =============================================================================
+// Tuples and names from the enclosing protocol
+//
+// Resolving one of these as an expression needs unqualified value lookup, which
+// in a protocol needs that protocol's requirement signature. That is what a
+// structural requirement is computing, so the lookup used to report a spurious
+// 'circular reference'. A name that is a type resolves as one instead.
+// =============================================================================
+
+let tupleArgument: G<(Int, String)> = G<(Int, String)>()
+let parenthesizedArgument: G<(Int)> = G<Int>()
+let nestedTupleArgument: G<((Int, String))> = G<(Int, String)>()
+
+protocol SelfReferencingTuple {
+  associatedtype A
+  associatedtype B: Container<(A, Self)>
+  associatedtype C: Container<(A)>
+  associatedtype D: Container<((A, Self))>
+}
+
+struct ConformsToSelfReferencingTuple: SelfReferencingTuple {
+  typealias A = Int
+  typealias B = Box<(Int, ConformsToSelfReferencingTuple)>
+  typealias C = Box<Int>
+  typealias D = Box<(Int, ConformsToSelfReferencingTuple)>
+}
+
+// An associated type in a composition is diagnosed for what it is, rather than
+// as a circular reference.
+protocol AssociatedTypeInComposition {
+  associatedtype A
+  associatedtype B: Container<(A & Q)>
+  // expected-error@-1 {{non-protocol, non-class type 'Self.A' cannot be used within a protocol-constrained type}}
+}
 
 // =============================================================================
 // Value expressions still take the expression path
