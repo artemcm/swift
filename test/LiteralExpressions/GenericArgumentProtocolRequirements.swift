@@ -40,6 +40,34 @@ protocol ParenSelf {
   associatedtype B: Container<(Self)>
 }
 
+// A parenthesized dependent member type. Checking that 'Inner' names a type
+// needs the base's conformances, which the requirement signature under
+// computation would supply, so the member is folded from its syntax and
+// checked later.
+protocol Base { associatedtype Inner: Deep }
+protocol Deep { associatedtype Deeper }
+
+protocol ParenDependentMember {
+  associatedtype A: Base
+  associatedtype B: Container<(A.Inner)>
+}
+
+// The same, rooted at 'Self'.
+protocol ParenSelfMember: Base {
+  associatedtype B: Container<(Self.Inner)>
+}
+
+// A chain of more than one member.
+protocol ParenDependentMemberChain {
+  associatedtype A: Base
+  associatedtype B: Container<(A.Inner.Deeper)>
+}
+
+// A concrete root still resolves through the general fold.
+protocol ParenConcreteMember {
+  associatedtype B: Container<(Int.Magnitude)>
+}
+
 // A generic value argument still resolves as a value, in and out of
 // parentheses.
 struct Vec<let N: Int, T> {}

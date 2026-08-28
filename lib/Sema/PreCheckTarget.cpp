@@ -2903,22 +2903,75 @@ TypeExpr *TypeChecker::simplifyGenericArgumentTypeExpr(DeclContext *DC, Expr *E,
     DeclContext *DC;
     bool PreferTypeLookup;
 
-    /// Resolve \p UDRE as a type reference, or return null if it does not name
-    /// a type. Unlike value lookup this never needs the enclosing protocol's
-    /// requirement signature, so it is safe at the structural stage.
-    TypeExpr *resolveAsTypeRef(UnresolvedDeclRefExpr *UDRE) {
-      auto name = UDRE->getName();
+    /// Look \p name up as a type in this context. Unlike value lookup this
+    /// never needs the enclosing protocol's requirement signature, so it is
+    /// safe at the structural stage.
+    TypeDecl *lookupTypeDecl(DeclNameRef name, SourceLoc loc) {
       if (!name.isSimpleName() || name.getBaseName().isSpecial())
         return nullptr;
 
       auto lookup = TypeChecker::lookupUnqualifiedType(
-          DC, name, UDRE->getLoc(), defaultUnqualifiedLookupOptions);
+          DC, name, loc, defaultUnqualifiedLookupOptions);
       if (lookup.empty())
+        return nullptr;
+
+      return dyn_cast<TypeDecl>(lookup.front().getValueDecl());
+    }
+
+    /// Resolve \p UDRE as a type reference, or return null if it does not name
+    /// a type.
+    TypeExpr *resolveAsTypeRef(UnresolvedDeclRefExpr *UDRE) {
+      auto name = UDRE->getName();
+      if (!lookupTypeDecl(name, UDRE->getLoc()))
         return nullptr;
 
       auto &ctx = DC->getASTContext();
       auto *repr = UnqualifiedIdentTypeRepr::create(ctx, UDRE->getNameLoc(),
                                                     name);
+      return new (ctx) TypeExpr(repr);
+    }
+
+    /// Fold a dotted name rooted at a dependent type, such as 'A.Inner' or
+    /// 'Self.Inner', into a member type repr without resolving the base.
+    ///
+    /// The general fold in 'TypeExprSimplifier::simplifyNestedTypeExpr'
+    /// resolves the base at the interface stage so that it can check that the
+    /// member names a type. Inside a protocol that resolution needs the
+    /// requirement signature, which is what a structural requirement is
+    /// computing. The base's conformances do not exist yet at this stage, so
+    /// the member cannot be checked here at all. Build the repr and leave
+    /// checking to the caller's own type resolution, which is what an
+    /// unparenthesized 'A.Inner' already does.
+    ///
+    /// This covers a dependent root only. A concrete root resolves without the
+    /// requirement signature, and the general fold handles it correctly,
+    /// including a value member such as 'Limits.count'.
+    TypeExpr *resolveAsDependentMemberTypeRef(UnresolvedDotExpr *UDE) {
+      SmallVector<UnresolvedDotExpr *, 4> members;
+      Expr *base = UDE;
+      while (auto *dot = dyn_cast<UnresolvedDotExpr>(base)) {
+        auto name = dot->getName();
+        if (!name.isSimpleName() || name.getBaseName().isSpecial())
+          return nullptr;
+        members.push_back(dot);
+        base = dot->getBase();
+      }
+
+      auto *root = dyn_cast<UnresolvedDeclRefExpr>(base);
+      if (!root)
+        return nullptr;
+
+      auto *rootDecl = lookupTypeDecl(root->getName(), root->getLoc());
+      if (!isa_and_nonnull<AssociatedTypeDecl>(rootDecl) &&
+          !isa_and_nonnull<GenericTypeParamDecl>(rootDecl))
+        return nullptr;
+
+      auto &ctx = DC->getASTContext();
+      TypeRepr *repr = UnqualifiedIdentTypeRepr::create(
+          ctx, root->getNameLoc(), root->getName());
+      for (auto *dot : llvm::reverse(members))
+        repr = QualifiedIdentTypeRepr::create(ctx, repr, dot->getNameLoc(),
+                                              dot->getName());
       return new (ctx) TypeExpr(repr);
     }
 
@@ -2940,6 +2993,16 @@ TypeExpr *TypeChecker::simplifyGenericArgumentTypeExpr(DeclContext *DC, Expr *E,
         if (!folded)
           return Action::Stop();
         return Action::SkipNode(folded);
+      }
+
+      // Fold a dotted name rooted at a dependent type, such as 'A.Inner', into
+      // a member type. The general fold cannot run at the structural stage
+      // because it resolves the base first.
+      if (PreferTypeLookup) {
+        if (auto *dotExpr = dyn_cast<UnresolvedDotExpr>(expr)) {
+          if (auto *typeExpr = resolveAsDependentMemberTypeRef(dotExpr))
+            return Action::SkipNode(typeExpr);
+        }
       }
 
       // Resolve unqualified name references
