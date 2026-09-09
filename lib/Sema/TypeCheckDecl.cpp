@@ -1260,6 +1260,21 @@ EnumRawValuesRequest::evaluate(Evaluator &eval, EnumDecl *ED) const {
     if (elt->isInvalid())
       continue;
 
+    // A raw value that is a literal of a kind that can never serve as a raw
+    // value, e.g. a regex literal, a magic identifier such as #file, or an
+    // object literal, can't be used. Diagnose it before type checking, to avoid
+    // a spurious conversion error, and drop it, so the case receives an
+    // automatic value below.
+    if (auto *litExpr =
+            dyn_cast_or_null<LiteralExpr>(uncheckedRawValueOf(elt))) {
+      if (!isValidEnumRawValueLiteral(litExpr) &&
+          !isa<NilLiteralExpr>(litExpr)) {
+        ED->getASTContext().Diags.diagnose(
+            litExpr->getLoc(), diag::nonliteral_enum_case_raw_value);
+        elt->setRawValueExpr(nullptr);
+      }
+    }
+
     if (uncheckedRawValueOf(elt)) {
       if (!uncheckedRawValueOf(elt)->isImplicit())
         lastExplicitValueElt = elt;
@@ -1311,13 +1326,31 @@ EnumRawValuesRequest::evaluate(Evaluator &eval, EnumDecl *ED) const {
                           foldLiteralExpression(value, &ED->getASTContext()))
                     : dyn_cast<LiteralExpr>(value);
     if (!prevValue) {
-      // When the feature is disabled, non-literal raw values are already
-      // rejected during parsing; only diagnose here when it is enabled.
+      // When the LiteralExpressions feature is disabled, non-literal raw values
+      // are already rejected during parsing; only diagnose here when it is
+      // enabled.
       if (literalExprEnabled && value)
         ED->getASTContext().Diags.diagnose(
             value->getLoc(), foldIntegerRawValue
                                  ? diag::nonliteral_int_expr_enum_case_raw_value
                                  : diag::nonliteral_enum_case_raw_value);
+      // The automatic-value path above has already run for this element, so
+      // recover here by assigning an automatic value directly. That keeps the
+      // enum conforming instead of handing a non-literal to RawRepresentable
+      // derivation.
+      if (!valueKind)
+        valueKind = computeAutomaticEnumValueKind(ED);
+      Expr *automatic =
+          valueKind ? getAutomaticRawValueExpr(*valueKind, elt, prevValue)
+                    : nullptr;
+      if (automatic &&
+          TypeChecker::typeCheckExpression(
+              automatic, ED, /*contextualInfo=*/{rawTy, CTP_EnumCaseRawValue})) {
+        elt->setRawValueExpr(automatic);
+        prevValue = dyn_cast<LiteralExpr>(automatic);
+      } else {
+        elt->setInvalid();
+      }
       continue;
     }
 
@@ -1343,10 +1376,13 @@ EnumRawValuesRequest::evaluate(Evaluator &eval, EnumDecl *ED) const {
                             : uncheckedRawValueOf(elt)->getLoc();
 
     // Only Integer/Float/String/Bool literals can serve as raw values. Reject
-    // any other literal here.
+    // any other literal here. Such a literal is caught before type checking
+    // above, so this is a defensive backstop. Mark the case invalid rather than
+    // feed an unexpected literal kind to RawValueKey.
     if (!isValidEnumRawValueLiteral(prevValue)) {
       Diags.diagnose(diagLoc, diag::nonliteral_enum_case_raw_value);
       prevValue = nullptr;
+      elt->setInvalid();
       continue;
     }
 
