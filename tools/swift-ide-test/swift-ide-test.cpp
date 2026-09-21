@@ -433,6 +433,12 @@ DisableObjCAttrRequiresFoundationModule(
     llvm::cl::cat(Category),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> VersionIndependentAPINotes(
+    "version-independent-apinotes",
+    llvm::cl::desc("Input clang modules carry all versioned APINotes"),
+    llvm::cl::cat(Category),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool>
 PrintStats("print-stats",
            llvm::cl::desc("Print statistics"),
@@ -4776,6 +4782,8 @@ int main(int argc, char *argv[]) {
   }
   InitInvok.getLangOptions().EnableObjCAttrRequiresFoundation =
     !options::DisableObjCAttrRequiresFoundationModule;
+  InitInvok.getClangImporterOptions().LoadVersionIndependentAPINotes =
+      options::VersionIndependentAPINotes;
 
   auto &TypeCheckOpts = InitInvok.getTypeCheckerOptions();
   for (auto prefix : options::DebugForbidTypecheckPrefix)
