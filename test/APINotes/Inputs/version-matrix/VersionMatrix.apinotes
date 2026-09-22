@@ -1,0 +1,80 @@
+Name: VersionMatrix
+
+Functions:
+  - Name: nameU
+    SwiftName: 'nameU_unversioned()'
+  - Name: nameUV
+    SwiftName: 'nameUV_unversioned()'
+  - Name: nameHeader
+    SwiftName: 'nameHeader_fromNotes()'
+  - Name: privU
+    SwiftPrivate: true
+  - Name: privHeaderUndoneU
+    SwiftPrivate: false
+  - Name: availNonswiftU
+    Availability: nonswift
+    AvailabilityMsg: 'not in Swift, unversioned'
+  - Name: availNoneU
+    Availability: none
+    AvailabilityMsg: 'gone everywhere'
+
+Tags:
+  - Name: EnumOpenU
+    EnumKind: NSEnum
+
+Classes:
+  - Name: MatrixClass
+    Properties:
+      - Name: accessorsU
+        PropertyKind: Instance
+        SwiftImportAsAccessors: true
+    Methods:
+      - Selector: 'initWithDesignatedU:'
+        MethodKind: Instance
+        DesignatedInit: true
+  - Name: MatrixMembersU
+    SwiftObjCMembers: true
+
+SwiftVersions:
+  - Version: 4
+    Functions:
+      # Rename that only a 4.0 client sees.
+      - Name: nameV4
+        SwiftName: 'nameV4_fromNotes()'
+      # Both slices rename: the 4.0 one has to win at or below 4.
+      - Name: nameUV
+        SwiftName: 'nameUV_v4()'
+      - Name: privV4
+        SwiftPrivate: true
+      # Undo a header-written swift_private for 4.0 clients only.
+      - Name: privHeaderUndoneV4
+        SwiftPrivate: false
+      - Name: availNonswiftV4
+        Availability: nonswift
+        AvailabilityMsg: 'not in Swift at 4.0'
+    Tags:
+      - Name: EnumFlagV4
+        EnumKind: NSOptions
+      # Key-less slice on a tag.
+      - Name: EnumClosedKeyless
+    Classes:
+      - Name: MatrixClass
+        Properties:
+          - Name: accessorsV4
+            PropertyKind: Instance
+            SwiftImportAsAccessors: true
+        Methods:
+          - Selector: 'methodPrivateV4'
+            MethodKind: Instance
+            SwiftPrivate: true
+      - Name: MatrixNonGenericV4
+        SwiftImportAsNonGeneric: true
+
+  - Version: 5
+    Functions:
+      # A 5.0 slice that a 4.0 client must not select, and a 5.0 client must.
+      - Name: nameU
+        SwiftName: 'nameU_v5()'
+    Tags:
+      - Name: EnumClosedKeyless
+        EnumKind: NSClosedEnum

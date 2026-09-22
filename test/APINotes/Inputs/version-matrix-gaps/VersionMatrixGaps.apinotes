@@ -1,0 +1,15 @@
+Name: VersionMatrixGaps
+
+Functions:
+  - Name: gapKeyless
+    SwiftName: 'gapKeyless_unversioned()'
+
+SwiftVersions:
+  - Version: 4
+    Functions:
+      # Key-less slice: selecting it suppresses the unversioned rename. The live
+      # name agrees between the two paths; the compatibility alias does not.
+      - Name: gapKeyless
+      # Header attribute plus a versioned rename.
+      - Name: gapHeaderV4
+        SwiftName: 'gapHeaderV4_fromNotes()'
