@@ -836,8 +836,11 @@ void importer::getNormalInvocationArguments(
 
   // Enable API notes alongside headers/in frameworks.
   invocationArgStrs.push_back("-fapinotes-modules");
-  invocationArgStrs.push_back("-fapinotes-swift-version=" +
-                              languageVersion.asAPINotesVersionString());
+  if (importerOpts.LoadVersionIndependentAPINotes)
+    invocationArgStrs.push_back("-fswift-version-independent-apinotes");
+  else
+    invocationArgStrs.push_back("-fapinotes-swift-version=" +
+                                languageVersion.asAPINotesVersionString());
 
   // Prefer `-sdk` paths.
   if (!searchPathOpts.getSDKPath().empty()) {
@@ -856,10 +859,6 @@ void importer::getNormalInvocationArguments(
     invocationArgStrs.push_back("-iapinotes-modules");
     invocationArgStrs.push_back(path.str().str());
   }
-
-  if (importerOpts.LoadVersionIndependentAPINotes)
-    llvm::append_values(invocationArgStrs,
-                        "-fswift-version-independent-apinotes");
 
   if (!LangOpts.DisableSafeInteropWrappers)
     invocationArgStrs.push_back("-fexperimental-bounds-safety-attributes");
