@@ -928,7 +928,7 @@ namespace {
 
       Type mappedType = decl->getDeclaredInterfaceType();
 
-      if (getSwiftNewtypeAttr(type->getDecl(), Impl.CurrentVersion)) {
+      if (getSwiftNewtypeAttr(Impl, type->getDecl(), Impl.CurrentVersion)) {
         auto underlying = Visit(type->getDecl()->getUnderlyingType());
         switch (underlying.Hint) {
         case ImportHint::None:
@@ -998,7 +998,8 @@ namespace {
       // would because we're in a non-bridgeable context, and therefore
       // the underlying type is different from the mapping of the typedef,
       // use the underlying type.
-      if (Bridging != getTypedefBridgeability(type->getDecl()) &&
+      if (Bridging !=
+              getTypedefBridgeability(Impl, type->getDecl()) &&
           !underlyingResult.AbstractType->isEqual(mappedType)) {
         return underlyingResult;
       }
@@ -1138,8 +1139,10 @@ namespace {
       // Check whether there is a swift_bridge attribute.
       if (Impl.DisableSwiftBridgeAttr)
         return Type();
-      auto bridgeAttr = clangDecl->getAttr<clang::SwiftBridgeAttr>();
-      if (!bridgeAttr) return Type();
+
+      auto bridgeAttr = getSwiftAttr<clang::SwiftBridgeAttr>(Impl, clangDecl);
+      if (!bridgeAttr)
+        return Type();
 
       // Determine the module and Swift declaration names.
       StringRef moduleName;
@@ -1983,7 +1986,7 @@ ImportedType ClangImporter::Implementation::importPropertyType(
   ImportTypeKind importKind;
   // HACK: Certain decls are always imported using bridged types,
   // because that's what a standalone method would do.
-  if (shouldImportPropertyAsAccessors(decl)) {
+  if (shouldImportPropertyAsAccessors(*this, decl)) {
     importKind = ImportTypeKind::Property;
   } else {
     switch (decl->getSetterKind()) {
@@ -2890,14 +2893,14 @@ static ParamDecl *getParameterInfo(ClangImporter::Implementation *impl,
 
   auto &ASTContext = paramInfo->getASTContext();
   // If SendingArgsAndResults are enabled and we have a sending argument,
-  // set that the param was sending.
+  // set that the param was sending. 'swift_attr' is multi-valued, so this goes
+  // through the visitor rather than a single-attribute lookup.
   if (ASTContext.LangOpts.hasFeature(Feature::SendingArgsAndResults)) {
-    for (auto *attr : param->specific_attrs<clang::SwiftAttrAttr>()) {
-      if (attr->getAttribute() == "sending") {
-        paramInfo->setSending();
-        break;
-      }
-    }
+    forEachSwiftAttr<clang::SwiftAttrAttr>(
+        *impl, param, [&](clang::SwiftAttrAttr *attr) {
+          if (attr->getAttribute() == "sending")
+            paramInfo->setSending();
+        });
   }
 
   // C++ types taking a reference might return a reference/pointer to a

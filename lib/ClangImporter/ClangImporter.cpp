@@ -3306,7 +3306,8 @@ isPotentiallyConflictingSetter(const clang::ObjCProtocolDecl *proto,
   return false;
 }
 
-bool importer::shouldSuppressDeclImport(const clang::Decl *decl) {
+bool importer::shouldSuppressDeclImport(ClangImporter::Implementation &impl,
+                                        const clang::Decl *decl) {
   if (auto objcMethod = dyn_cast<clang::ObjCMethodDecl>(decl)) {
     // First check if we're actually in a Swift class.
     auto dc = decl->getDeclContext();
@@ -3323,7 +3324,7 @@ bool importer::shouldSuppressDeclImport(const clang::Decl *decl) {
       // Suppress the import of this method when the corresponding
       // property is not suppressed.
       return !shouldSuppressDeclImport(
-               objcMethod->findPropertyDecl(/*CheckOverrides=*/false));
+          impl, objcMethod->findPropertyDecl(/*CheckOverrides=*/false));
     }
 
     // If the method was declared within a protocol, check that it
@@ -3342,7 +3343,7 @@ bool importer::shouldSuppressDeclImport(const clang::Decl *decl) {
       return true;
 
     // Suppress certain properties; import them as getter/setter pairs instead.
-    if (shouldImportPropertyAsAccessors(objcProperty))
+    if (shouldImportPropertyAsAccessors(impl, objcProperty))
       return true;
 
     // Check whether there is a superclass method for the getter that
@@ -3363,7 +3364,7 @@ bool importer::shouldSuppressDeclImport(const clang::Decl *decl) {
         auto getterMethod =
             objcSuperclass->lookupMethod(objcProperty->getGetterName(),
                                          objcProperty->isInstanceProperty());
-        if (getterMethod && !shouldSuppressDeclImport(getterMethod))
+        if (getterMethod && !shouldSuppressDeclImport(impl, getterMethod))
           return true;
       }
     }
@@ -4391,7 +4392,7 @@ void ClangModuleUnit::lookupObjCMethods(
     auto owningClangModule = getClangTopLevelOwningModule(objcMethod, clangCtx);
     if (owningClangModule != clangModule) continue;
 
-    if (shouldSuppressDeclImport(objcMethod))
+    if (shouldSuppressDeclImport(owner, objcMethod))
       continue;
 
     // If we found a property accessor, import the property.
@@ -7568,7 +7569,7 @@ Type ClangImporter::importVarDeclType(
 
   // Special case: NS Notifications
   if (isNSNotificationGlobal(decl))
-    if (auto newtypeDecl = findSwiftNewtype(decl, Impl.getClangSema(),
+    if (auto newtypeDecl = findSwiftNewtype(Impl, decl, Impl.getClangSema(),
                                             Impl.CurrentVersion))
       declType = Impl.getClangASTContext().getTypedefType(newtypeDecl);
 

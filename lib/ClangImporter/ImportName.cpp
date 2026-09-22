@@ -625,13 +625,14 @@ checkVersionedSwiftName(VersionedSwiftNameInfo info,
     return VersionedSwiftNameAction::Ignore;
   }
 
-  if (info.Version < requestedClangVersion)
+  if (!info.Version.empty() && info.Version < requestedClangVersion)
     return VersionedSwiftNameAction::Ignore;
   return VersionedSwiftNameAction::Use;
 }
 
 static std::optional<AnySwiftNameAttr>
-findSwiftNameAttr(const clang::Decl *decl, ImportNameVersion version) {
+findSwiftNameAttr(ClangImporter::Implementation &impl,
+                  const clang::Decl *decl, ImportNameVersion version) {
 #ifndef NDEBUG
   if (std::optional<const clang::Decl *> def =
           getDefinitionForClangTypeDecl(decl)) {
@@ -671,14 +672,14 @@ findSwiftNameAttr(const clang::Decl *decl, ImportNameVersion version) {
         return std::nullopt;
     }
 
-    // Dig out the attribute that specifies the Swift name.
+    // Dig out the attribute that specifies the Swift name. 'swift_async_name'
+    // is not an annotation API notes can set, so it needs no selection.
     std::optional<AnySwiftNameAttr> activeAttr;
     if (auto asyncAttr = decl->getAttr<clang::SwiftAsyncNameAttr>())
       activeAttr = decodeAttr(asyncAttr);
-    if (!activeAttr) {
-      if (auto nameAttr = decl->getAttr<clang::SwiftNameAttr>())
+    if (!activeAttr)
+      if (auto nameAttr = getSwiftAttr<clang::SwiftNameAttr>(impl, decl))
         activeAttr = decodeAttr(nameAttr);
-    }
 
     if (auto enumDecl = dyn_cast<clang::EnumDecl>(decl)) {
       // Intentionally don't get the canonical type here.
@@ -686,10 +687,12 @@ findSwiftNameAttr(const clang::Decl *decl, ImportNameVersion version) {
         // If the typedef is available in Swift, the user will get ambiguity.
         // It also means they may not have intended this API to be imported like this.
         if (importer::isUnavailableInSwift(typedefType->getDecl(), nullptr, true)) {
-          if (auto asyncAttr = typedefType->getDecl()->getAttr<clang::SwiftAsyncNameAttr>())
+          if (auto asyncAttr =
+                  typedefType->getDecl()->getAttr<clang::SwiftAsyncNameAttr>())
             activeAttr = decodeAttr(asyncAttr);
           if (!activeAttr) {
-            if (auto nameAttr = typedefType->getDecl()->getAttr<clang::SwiftNameAttr>())
+            if (auto nameAttr = getSwiftAttr<clang::SwiftNameAttr>(
+                    impl, typedefType->getDecl()))
               activeAttr = decodeAttr(nameAttr);
           }
         }
@@ -698,7 +701,18 @@ findSwiftNameAttr(const clang::Decl *decl, ImportNameVersion version) {
 
     std::optional<AnySwiftNameAttr> result = activeAttr;
     llvm::VersionTuple bestSoFar;
-    for (auto *attr : decl->attrs()) {
+
+    // Under version-independent API notes the wrappers have been rewritten off
+    // the declaration, and the recorded payload is the only place the
+    // unselected slices survive. Outside that mode the recorded list is empty
+    // and the declaration still carries them. A view either way: this runs once
+    // per name import, so copying the list here is not free.
+    llvm::ArrayRef<clang::Attr *> wrappers =
+        impl.getAPINotesSelection(decl).AllWrappers;
+    if (wrappers.empty() && decl->hasAttrs())
+      wrappers = decl->getAttrs();
+
+    for (const auto *attr : wrappers) {
       VersionedSwiftNameInfo info;
 
       if (auto *versionedAttr = dyn_cast<clang::SwiftVersionedAdditionAttr>(attr)) {
@@ -751,7 +765,7 @@ findSwiftNameAttr(const clang::Decl *decl, ImportNameVersion version) {
 
   // The remainder of this function emulates the limited form of swift_name
   // supported in Swift 2.
-  auto attr = decl->getAttr<clang::SwiftNameAttr>();
+  auto attr = getSwiftAttr<clang::SwiftNameAttr>(impl, decl);
   if (!attr)
     return std::nullopt;
 
@@ -794,10 +808,11 @@ findSwiftNameAttr(const clang::Decl *decl, ImportNameVersion version) {
 /// Determine whether the given class method should be imported as
 /// an initializer.
 static FactoryAsInitKind
-getFactoryAsInit(const clang::ObjCInterfaceDecl *classDecl,
+getFactoryAsInit(ClangImporter::Implementation &impl,
+                 const clang::ObjCInterfaceDecl *classDecl,
                  const clang::ObjCMethodDecl *method,
                  ImportNameVersion version) {
-  if (auto customNameAttr = findSwiftNameAttr(method, version)) {
+  if (auto customNameAttr = findSwiftNameAttr(impl, method, version)) {
     if (customNameAttr->name.starts_with("init("))
       return FactoryAsInitKind::AsInitializer;
     return FactoryAsInitKind::AsClassMethod;
@@ -807,14 +822,20 @@ getFactoryAsInit(const clang::ObjCInterfaceDecl *classDecl,
 }
 
 static std::optional<CtorInitializerKind>
-determineCtorInitializerKind(const clang::ObjCMethodDecl *method) {
+determineCtorInitializerKind(ClangImporter::Implementation &impl,
+                             const clang::ObjCMethodDecl *method) {
   const clang::ObjCInterfaceDecl *interface = method->getClassInterface();
 
   if (isInitMethod(method)) {
     // If the owning Objective-C class has designated initializers and this
     // is not one of them, treat it as a convenience initializer.
+    //
+    // 'DesignatedInit' is an API notes key, so this has to go through the
+    // selection helper: under version-independent API notes the attribute sits
+    // in a versioned wrapper, and name import runs before anything rewrites the
+    // declaration.
     if (interface && interface->hasDesignatedInitializers() &&
-        !method->hasAttr<clang::ObjCDesignatedInitializerAttr>()) {
+        !hasSwiftAttr<clang::ObjCDesignatedInitializerAttr>(impl, method)) {
       return CtorInitializerKind::Convenience;
     }
 
@@ -833,7 +854,8 @@ determineCtorInitializerKind(const clang::ObjCMethodDecl *method) {
 /// \param prefixLength Will be set to the length of the prefix that
 /// should be stripped from the first selector piece, e.g., "init"
 /// or the restated name of the class in a factory method.
-static bool shouldImportAsInitializer(const clang::ObjCMethodDecl *method,
+static bool shouldImportAsInitializer(ClangImporter::Implementation &impl,
+                                      const clang::ObjCMethodDecl *method,
                                       ImportNameVersion version,
                                       unsigned &prefixLength) {
   /// Is this an initializer?
@@ -851,7 +873,7 @@ static bool shouldImportAsInitializer(const clang::ObjCMethodDecl *method,
 
   // Check whether we should try to import this factory method as an
   // initializer.
-  switch (getFactoryAsInit(objcClass, method, version)) {
+  switch (getFactoryAsInit(impl, objcClass, method, version)) {
   case FactoryAsInitKind::AsInitializer:
     // Okay; check for the correct result type below.
     prefixLength = 0;
@@ -934,12 +956,11 @@ static bool omitNeedlessWordsInFunctionName(
     StringRef argumentName;
     if (i < argumentNames.size())
       argumentName = argumentNames[i];
-    auto argumentAttrs =
-        ClangImporter::Implementation::inferDefaultArgument(
-            param->getType(),
-            getParamOptionality(param, !nonNullArgs.empty() && nonNullArgs[i]),
-            nameImporter.getIdentifier(baseName), argumentName, i == 0,
-            isLastParameter, nameImporter);
+    auto argumentAttrs = ClangImporter::Implementation::inferDefaultArgument(
+        param->getType(),
+        getParamOptionality(param, !nonNullArgs.empty() && nonNullArgs[i]),
+        nameImporter.getIdentifier(baseName), argumentName, i == 0,
+        isLastParameter, nameImporter);
 
     paramTypes.push_back(
         (argumentAttrs.hasAlternateCXXOptionsEnumName()
@@ -1022,7 +1043,8 @@ NameImporter::determineEffectiveContext(const clang::NamedDecl *decl,
       break;
     }
     // Import onto a swift_newtype if present
-  } else if (auto newtypeDecl = findSwiftNewtype(decl, clangSema, version)) {
+  } else if (auto newtypeDecl = findSwiftNewtype(*getImporterImpl(), decl,
+                                                 clangSema, version)) {
     res = newtypeDecl;
     // Everything else goes into its redeclaration context.
   } else {
@@ -1127,6 +1149,7 @@ static bool shouldBeSwiftPrivate(NameImporter &nameImporter,
                                  bool isAsyncImport) {
   // For an async import, check whether there is a swift_async attribute
   // that specifies whether this should be considered swift_private or not.
+  // 'swift_async' is not an annotation API notes can set.
   if (isAsyncImport) {
     if (auto *asyncAttr = decl->getAttr<clang::SwiftAsyncAttr>()) {
       switch (asyncAttr->getKind()) {
@@ -1143,8 +1166,8 @@ static bool shouldBeSwiftPrivate(NameImporter &nameImporter,
     }
   }
 
-  // Decl with the attribute are obviously private
-  if (decl->hasAttr<clang::SwiftPrivateAttr>())
+  if (hasSwiftAttr<clang::SwiftPrivateAttr>(*nameImporter.getImporterImpl(),
+                                            decl))
     return true;
 
   // Enum constants that are not imported as members should be considered
@@ -1160,10 +1183,12 @@ static bool shouldBeSwiftPrivate(NameImporter &nameImporter,
       LLVM_FALLTHROUGH;
     case EnumKind::Constants:
     case EnumKind::Unknown:
-      if (ED->hasAttr<clang::SwiftPrivateAttr>())
+      if (hasSwiftAttr<clang::SwiftPrivateAttr>(
+              *nameImporter.getImporterImpl(), ED))
         return true;
       if (auto *enumTypedef = ED->getTypedefNameForAnonDecl())
-        if (enumTypedef->hasAttr<clang::SwiftPrivateAttr>())
+        if (hasSwiftAttr<clang::SwiftPrivateAttr>(
+                *nameImporter.getImporterImpl(), enumTypedef))
           return true;
       break;
     }
@@ -1177,15 +1202,17 @@ static bool overridesVirtualMethods(const clang::CXXMethodDecl *method) {
 }
 
 static std::pair<std::optional<AnySwiftNameAttr>, bool>
-getOverridingMethodSwiftName(const clang::CXXMethodDecl *method,
+getOverridingMethodSwiftName(ClangImporter::Implementation &impl,
+                             const clang::CXXMethodDecl *method,
                              ImportNameVersion version) {
   bool seen = false;
   std::optional<AnySwiftNameAttr> firstName;
   for (const auto *overridden : method->overridden_methods()) {
     auto [name, ambiguous] =
         overridesVirtualMethods(overridden)
-            ? getOverridingMethodSwiftName(overridden, version)
-            : std::make_pair(findSwiftNameAttr(overridden, version), false);
+            ? getOverridingMethodSwiftName(impl, overridden, version)
+            : std::make_pair(findSwiftNameAttr(impl, overridden, version),
+                             false);
 
     if (ambiguous)
       return {std::nullopt, true};
@@ -1218,7 +1245,7 @@ bool ClangImporter::Implementation::isAmbiguouslyOverridden(
       continue;
 
     auto [_, ambiguous] =
-        getOverridingMethodSwiftName(RecordMethod, CurrentVersion);
+        getOverridingMethodSwiftName(*this, RecordMethod, CurrentVersion);
 
     if (ambiguous) {
       for (const auto *overridden : RecordMethod->overridden_methods()) {
@@ -1604,9 +1631,10 @@ addDefaultArgNamesForClangFunction(const clang::FunctionDecl *funcDecl,
 }
 
 std::optional<StringRef>
-NameImporter::findCustomName(const clang::Decl *decl,
+NameImporter::findCustomName(ClangImporter::Implementation &impl,
+                             const clang::Decl *decl,
                              ImportNameVersion version) {
-  if (auto nameAttr = findSwiftNameAttr(decl, version)) {
+  if (auto nameAttr = findSwiftNameAttr(impl, decl, version)) {
     return nameAttr->name;
   }
   return std::nullopt;
@@ -1663,6 +1691,8 @@ ImportedName NameImporter::importNameImpl(const clang::NamedDecl *D,
   bool completionHandlerFlagIsZeroOnError = false;
   std::optional<unsigned> completionHandlerFlagParamIndex;
   if (version.supportsConcurrency()) {
+    // 'swift_async' and 'swift_async_error' are not annotations API notes can
+    // set, so they need no version selection.
     if (const auto *swiftAsyncAttr = D->getAttr<clang::SwiftAsyncAttr>()) {
       // If this is swift_async(none), don't import as async at all.
       if (swiftAsyncAttr->getKind() == clang::SwiftAsyncAttr::None)
@@ -1694,7 +1724,7 @@ ImportedName NameImporter::importNameImpl(const clang::NamedDecl *D,
 
   // FIXME: ugly to check here, instead perform unified check up front in
   // containing struct...
-  if (findSwiftNewtype(D, clangSema, version))
+  if (findSwiftNewtype(*getImporterImpl(), D, clangSema, version))
     result.info.importAsMember = true;
 
   // Find the original method/property declaration and retrieve the
@@ -1719,7 +1749,7 @@ ImportedName NameImporter::importNameImpl(const clang::NamedDecl *D,
       overriddenNames[0].second.effectiveContext = result.effectiveContext;
 
       // Compute the initializer kind from the derived method, though.
-      if (auto kind = determineCtorInitializerKind(method))
+      if (auto kind = determineCtorInitializerKind(*getImporterImpl(), method))
         overriddenNames[0].second.info.initKind = *kind;
 
       return overriddenNames[0].second;
@@ -1761,7 +1791,7 @@ ImportedName NameImporter::importNameImpl(const clang::NamedDecl *D,
   }
 
   // If we have a swift_name attribute, use that.
-  if (auto nameAttr = findSwiftNameAttr(D, version)) {
+  if (auto nameAttr = findSwiftNameAttr(*getImporterImpl(), D, version)) {
     bool skipCustomName = false;
 
     // Parse the name.
@@ -1787,12 +1817,13 @@ ImportedName NameImporter::importNameImpl(const clang::NamedDecl *D,
       unsigned initPrefixLength;
       if (parsedName.BaseNameKind == DeclBaseName::Kind::Constructor &&
           parsedName.IsFunctionName) {
-        if (!shouldImportAsInitializer(method, version, initPrefixLength)) {
+        if (!shouldImportAsInitializer(*getImporterImpl(), method, version,
+                                       initPrefixLength)) {
           // We cannot import this as an initializer anyway.
           return ImportedName();
         }
 
-        if (auto kind = determineCtorInitializerKind(method))
+        if (auto kind = determineCtorInitializerKind(*getImporterImpl(), method))
           result.info.initKind = *kind;
 
         // If this swift_name attribute maps a factory method to an
@@ -1805,7 +1836,8 @@ ImportedName NameImporter::importNameImpl(const clang::NamedDecl *D,
           // Note that this is an initializer.
           isInitializer = true;
         }
-      } else if (shouldImportAsInitializer(method, version, initPrefixLength)) {
+      } else if (shouldImportAsInitializer(*getImporterImpl(), method, version,
+                                           initPrefixLength)) {
         // This is an initializer, but its custom name is ill-formed. Ignore
         // the swift_name attribute.
         skipCustomName = true;
@@ -2219,11 +2251,11 @@ ImportedName NameImporter::importNameImpl(const clang::NamedDecl *D,
     if (baseName.empty())
       return ImportedName();
 
-    isInitializer = shouldImportAsInitializer(objcMethod, version,
-                                              initializerPrefixLen);
+    isInitializer = shouldImportAsInitializer(*getImporterImpl(), objcMethod,
+                                              version, initializerPrefixLen);
 
     if (isInitializer) {
-      if (auto kind = determineCtorInitializerKind(objcMethod))
+      if (auto kind = determineCtorInitializerKind(*getImporterImpl(), objcMethod))
         result.info.initKind = *kind;
 
       // If we would import a factory method as an initializer but were
@@ -2469,7 +2501,7 @@ ImportedName NameImporter::importNameImpl(const clang::NamedDecl *D,
 
     if (overridesVirtualMethods(method)) {
       auto [effectiveName, isAmbiguous] =
-          getOverridingMethodSwiftName(method, version);
+          getOverridingMethodSwiftName(*getImporterImpl(), method, version);
       if (isAmbiguous)
         return ImportedName();
 
@@ -2487,7 +2519,8 @@ ImportedName NameImporter::importNameImpl(const clang::NamedDecl *D,
 
   // swift_newtype-ed declarations may have common words with the type name
   // stripped.
-  if (auto newtypeDecl = findSwiftNewtype(D, clangSema, version)) {
+  if (auto newtypeDecl =
+          findSwiftNewtype(*getImporterImpl(), D, clangSema, version)) {
     result.info.importAsMember = true;
     baseName = determineSwiftNewtypeBaseName(baseName, newtypeDecl->getName(),
                                              strippedPrefix);

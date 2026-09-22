@@ -270,20 +270,6 @@ struct ImportDiagnostic {
   }
 };
 
-/// Controls whether \p decl, when imported, should name the fully-bridged
-/// Swift type or the original Clang type.
-///
-/// In either case we end up losing sugar at some uses sites, so this is more
-/// about what the right default is.
-static inline Bridgeability
-getTypedefBridgeability(const clang::TypedefNameDecl *decl) {
-  if (decl->hasAttr<clang::SwiftBridgedTypedefAttr>() ||
-      decl->getUnderlyingType()->isBlockPointerType()) {
-    return Bridgeability::Full;
-  }
-  return Bridgeability::None;
-}
-
 /// Describes the kind of the C type that can be mapped to a stdlib
 /// swift type.
 enum class MappedCTypeKind {
@@ -441,6 +427,37 @@ struct ImportDiagnosticHasher {
   }
 };
 
+namespace importer {
+
+/// The API notes annotations that apply to one Clang declaration at the
+/// importer's current Swift language version.
+///
+/// Under `-version-independent-apinotes` a Clang module carries every API note
+/// version slice unapplied, wrapped in `clang::SwiftVersionedAdditionAttr` and
+/// `clang::SwiftVersionedRemovalAttr`, with a `clang::SwiftVersionedSliceAttr`
+/// recording each slice that exists. Selecting among them is the importer's job.
+///
+/// Clang selects one slice per lookup, not one per declaration, so selection
+/// runs once per slice group and every winner applies.
+struct APINotesSelection {
+  /// Additions belonging to a selected slice, in attribute order, a later
+  /// reader's annotation supersedes an earlier one of the same kind,
+  /// matching the order Clang discovers/applied them in.
+  llvm::SmallVector<const clang::SwiftVersionedAdditionAttr *, 4> Additions;
+
+  /// Every wrapper the declaration carried, of both kinds, in attribute order.
+  ///
+  /// Selection needs only the entries above, but findSwiftNameAttr needs the
+  /// unselected slices too: they are what the compatibility aliases and rename
+  /// fix-its for *other* language versions are built from. Canonicalization
+  /// rewrites the wrappers off the declaration, so this is where they survive.
+  /// Empty outside version-independent mode, where the declaration still has
+  /// them.
+  llvm::SmallVector<clang::Attr *, 8> AllWrappers;
+};
+
+} // namespace importer
+
 /// Implementation of the Clang importer.
 class LLVM_LIBRARY_VISIBILITY ClangImporter::Implementation 
   : public LazyMemberLoader,
@@ -512,6 +529,58 @@ public:
   llvm::SmallVector<clang::serialization::SubmoduleID, 2> PCHImportedSubmodules;
 
   const Version CurrentVersion;
+
+private:
+  /// Identifies a declaration for the two caches below.
+  ///
+  /// The `clang::ASTContext` is part of the key, not decoration. One Swift
+  /// compilation can run more than one `ASTContext`: building a Clang module in
+  /// process and then reading it back produces a second one, and a
+  /// `clang::Decl *` address freed by the first can be handed out again by the
+  /// second. Keying on the declaration alone then returns an entry whose
+  /// `clang::Attr *` belong to the dead context, which shows up as a crash in
+  /// `clang::Decl::addAttr` on a wrapper whose `getKind()` is garbage, or as a
+  /// silently dropped annotation.
+  using APINotesCacheKey = std::pair<const clang::ASTContext *,
+                                     const clang::Decl *>;
+
+  APINotesCacheKey getAPINotesCacheKey(const clang::Decl *decl) const {
+    return {&decl->getASTContext(), decl};
+  }
+
+  /// Cache backing \c getAPINotesSelection.
+  ///
+  /// The value is held indirectly on purpose. \c getAPINotesSelection hands out
+  /// a reference into this map, and a \c DenseMap rehashes when it grows, which
+  /// invalidates every outstanding reference to a value stored inline. Storing a
+  /// pointer keeps the pointee's address stable, so only the pointer moves.
+  llvm::DenseMap<APINotesCacheKey,
+                 std::unique_ptr<importer::APINotesSelection>>
+      APINotesSelections;
+
+  /// Returned for a declaration with nothing to select, so that the cache can
+  /// stay empty in that case. See \c getAPINotesSelection.
+  const importer::APINotesSelection NoAPINotesSelection;
+
+  /// Declarations canonicalizeVersionedSwiftAttributes has already rewritten.
+  ///
+  /// Keyed the same way as \c APINotesSelections, and for the same reason: a
+  /// recycled declaration address would otherwise report itself as already
+  /// canonicalized and skip the rewrite, losing the annotation silently.
+  llvm::DenseSet<APINotesCacheKey> CanonicalizedAPINotesDecls;
+
+public:
+  /// The API notes annotations that apply to \p decl at \c CurrentVersion.
+  ///
+  /// Computed once per declaration. The result is empty unless the module was
+  /// built with version-independent API notes, since otherwise Clang already
+  /// applied the selected slice and the declaration's plain attributes are the
+  /// answer.
+  const importer::APINotesSelection &
+  getAPINotesSelection(const clang::Decl *decl);
+
+  /// Mark \p decl as canonicalized, returning whether it already was.
+  bool markAPINotesCanonicalized(const clang::Decl *decl);
 
   static constexpr llvm::StringLiteral moduleImportBufferName =
       "<swift-imported-modules>";
@@ -2168,6 +2237,100 @@ public:
 };
 
 namespace importer {
+/// Look up a Clang attribute that an API notes file may have supplied.
+///
+/// Prefer this over \c clang::Decl::getAttr for any attribute API notes can
+/// set. Under version-independent API notes the annotation is not applied to
+/// the declaration at all; it sits in a versioned wrapper, and picking the
+/// right one is the importer's job.
+///
+/// This is one of two mechanisms, and the other is not a fallback for it.
+/// \c canonicalizeVersionedSwiftAttributes rewrites the selected slices onto
+/// the declaration so that a plain \c clang::Decl::getAttr sees them. Which one
+/// a caller needs is decided by whether that rewrite can reach it, not by which
+/// attribute is being read:
+///
+///   - It runs only from \c importDeclImpl and \c importAttributes, so anything
+///     during name computation runs earlier and must use this helper. A reader
+///     that also caches, as \c EnumInfo does, gets no second chance.
+///   - It runs only on the top-level declaration being imported, never on a
+///     \c clang::ParmVarDecl, so parameter-level reads must use this helper.
+///   - Lookup-table construction runs in the module *writer* as well as the
+///     importer, and the rewrite belongs to the importer, so code shared by
+///     both must use this helper.
+///
+/// Readers outside ClangImporter (AST, SIL, IRGen, PrintAsClang) cannot call
+/// this at all, since they cannot depend on \c ClangImporter::Implementation.
+/// The rewrite is the only thing that serves them, which is why it is permanent
+/// rather than a migration shim.
+template <typename T>
+T *getSwiftAttr(ClangImporter::Implementation &impl, const clang::Decl *decl) {
+  static_assert(std::is_base_of<clang::Attr, T>::value,
+                "T not derived from Attr");
+
+  if (!decl->hasAttrs())
+    return nullptr;
+
+  const APINotesSelection &selection = impl.getAPINotesSelection(decl);
+
+  // Take the last match rather than the first. With more than one reader, a
+  // later reader's annotation supersedes an earlier one of the same kind, which
+  // is the order Clang applies them in.
+  T *fromNotes = nullptr;
+  for (const auto *addition : selection.Additions)
+    if (auto *candidate = dyn_cast<T>(addition->getAdditionalAttr()))
+      fromNotes = candidate;
+  if (fromNotes)
+    return fromNotes;
+
+  // No selected slice speaks to this attribute, so one written in the header
+  // stands.
+  return decl->getAttr<T>();
+}
+
+/// Whether an attribute of kind \c T applies to \p decl, accounting for API
+/// notes version selection.
+template <typename T>
+bool hasSwiftAttr(ClangImporter::Implementation &impl,
+                  const clang::Decl *decl) {
+  return getSwiftAttr<T>(impl, decl) != nullptr;
+}
+
+/// Visit every attribute of kind \c T that applies to \p decl.
+///
+/// \c getSwiftAttr is the wrong shape for an attribute a declaration can carry
+/// more than once. \c clang::SwiftAttrAttr is the case that matters: \c
+/// swift_attr is how sending, Sendable, isolation, memory safety, and the C++
+/// ownership annotations all arrive, and one declaration routinely carries
+/// several.
+///
+/// Notes-supplied and header-written attributes are both visited, because \c
+/// swift_attr accumulates rather than replaces: Clang's \c addSwiftAttrIfAbsent
+/// adds one without erasing what is already there, so the applicable set is the
+/// union.
+template <typename T>
+void forEachSwiftAttr(ClangImporter::Implementation &impl,
+                      const clang::Decl *decl,
+                      llvm::function_ref<void(T *)> callback) {
+  static_assert(std::is_base_of<clang::Attr, T>::value,
+                "T not derived from Attr");
+
+  if (!decl->hasAttrs())
+    return;
+
+  const APINotesSelection &selection = impl.getAPINotesSelection(decl);
+
+  for (const auto *addition : selection.Additions)
+    if (auto *candidate = dyn_cast<T>(addition->getAdditionalAttr()))
+      // Canonicalization re-attaches a selected addition to the declaration, so
+      // the same attribute can also turn up in the loop below. Visit it once.
+      if (!llvm::is_contained(decl->attrs(), candidate))
+        callback(candidate);
+
+  for (auto *attr : decl->specific_attrs<T>())
+    callback(attr);
+}
+
 /// Whether this is a forward declaration of a type. We ignore forward
 /// declarations in certain cases, and instead process the real declarations.
 bool isForwardDeclOfType(const clang::Decl *decl);
@@ -2177,7 +2340,8 @@ bool isForwardDeclOfType(const clang::Decl *decl);
 bool isBoolOrBoolEnumType(Type ty);
 
 /// Whether we should suppress the import of the given Clang declaration.
-bool shouldSuppressDeclImport(const clang::Decl *decl);
+bool shouldSuppressDeclImport(ClangImporter::Implementation &impl,
+                              const clang::Decl *decl);
 
 /// Identifies certain UIKit constants that used to have overlay equivalents,
 /// but are now renamed using the swift_name attribute.
@@ -2307,8 +2471,9 @@ static inline Type applyToFunctionType(
 }
 
 inline std::optional<const clang::EnumDecl *>
-findAnonymousEnumForTypedef(const ASTContext &ctx,
+findAnonymousEnumForTypedef(ClangImporter::Implementation &impl,
                             const clang::TypedefType *typedefType) {
+  const ASTContext &ctx = impl.SwiftContext;
   auto *typedefDecl = typedefType->getDecl();
   auto *lookupTable = ctx.getClangModuleLoader()->findLookupTable(typedefDecl->getOwningModule());
 
@@ -2335,11 +2500,11 @@ findAnonymousEnumForTypedef(const ASTContext &ctx,
       EffectiveClangContext());
 
   auto swiftPrivateFound =
-      llvm::find_if(foundDecls, [](SwiftLookupTable::SingleEntry decl) {
+      llvm::find_if(foundDecls, [&impl](SwiftLookupTable::SingleEntry decl) {
         return isa<clang::NamedDecl *>(decl) &&
                isa<clang::EnumDecl>(cast<clang::NamedDecl *>(decl)) &&
-               cast<clang::NamedDecl *>(decl)
-                   ->hasAttr<clang::SwiftPrivateAttr>();
+               swift::importer::hasSwiftAttr<clang::SwiftPrivateAttr>(
+                   impl, cast<clang::NamedDecl *>(decl));
       });
 
   if (swiftPrivateFound != foundDecls.end()) {

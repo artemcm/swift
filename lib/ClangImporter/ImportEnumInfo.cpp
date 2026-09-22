@@ -61,7 +61,8 @@ getBestExtensibilityAttr(clang::Preprocessor &pp, const clang::EnumDecl *decl) {
 
 /// Classify the given Clang enumeration to describe how to import it.
 void EnumInfo::classifyEnum(const clang::EnumDecl *decl,
-                            clang::Preprocessor &pp) {
+                            clang::Preprocessor &pp,
+                            ClangImporter::Implementation &importerImpl) {
   assert(decl);
   clang::PrettyStackTraceDecl trace(decl, clang::SourceLocation(),
                                     pp.getSourceManager(), "classifying");
@@ -85,7 +86,15 @@ void EnumInfo::classifyEnum(const clang::EnumDecl *decl,
   }
 
   // First, check for attributes that denote the classification.
-  if (auto domainAttr = decl->getAttr<clang::NSErrorDomainAttr>()) {
+  //
+  // This runs during name import, before anything rewrites the selected API
+  // notes slices onto the declaration, so ask for the slice-aware answer rather
+  // than reading the attribute list. An error domain that only API notes supply
+  // is invisible to clang::Decl::getAttr under version-independent API notes,
+  // and the classification is cached, so missing it here renames the enum and
+  // then drops it.
+  if (auto domainAttr =
+          getSwiftAttr<clang::NSErrorDomainAttr>(importerImpl, decl)) {
     kind = EnumKind::NonFrozenEnum;
     nsErrorDomain = domainAttr->getErrorDomain()->getName();
   }
@@ -258,7 +267,7 @@ ImportedType importer::findOptionSetEnum(clang::QualType type,
     return ImportedType();
   }
 
-  auto clangEnum = findAnonymousEnumForTypedef(Impl.SwiftContext, typedefType);
+  auto clangEnum = findAnonymousEnumForTypedef(Impl, typedefType);
   if (!clangEnum)
     return ImportedType();
 
@@ -424,7 +433,7 @@ EnumInfo EnumInfoCache::getEnumInfo(const clang::EnumDecl *decl) {
     return iter->second;
   }
   ++EnumInfoNumCacheMisses;
-  EnumInfo enumInfo(decl, clangPP);
+  EnumInfo enumInfo(decl, clangPP, importerImpl);
   enumInfos[decl] = enumInfo;
   return enumInfo;
 }

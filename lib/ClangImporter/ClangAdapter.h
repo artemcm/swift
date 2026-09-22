@@ -125,7 +125,8 @@ OmissionTypeName getClangTypeNameForOmission(clang::ASTContext &ctx,
                                              clang::QualType type);
 
 /// Find the swift_newtype attribute on the given typedef, if present.
-clang::SwiftNewTypeAttr *getSwiftNewtypeAttr(const clang::TypedefNameDecl *decl,
+clang::SwiftNewTypeAttr *getSwiftNewtypeAttr(ClangImporter::Implementation &impl,
+                                             const clang::TypedefNameDecl *decl,
                                              ImportNameVersion version);
 
 /// Retrieve a bit vector containing the non-null argument
@@ -139,7 +140,8 @@ bool isNSNotificationGlobal(const clang::NamedDecl *);
 
 // If this decl is associated with a swift_newtype (and we're honoring
 // swift_newtype), return it, otherwise null
-clang::TypedefNameDecl *findSwiftNewtype(const clang::NamedDecl *decl,
+clang::TypedefNameDecl *findSwiftNewtype(ClangImporter::Implementation &impl,
+                                         const clang::NamedDecl *decl,
                                          clang::Sema &clangSema,
                                          ImportNameVersion version);
 
@@ -170,7 +172,16 @@ bool isRequiredInitializer(const clang::ObjCMethodDecl *method);
 
 /// Determine whether this property should be imported as its getter and setter
 /// rather than as a Swift property.
-bool shouldImportPropertyAsAccessors(const clang::ObjCPropertyDecl *prop);
+bool shouldImportPropertyAsAccessors(ClangImporter::Implementation &impl,
+                                     const clang::ObjCPropertyDecl *prop);
+
+/// Controls whether \p decl, when imported, should name the fully-bridged
+/// Swift type or the original Clang type.
+///
+/// In either case we end up losing sugar at some uses sites, so this is more
+/// about what the right default is.
+Bridgeability getTypedefBridgeability(ClangImporter::Implementation &impl,
+                                      const clang::TypedefNameDecl *decl);
 
 /// Determine whether this method is an Objective-C "init" method
 /// that will be imported as a Swift initializer.
@@ -192,6 +203,7 @@ bool isUnavailableInSwift(const clang::Decl *decl, const PlatformAvailability *,
 /// applies to this parameter.
 OptionalTypeKind getParamOptionality(const clang::ParmVarDecl *param,
                                      bool knownNonNull);
+
 } // namespace importer
 } // namespace swift
 

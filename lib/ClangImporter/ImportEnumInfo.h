@@ -17,9 +17,10 @@
 #ifndef SWIFT_CLANG_IMPORT_ENUM_H
 #define SWIFT_CLANG_IMPORT_ENUM_H
 
+#include "swift/AST/Decl.h"
+#include "swift/ClangImporter/ClangImporter.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/Sema.h"
-#include "swift/AST/Decl.h"
 #include "llvm/ADT/DenseMap.h"
 
 namespace clang {
@@ -29,6 +30,7 @@ class MacroInfo;
 } // namespace clang
 
 namespace swift {
+
 namespace importer {
 
 /// Describes how a particular C enumeration type will be imported
@@ -68,8 +70,9 @@ class EnumInfo {
 public:
   EnumInfo() = default;
 
-  EnumInfo(const clang::EnumDecl *decl, clang::Preprocessor &pp) {
-    classifyEnum(decl, pp);
+  EnumInfo(const clang::EnumDecl *decl, clang::Preprocessor &pp,
+           ClangImporter::Implementation &importerImpl) {
+    classifyEnum(decl, pp, importerImpl);
     determineConstantNamePrefix(decl);
   }
 
@@ -99,13 +102,16 @@ public:
 
 private:
   void determineConstantNamePrefix(const clang::EnumDecl *);
-  void classifyEnum(const clang::EnumDecl *, clang::Preprocessor &);
+  void classifyEnum(const clang::EnumDecl *, clang::Preprocessor &,
+                    ClangImporter::Implementation &);
 };
 
 /// Provide a cache of enum infos, so that we don't have to re-calculate their
 /// information.
 class EnumInfoCache {
   clang::Preprocessor &clangPP;
+
+  ClangImporter::Implementation &importerImpl;
 
   llvm::DenseMap<const clang::EnumDecl *, EnumInfo> enumInfos;
 
@@ -114,7 +120,9 @@ class EnumInfoCache {
   EnumInfoCache &operator = (const EnumInfoCache &) = delete;
 
 public:
-  explicit EnumInfoCache(clang::Preprocessor &cpp) : clangPP(cpp) {}
+  EnumInfoCache(clang::Preprocessor &cpp,
+                ClangImporter::Implementation &importerImpl)
+      : clangPP(cpp), importerImpl(importerImpl) {}
 
   EnumInfo getEnumInfo(const clang::EnumDecl *decl);
 

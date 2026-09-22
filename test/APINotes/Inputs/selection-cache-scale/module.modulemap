@@ -1,0 +1,4 @@
+module SelectionCacheScale {
+  header "SelectionCacheScale.h"
+  export *
+}

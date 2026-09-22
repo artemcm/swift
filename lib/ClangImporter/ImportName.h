@@ -433,7 +433,7 @@ public:
   NameImporter(ASTContext &ctx, const PlatformAvailability &avail,
                clang::Sema &cSema, ClangImporter::Implementation *importerImpl)
       : swiftCtx(ctx), availability(avail), clangSema(cSema),
-        enumInfos(clangSema.getPreprocessor()),
+        enumInfos(clangSema.getPreprocessor(), *importerImpl),
         importerImpl(importerImpl) {}
 
   /// Determine the Swift name for a Clang decl
@@ -508,7 +508,8 @@ public:
 
   /// Retrieve a purported custom name even if it is invalid.
   static std::optional<StringRef>
-  findCustomName(const clang::Decl *decl, ImportNameVersion version);
+  findCustomName(ClangImporter::Implementation &impl, const clang::Decl *decl,
+                 ImportNameVersion version);
 
 private:
   bool enableObjCInterop() const { return swiftCtx.LangOpts.EnableObjCInterop; }

@@ -515,9 +515,10 @@ OmissionTypeName importer::getClangTypeNameForOmission(clang::ASTContext &ctx,
 }
 
 static clang::SwiftNewTypeAttr *
-retrieveNewTypeAttr(const clang::TypedefNameDecl *decl) {
+retrieveNewTypeAttr(ClangImporter::Implementation &impl,
+                    const clang::TypedefNameDecl *decl) {
   // Retrieve the attribute.
-  auto attr = decl->getAttr<clang::SwiftNewTypeAttr>();
+  auto attr = getSwiftAttr<clang::SwiftNewTypeAttr>(impl, decl);
   if (!attr)
     return nullptr;
 
@@ -531,19 +532,22 @@ retrieveNewTypeAttr(const clang::TypedefNameDecl *decl) {
 }
 
 clang::SwiftNewTypeAttr *
-importer::getSwiftNewtypeAttr(const clang::TypedefNameDecl *decl,
+importer::getSwiftNewtypeAttr(ClangImporter::Implementation &impl,
+                              const clang::TypedefNameDecl *decl,
                               ImportNameVersion version) {
   // Newtype was introduced in Swift 3
   if (version <= ImportNameVersion::swift2())
     return nullptr;
-  return retrieveNewTypeAttr(decl);
+
+  return retrieveNewTypeAttr(impl, decl);
 }
 
 // If this decl is associated with a swift_newtype typedef, return it, otherwise
 // null
-clang::TypedefNameDecl *importer::findSwiftNewtype(const clang::NamedDecl *decl,
-                                                   clang::Sema &clangSema,
-                                                   ImportNameVersion version) {
+clang::TypedefNameDecl *
+importer::findSwiftNewtype(ClangImporter::Implementation &impl,
+                           const clang::NamedDecl *decl,
+                           clang::Sema &clangSema, ImportNameVersion version) {
   // Newtype was introduced in Swift 3
   if (version <= ImportNameVersion::swift2())
     return nullptr;
@@ -553,7 +557,7 @@ clang::TypedefNameDecl *importer::findSwiftNewtype(const clang::NamedDecl *decl,
     return nullptr;
 
   if (auto typedefTy = varDecl->getType()->getAs<clang::TypedefType>())
-    if (retrieveNewTypeAttr(typedefTy->getDecl()))
+    if (retrieveNewTypeAttr(impl, typedefTy->getDecl()))
       return typedefTy->getDecl();
 
   // Special case: "extern NSString * fooNotification" adopts
@@ -573,7 +577,7 @@ clang::TypedefNameDecl *importer::findSwiftNewtype(const clang::NamedDecl *decl,
       return nullptr;
 
     // Make sure it also has a newtype decl on it
-    if (retrieveNewTypeAttr(nsDecl))
+    if (retrieveNewTypeAttr(impl, nsDecl))
       return nsDecl;
 
     return nullptr;
@@ -692,9 +696,10 @@ static bool isAccessibilityConformingContext(const clang::DeclContext *ctx) {
   return false;
 }
 
-bool
-importer::shouldImportPropertyAsAccessors(const clang::ObjCPropertyDecl *prop) {
-  if (prop->hasAttr<clang::SwiftImportPropertyAsAccessorsAttr>())
+bool importer::shouldImportPropertyAsAccessors(
+    ClangImporter::Implementation &impl,
+    const clang::ObjCPropertyDecl *prop) {
+  if (hasSwiftAttr<clang::SwiftImportPropertyAsAccessorsAttr>(impl, prop))
     return true;
 
   // Check if the property is one of the specially handled accessibility APIs.
@@ -777,7 +782,8 @@ OptionalTypeKind importer::getParamOptionality(const clang::ParmVarDecl *param,
     return translateNullability(*nullability);
   }
 
-  // If it's known non-null, use that.
+  // If it's known non-null, use that. 'nonnull' is not an annotation API notes
+  // can set, so this needs no version selection.
   if (knownNonNull || param->hasAttr<clang::NonNullAttr>())
     return OTK_None;
 
@@ -789,4 +795,106 @@ OptionalTypeKind importer::getParamOptionality(const clang::ParmVarDecl *param,
 
   // Default to implicitly unwrapped optionals.
   return OTK_ImplicitlyUnwrappedOptional;
+}
+
+Bridgeability
+importer::getTypedefBridgeability(ClangImporter::Implementation &impl,
+                                 const clang::TypedefNameDecl *decl) {
+  if (hasSwiftAttr<clang::SwiftBridgedTypedefAttr>(impl, decl) ||
+      decl->getUnderlyingType()->isBlockPointerType()) {
+    return Bridgeability::Full;
+  }
+  return Bridgeability::None;
+}
+
+bool ClangImporter::Implementation::markAPINotesCanonicalized(
+    const clang::Decl *decl) {
+  return !CanonicalizedAPINotesDecls.insert(getAPINotesCacheKey(decl)).second;
+}
+
+const importer::APINotesSelection &
+ClangImporter::Implementation::getAPINotesSelection(const clang::Decl *decl) {
+  // Outside version-independent mode Clang already applied the slice it
+  // selected, so the declaration's plain attributes are the answer and there is
+  // nothing to select. Answer before computing a cache key: this runs on the
+  // order of 10^5 queries per module import, the map stays empty in this mode,
+  // and Decl::getASTContext walks the DeclContext chain to the translation
+  // unit.
+  if (!SwiftContext.ClangImporterOpts.LoadVersionIndependentAPINotes)
+    return NoAPINotesSelection;
+
+  const APINotesCacheKey key = getAPINotesCacheKey(decl);
+
+  auto known = APINotesSelections.find(key);
+  if (known != APINotesSelections.end())
+    return *known->second;
+
+  importer::APINotesSelection selection;
+
+  // Reproduce the rule in APINotesReader::VersionedInfo's constructor
+  // (clang/lib/APINotes/APINotesReader.cpp): among the slices one lookup
+  // supplied, the applicable one is the lowest version at or above the requested
+  // version, falling back to the unversioned slice. Run it once per slice group,
+  // because Clang runs selection once per lookup and applies every winner.
+  // Pooling the groups would let one lookup's slice suppress another's.
+  const clang::VersionTuple requested = CurrentVersion.asClangVersionTuple();
+
+  llvm::SmallDenseMap<unsigned, clang::VersionTuple, 2> selectedByGroup;
+  llvm::SmallDenseSet<unsigned, 2> groupsWithUnversionedSlice;
+
+  for (const auto *marker :
+       decl->specific_attrs<clang::SwiftVersionedSliceAttr>()) {
+    const unsigned group = marker->getSliceGroup();
+    const clang::VersionTuple version = marker->getVersion();
+
+    if (version.empty()) {
+      groupsWithUnversionedSlice.insert(group);
+      continue;
+    }
+
+    // A versioned slice covers its own version and every earlier one, so it is
+    // a candidate only when it is at or above what we asked for.
+    if (version < requested)
+      continue;
+
+    auto existing = selectedByGroup.find(group);
+    if (existing == selectedByGroup.end() || version < existing->second)
+      selectedByGroup[group] = version;
+  }
+
+  for (unsigned group : groupsWithUnversionedSlice)
+    selectedByGroup.try_emplace(group, clang::VersionTuple());
+
+  // Walk the wrappers in attribute order so that Additions stays in the order
+  // Clang would have applied them: group 0 before group 1, and within a group,
+  // in emission order.
+  auto isSelected = [&selectedByGroup](unsigned group,
+                                       clang::VersionTuple version) {
+    auto entry = selectedByGroup.find(group);
+    return entry != selectedByGroup.end() && entry->second == version;
+  };
+
+  for (const auto *addition :
+       decl->specific_attrs<clang::SwiftVersionedAdditionAttr>())
+    if (isSelected(addition->getSliceGroup(), addition->getVersion()))
+      selection.Additions.push_back(addition);
+
+  // Keep every wrapper, selected or not, in attribute order. findSwiftNameAttr
+  // reads these to recover the names this declaration had at other versions.
+  for (auto *attr : decl->attrs())
+    if (isa<clang::SwiftVersionedAdditionAttr>(attr) ||
+        isa<clang::SwiftVersionedRemovalAttr>(attr))
+      selection.AllWrappers.push_back(attr);
+
+  // Clang attaches API notes to a declaration lazily, so a query that arrives
+  // before that happens sees nothing. Memoizing that would freeze the wrong
+  // answer in place for the rest of the compilation, so only keep a result that
+  // actually found something.
+  if (selection.AllWrappers.empty())
+    return NoAPINotesSelection;
+
+  return *APINotesSelections
+              .insert({key, std::make_unique<importer::APINotesSelection>(
+                                std::move(selection))})
+              .first->second;
 }

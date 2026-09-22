@@ -1,0 +1,131 @@
+Name: SelectionCacheScale
+
+Functions:
+  - Name: scaled01
+    SwiftName: 'renamedScaled01()'
+  - Name: scaled02
+    SwiftName: 'renamedScaled02()'
+  - Name: scaled03
+    SwiftName: 'renamedScaled03()'
+  - Name: scaled04
+    SwiftName: 'renamedScaled04()'
+  - Name: scaled05
+    SwiftName: 'renamedScaled05()'
+  - Name: scaled06
+    SwiftName: 'renamedScaled06()'
+  - Name: scaled07
+    SwiftName: 'renamedScaled07()'
+  - Name: scaled08
+    SwiftName: 'renamedScaled08()'
+  - Name: scaled09
+    SwiftName: 'renamedScaled09()'
+  - Name: scaled10
+    SwiftName: 'renamedScaled10()'
+  - Name: scaled11
+    SwiftName: 'renamedScaled11()'
+  - Name: scaled12
+    SwiftName: 'renamedScaled12()'
+  - Name: scaled13
+    SwiftName: 'renamedScaled13()'
+  - Name: scaled14
+    SwiftName: 'renamedScaled14()'
+  - Name: scaled15
+    SwiftName: 'renamedScaled15()'
+  - Name: scaled16
+    SwiftName: 'renamedScaled16()'
+  - Name: scaled17
+    SwiftName: 'renamedScaled17()'
+  - Name: scaled18
+    SwiftName: 'renamedScaled18()'
+  - Name: scaled19
+    SwiftName: 'renamedScaled19()'
+  - Name: scaled20
+    SwiftName: 'renamedScaled20()'
+  - Name: scaled21
+    SwiftName: 'renamedScaled21()'
+  - Name: scaled22
+    SwiftName: 'renamedScaled22()'
+  - Name: scaled23
+    SwiftName: 'renamedScaled23()'
+  - Name: scaled24
+    SwiftName: 'renamedScaled24()'
+  - Name: scaled25
+    SwiftName: 'renamedScaled25()'
+  - Name: scaled26
+    SwiftName: 'renamedScaled26()'
+  - Name: scaled27
+    SwiftName: 'renamedScaled27()'
+  - Name: scaled28
+    SwiftName: 'renamedScaled28()'
+  - Name: scaled29
+    SwiftName: 'renamedScaled29()'
+  - Name: scaled30
+    SwiftName: 'renamedScaled30()'
+  - Name: scaled31
+    SwiftName: 'renamedScaled31()'
+  - Name: scaled32
+    SwiftName: 'renamedScaled32()'
+  - Name: scaled33
+    SwiftName: 'renamedScaled33()'
+  - Name: scaled34
+    SwiftName: 'renamedScaled34()'
+  - Name: scaled35
+    SwiftName: 'renamedScaled35()'
+  - Name: scaled36
+    SwiftName: 'renamedScaled36()'
+  - Name: scaled37
+    SwiftName: 'renamedScaled37()'
+  - Name: scaled38
+    SwiftName: 'renamedScaled38()'
+  - Name: scaled39
+    SwiftName: 'renamedScaled39()'
+  - Name: scaled40
+    SwiftName: 'renamedScaled40()'
+  - Name: scaled41
+    SwiftName: 'renamedScaled41()'
+  - Name: scaled42
+    SwiftName: 'renamedScaled42()'
+  - Name: scaled43
+    SwiftName: 'renamedScaled43()'
+  - Name: scaled44
+    SwiftName: 'renamedScaled44()'
+  - Name: scaled45
+    SwiftName: 'renamedScaled45()'
+  - Name: scaled46
+    SwiftName: 'renamedScaled46()'
+  - Name: scaled47
+    SwiftName: 'renamedScaled47()'
+  - Name: scaled48
+    SwiftName: 'renamedScaled48()'
+  - Name: scaled49
+    SwiftName: 'renamedScaled49()'
+  - Name: scaled50
+    SwiftName: 'renamedScaled50()'
+  - Name: scaled51
+    SwiftName: 'renamedScaled51()'
+  - Name: scaled52
+    SwiftName: 'renamedScaled52()'
+  - Name: scaled53
+    SwiftName: 'renamedScaled53()'
+  - Name: scaled54
+    SwiftName: 'renamedScaled54()'
+  - Name: scaled55
+    SwiftName: 'renamedScaled55()'
+  - Name: scaled56
+    SwiftName: 'renamedScaled56()'
+  - Name: scaled57
+    SwiftName: 'renamedScaled57()'
+  - Name: scaled58
+    SwiftName: 'renamedScaled58()'
+  - Name: scaled59
+    SwiftName: 'renamedScaled59()'
+  - Name: scaled60
+    SwiftName: 'renamedScaled60()'
+  - Name: scaled61
+    SwiftName: 'renamedScaled61()'
+  - Name: scaled62
+    SwiftName: 'renamedScaled62()'
+  - Name: scaled63
+    SwiftName: 'renamedScaled63()'
+  - Name: scaled64
+    SwiftName: 'renamedScaled64()'

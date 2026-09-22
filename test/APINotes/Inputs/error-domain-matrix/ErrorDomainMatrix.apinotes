@@ -1,0 +1,13 @@
+Name: ErrorDomainMatrix
+
+Tags:
+  - Name: ErrUCode
+    NSErrorDomain: ErrNotesDomain
+  - Name: ErrHeaderCode
+    NSErrorDomain: ErrNotesDomain
+
+SwiftVersions:
+  - Version: 4
+    Tags:
+      - Name: ErrV4Code
+        NSErrorDomain: ErrNotesDomain
