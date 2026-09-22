@@ -445,6 +445,12 @@ struct APINotesSelection {
   /// matching the order Clang discovers/applied them in.
   llvm::SmallVector<const clang::SwiftVersionedAdditionAttr *, 4> Additions;
 
+  /// Removals belonging to a selected slice.
+  llvm::SmallVector<const clang::SwiftVersionedRemovalAttr *, 2> Removals;
+
+  /// Whether a selected slice removes attributes of \p kind.
+  bool removes(clang::attr::Kind kind) const;
+
   /// Every wrapper the declaration carried, of both kinds, in attribute order.
   ///
   /// Selection needs only the entries above, but findSwiftNameAttr needs the
@@ -2263,6 +2269,11 @@ namespace importer {
 /// this at all, since they cannot depend on \c ClangImporter::Implementation.
 /// The rewrite is the only thing that serves them, which is why it is permanent
 /// rather than a migration shim.
+///
+/// Returns null when a selected slice removes the attribute and no selected
+/// slice adds one back, even if the header itself wrote one. That matches
+/// Clang, whose removal path erases the header-written attribute and puts
+/// nothing in its place.
 template <typename T>
 T *getSwiftAttr(ClangImporter::Implementation &impl, const clang::Decl *decl) {
   static_assert(std::is_base_of<clang::Attr, T>::value,
@@ -2282,6 +2293,12 @@ T *getSwiftAttr(ClangImporter::Implementation &impl, const clang::Decl *decl) {
       fromNotes = candidate;
   if (fromNotes)
     return fromNotes;
+
+  // An addition outranks a removal, because Clang applies the slice groups in
+  // order and a later group's addition lands after an earlier group's removal.
+  // Only once no selected slice adds one does a removal suppress the header.
+  if (selection.removes(ClangAttrKindFor<T>::value))
+    return nullptr;
 
   // No selected slice speaks to this attribute, so one written in the header
   // stands.
@@ -2320,12 +2337,20 @@ void forEachSwiftAttr(ClangImporter::Implementation &impl,
 
   const APINotesSelection &selection = impl.getAPINotesSelection(decl);
 
+  bool addedAny = false;
   for (const auto *addition : selection.Additions)
-    if (auto *candidate = dyn_cast<T>(addition->getAdditionalAttr()))
+    if (auto *candidate = dyn_cast<T>(addition->getAdditionalAttr())) {
+      addedAny = true;
       // Canonicalization re-attaches a selected addition to the declaration, so
       // the same attribute can also turn up in the loop below. Visit it once.
       if (!llvm::is_contained(decl->attrs(), candidate))
         callback(candidate);
+    }
+
+  // As in getSwiftAttr, an addition outranks a removal; only a removal that
+  // nothing adds back suppresses what the header wrote.
+  if (!addedAny && selection.removes(ClangAttrKindFor<T>::value))
+    return;
 
   for (auto *attr : decl->specific_attrs<T>())
     callback(attr);

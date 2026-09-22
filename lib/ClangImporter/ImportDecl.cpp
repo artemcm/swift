@@ -9901,10 +9901,17 @@ canonicalizeVersionedSwiftAttributes(const clang::NamedDecl *clangDecl,
   // Dropping them costs findSwiftNameAttr nothing, because it reads
   // APINotesSelection::AllWrappers, recorded above before this runs.
   auto mutableDecl = const_cast<clang::NamedDecl *>(clangDecl);
-  mutableDecl->dropAttrs<clang::SwiftVersionedAdditionAttr>();
+  mutableDecl->dropAttrs<clang::SwiftVersionedAdditionAttr,
+                         clang::SwiftVersionedRemovalAttr>();
+
+  llvm::erase_if(mutableDecl->getAttrs(), [&](const clang::Attr *attr) {
+    return selection.removes(attr->getKind());
+  });
 
   // Added in selection order, so a later reader's annotation lands after an
-  // earlier one's and wins, matching the order Clang applies them in.
+  // earlier one's and wins, matching the order Clang applies them in. Adding
+  // after the erase above is also what makes an addition outrank a removal from
+  // an earlier slice group.
   for (const auto *addition : selection.Additions)
     mutableDecl->addAttr(addition->getAdditionalAttr());
 }

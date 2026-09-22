@@ -807,6 +807,40 @@ importer::getTypedefBridgeability(ClangImporter::Implementation &impl,
   return Bridgeability::None;
 }
 
+bool importer::apiNotesRemovalCovers(clang::attr::Kind removedKind,
+                                     clang::attr::Kind queriedKind) {
+  if (removedKind == queriedKind)
+    return true;
+
+  // The retain-count attributes are one interchangeable family as far as API
+  // notes are concerned: when Clang decides what a 'RetainCountConvention'
+  // entry supersedes it matches any member of the family, so the removal it
+  // records names whichever member the call site happened to be templated on.
+  // See handleAPINotedRetainCountAttribute in clang/lib/Sema/SemaAPINotes.cpp.
+  auto isRetainCount = [](clang::attr::Kind kind) {
+    switch (kind) {
+    case clang::attr::CFReturnsRetained:
+    case clang::attr::CFReturnsNotRetained:
+    case clang::attr::NSReturnsRetained:
+    case clang::attr::NSReturnsNotRetained:
+    case clang::attr::CFAuditedTransfer:
+      return true;
+    default:
+      return false;
+    }
+  };
+
+  return isRetainCount(removedKind) && isRetainCount(queriedKind);
+}
+
+bool importer::APINotesSelection::removes(clang::attr::Kind kind) const {
+  return llvm::any_of(Removals,
+                      [kind](const clang::SwiftVersionedRemovalAttr *removal) {
+                        return apiNotesRemovalCovers(
+                            removal->getAttrKindToRemove(), kind);
+                      });
+}
+
 bool ClangImporter::Implementation::markAPINotesCanonicalized(
     const clang::Decl *decl) {
   return !CanonicalizedAPINotesDecls.insert(getAPINotesCacheKey(decl)).second;
@@ -878,6 +912,11 @@ ClangImporter::Implementation::getAPINotesSelection(const clang::Decl *decl) {
        decl->specific_attrs<clang::SwiftVersionedAdditionAttr>())
     if (isSelected(addition->getSliceGroup(), addition->getVersion()))
       selection.Additions.push_back(addition);
+
+  for (const auto *removal :
+       decl->specific_attrs<clang::SwiftVersionedRemovalAttr>())
+    if (isSelected(removal->getSliceGroup(), removal->getVersion()))
+      selection.Removals.push_back(removal);
 
   // Keep every wrapper, selected or not, in attribute order. findSwiftNameAttr
   // reads these to recover the names this declaration had at other versions.

@@ -1,0 +1,4 @@
+module RemovalMatrix {
+  header "RemovalMatrix.h"
+  export *
+}

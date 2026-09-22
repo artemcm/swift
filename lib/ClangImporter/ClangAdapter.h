@@ -204,6 +204,29 @@ bool isUnavailableInSwift(const clang::Decl *decl, const PlatformAvailability *,
 OptionalTypeKind getParamOptionality(const clang::ParmVarDecl *param,
                                      bool knownNonNull);
 
+/// The \c clang::attr::Kind value for a Clang attribute class.
+///
+/// Mirrors the trait Clang uses to build API notes removal records
+/// (\c AttrKindFor in \c clang/lib/Sema/SemaAPINotes.cpp). A removal records
+/// only a kind, so honoring one on this side needs the kind as a value.
+template <typename A> struct ClangAttrKindFor {};
+
+#define ATTR(X)                                                                \
+  template <> struct ClangAttrKindFor<clang::X##Attr> {                        \
+    static const clang::attr::Kind value = clang::attr::X;                     \
+  };
+#include "clang/Basic/AttrList.inc"
+
+/// Whether an API notes removal of \p removedKind suppresses attributes of
+/// \p queriedKind.
+///
+/// Usually an exact match. The retain-count attributes are the exception: Clang
+/// treats them as one interchangeable family when it decides what an API notes
+/// entry supersedes, so it can record a removal of any one of them while
+/// meaning the family. See \c handleAPINotedRetainCountAttribute in
+/// \c clang/lib/Sema/SemaAPINotes.cpp.
+bool apiNotesRemovalCovers(clang::attr::Kind removedKind,
+                           clang::attr::Kind queriedKind);
 } // namespace importer
 } // namespace swift
 
