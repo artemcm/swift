@@ -10,12 +10,12 @@
 // RUN: %empty-directory(%t)
 
 // RUN: %target-swift-frontend -scan-dependencies %s -o %t/legacy.json \
-// RUN:   -I %S/Inputs/custom-modules -swift-version 5 \
+// RUN:   -I %S/../Inputs/custom-modules -swift-version 5 \
 // RUN:   -module-cache-path %t/mcp-legacy
 // RUN: %validate-json %t/legacy.json
 
 // RUN: %target-swift-frontend -scan-dependencies %s -o %t/capture.json \
-// RUN:   -I %S/Inputs/custom-modules -swift-version 5 \
+// RUN:   -I %S/../Inputs/custom-modules -swift-version 5 \
 // RUN:   -module-cache-path %t/mcp-capture \
 // RUN:   -version-independent-apinotes
 // RUN: %validate-json %t/capture.json

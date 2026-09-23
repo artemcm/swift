@@ -1,0 +1,79 @@
+***************
+*** 2,11 ****
+  @available(swift, obsoleted: 3, renamed: "jumpTo(x:y:z:)")
+  func jumpToLocation(_ x: CDouble, _ y: CDouble, _ z: CDouble)
+  @available(swift, introduced: 4.2, renamed: "acceptPointer(_:)")
+! func accept(_ ptr: UnsafeMutablePointer<CDouble>?)
+  @available(swift, obsoleted: 3, renamed: "acceptPointer(_:)")
+! func acceptDoublePointer(_ ptr: UnsafeMutablePointer<CDouble>?)
+! func acceptPointer(_ ptr: UnsafeMutablePointer<CDouble>?)
+  @available(*, unavailable, renamed: "acceptPointer(_:)", message: "Not available in Swift")
+  func oldAcceptDoublePointer(_ ptr: UnsafeMutablePointer<CDouble>)
+  @available(swift, obsoleted: 3, renamed: "normallyUnchangedButChangedInSwift4()")
+--- 2,11 ----
+  @available(swift, obsoleted: 3, renamed: "jumpTo(x:y:z:)")
+  func jumpToLocation(_ x: CDouble, _ y: CDouble, _ z: CDouble)
+  @available(swift, introduced: 4.2, renamed: "acceptPointer(_:)")
+! func accept(_ ptr: UnsafeMutablePointer<CDouble>)
+  @available(swift, obsoleted: 3, renamed: "acceptPointer(_:)")
+! func acceptDoublePointer(_ ptr: UnsafeMutablePointer<CDouble>)
+! func acceptPointer(_ ptr: UnsafeMutablePointer<CDouble>)
+  @available(*, unavailable, renamed: "acceptPointer(_:)", message: "Not available in Swift")
+  func oldAcceptDoublePointer(_ ptr: UnsafeMutablePointer<CDouble>)
+  @available(swift, obsoleted: 3, renamed: "normallyUnchangedButChangedInSwift4()")
+***************
+*** 19,30 ****
+  class A {
+  }
+  class TypeChanges {
+!   class func method(with a: A?) -> A
+!   func method(with a: A?) -> A
+!   @available(swift, obsoleted: 3, renamed: "method(with:)")
+!   class func methodWithA(_ a: A?) -> A
+!   @available(swift, obsoleted: 3, renamed: "method(with:)")
+!   func methodWithA(_ a: A?) -> A
+  }
+  class Base {
+    init()
+--- 19,30 ----
+  class A {
+  }
+  class TypeChanges {
+!   class func method(withA a: Any) -> Any
+!   func method(withA a: Any) -> Any
+!   @available(swift, obsoleted: 3, renamed: "method(withA:)")
+!   class func methodWithA(_ a: Any) -> Any
+!   @available(swift, obsoleted: 3, renamed: "method(withA:)")
+!   func methodWithA(_ a: Any) -> Any
+  }
+  class Base {
+    init()
+***************
+*** 319,326 ****
+    init()
+  }
+  extension TestProperties {
+!   func accessorsOnlyWithNewType() -> Base
+!   func setAccessorsOnlyWithNewType(_ accessorsOnlyWithNewType: Base)
+  }
+  extension TestProperties {
+    func renamedAndRetyped() -> Any
+--- 319,326 ----
+    init()
+  }
+  extension TestProperties {
+!   func accessorsOnlyWithNewType() -> Any
+!   func setAccessorsOnlyWithNewType(_ accessorsOnlyWithNewType: Any)
+  }
+  extension TestProperties {
+    func renamedAndRetyped() -> Any
+***************
+*** 337,342 ****
+--- 337,343 ----
+    class func setAccessorsOnlyRenamedRetypedClass(_ accessorsOnlyRenamedRetypedClass: Any?)
+  }
+  protocol ProtoWithVersionedUnavailableMember {
++   func requirement() -> Any?
+  }
+  protocol ProtoWithManyRenames {
+    init(swift4Boolean value: CBool)

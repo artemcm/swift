@@ -20,6 +20,20 @@ Functions:
     Availability: none
     AvailabilityMsg: 'gone everywhere'
 
+Globals:
+  - Name: globalNameU
+    SwiftName: globalNameU_unversioned
+
+Enumerators:
+  - Name: EnumeratorNamesU
+    SwiftName: enumeratorU_unversioned
+  - Name: EnumeratorNamesUV
+    SwiftName: enumeratorUV_unversioned
+
+Typedefs:
+  - Name: WrapperStructU
+    SwiftWrapper: struct
+
 Tags:
   - Name: EnumOpenU
     EnumKind: NSEnum
@@ -34,8 +48,19 @@ Classes:
       - Selector: 'initWithDesignatedU:'
         MethodKind: Instance
         DesignatedInit: true
+      - Selector: categoryMethodU
+        MethodKind: Instance
+        SwiftName: 'categoryMethodU_unversioned()'
   - Name: MatrixMembersU
     SwiftObjCMembers: true
+
+Protocols:
+  - Name: MatrixProtocolU
+    SwiftName: MatrixProtocolU_unversioned
+    Methods:
+      - Selector: protocolMethodU
+        MethodKind: Instance
+        SwiftName: 'protocolMethodU_unversioned()'
 
 SwiftVersions:
   - Version: 4
@@ -71,12 +96,45 @@ SwiftVersions:
           - Name: accessorsV4
             PropertyKind: Instance
             SwiftImportAsAccessors: true
+          - Name: categoryAccessorsV4
+            PropertyKind: Instance
+            SwiftImportAsAccessors: true
         Methods:
           - Selector: 'methodPrivateV4'
             MethodKind: Instance
             SwiftPrivate: true
+          # A category member, annotated through the class it extends.
+          - Selector: categoryMethodV4
+            MethodKind: Instance
+            SwiftName: 'categoryMethodV4_v4()'
       - Name: MatrixNonGenericV4
         SwiftImportAsNonGeneric: true
+    Protocols:
+      - Name: MatrixProtocolV4
+        SwiftName: MatrixProtocolV4_v4
+      - Name: MatrixProtocolU
+        Methods:
+          - Selector: protocolMethodV4
+            MethodKind: Instance
+            SwiftName: 'protocolMethodV4_v4()'
+    Globals:
+      - Name: globalNameV4
+        SwiftName: globalNameV4_v4
+      - Name: globalPrivV4
+        SwiftPrivate: true
+    Enumerators:
+      - Name: EnumeratorNamesV4
+        SwiftName: enumeratorV4_v4
+      - Name: EnumeratorNamesUV
+        SwiftName: enumeratorUV_v4
+    Typedefs:
+      - Name: WrapperEnumV4
+        SwiftWrapper: enum
+      # Takes away the header's swift_wrapper for 4.0 clients.
+      - Name: WrapperNoneV4
+        SwiftWrapper: none
+      - Name: TypedefNameV4
+        SwiftName: TypedefNameV4_v4
 
   - Version: 5
     Functions:
@@ -86,3 +144,13 @@ SwiftVersions:
     Tags:
       - Name: EnumClosedKeyless
         EnumKind: NSClosedEnum
+
+  # Versions a Swift 4.2 and a Swift 6 client select, and nobody below.
+  - Version: 4.2
+    Functions:
+      - Name: nameV42
+        SwiftName: 'nameV42_v42()'
+  - Version: 6
+    Functions:
+      - Name: nameV6
+        SwiftName: 'nameV6_v6()'
