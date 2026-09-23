@@ -95,7 +95,12 @@ public:
   void writeExtensionContents(clang::Sema &sema,
                               llvm::BitstreamWriter &stream) override;
 
-  void populateTable(SwiftLookupTable &table, NameImporter &);
+  void populateTableForEverySwiftVersion(SwiftLookupTable &table,
+                                         clang::Sema &sema);
+
+  void populateTable(SwiftLookupTable &table, NameImporter &,
+                     llvm::SmallPtrSetImpl<const clang::NamedDecl *>
+                         *alreadyDiagnosed = nullptr);
 
   void populateTableWithDecl(SwiftLookupTable &table,
                              NameImporter &nameImporter, clang::Decl *decl);
@@ -365,7 +370,10 @@ void SwiftLookupTable::addCategory(clang::ObjCCategoryDecl *category) {
   // Force deserialization to occur before appending.
   (void) categories();
 
-  // Add the category.
+  // Add the category. A table populated once per Swift version visits each
+  // category once per pass.
+  if (llvm::is_contained(Categories, category))
+    return;
   Categories.push_back(category);
 }
 
@@ -1302,14 +1310,105 @@ namespace {
 
 } // end anonymous namespace
 
+/// Collect this module's declarations whose API notes slices were captured,
+/// wrapped and unapplied, rather than applied.
+static void collectCapturedAPINotesDecls(clang::DeclContext *dc,
+                                         SmallVectorImpl<clang::Decl *> &out) {
+  for (auto *decl : dc->noload_decls()) {
+    if (decl->isFromASTFile())
+      continue;
+    if (decl->hasAttr<clang::SwiftVersionedSliceAttr>())
+      out.push_back(decl);
+    if (isa<clang::LinkageSpecDecl, clang::ExportDecl, clang::NamespaceDecl,
+            clang::TagDecl, clang::ObjCContainerDecl>(decl))
+      collectCapturedAPINotesDecls(cast<clang::DeclContext>(decl), out);
+  }
+}
+
+/// One Swift version for each distinct outcome of API notes slice selection
+/// over \p decls, ascending.
+///
+/// Selection picks the lowest slice at or above the requested version, else
+/// the unversioned slice, so the outcome changes only at slice versions. Each
+/// slice version stands for the requests it wins, and one version above them
+/// all stands for the requests that fall through to the unversioned slice.
+/// Deriving these from the slices rather than from the Swift versions this
+/// compiler knows keeps the outcomes of later versions, such as a Swift 6
+/// client passing a 5.0 slice by.
+static SmallVector<llvm::VersionTuple, 4>
+distinctSliceSelectionVersions(ArrayRef<clang::Decl *> decls) {
+  SmallVector<llvm::VersionTuple, 4> result;
+  for (auto *decl : decls)
+    for (auto *marker : decl->specific_attrs<clang::SwiftVersionedSliceAttr>())
+      if (!marker->getVersion().empty())
+        result.push_back(marker->getVersion());
+  llvm::sort(result);
+  result.erase(llvm::unique(result), result.end());
+
+  result.push_back(result.empty()
+                       ? llvm::VersionTuple(1)
+                       : llvm::VersionTuple(result.back().getMajor() + 1));
+  return result;
+}
+
+/// Populate \p table so it serves an importer at every Swift version.
+///
+/// The table's keys are Swift names, and API notes change Swift names. A module
+/// built with -fswift-version-independent-apinotes carries its API notes
+/// captured rather than applied, so a name computed from the declarations as
+/// they stand here matches no version at all. Instead, collapse the captured
+/// declarations as an importer at each version would, populate, and put them
+/// back, so the table is the union of the ones a module built at each version
+/// would carry. Importers already tolerate keys for other versions' names.
+///
+/// Mutating the declarations here does not reach the module file: Clang writes
+/// module file extensions after every declaration record.
+void SwiftLookupTableWriter::populateTableForEverySwiftVersion(
+    SwiftLookupTable &table, clang::Sema &sema) {
+  SmallVector<clang::Decl *, 16> captured;
+  if (sema.captureSwiftVersionIndependentAPINotes())
+    collectCapturedAPINotesDecls(sema.Context.getTranslationUnitDecl(),
+                                 captured);
+
+  if (captured.empty()) {
+    NameImporter nameImporter(swiftCtx, availability, sema, importerImpl);
+    populateTable(table, nameImporter);
+    return;
+  }
+
+  llvm::SmallPtrSet<const clang::NamedDecl *, 4> diagnosed;
+  for (auto version : distinctSliceSelectionVersions(captured)) {
+    SmallVector<clang::AttrVec, 16> capturedAttrs;
+    for (auto *decl : captured)
+      capturedAttrs.push_back(decl->getAttrs());
+
+    for (auto *decl : captured)
+      sema.CollapseVersionedAPINotesAtVersion(decl, version);
+
+    {
+      // A fresh importer per pass: its name and enum caches are keyed on the
+      // declaration, not on what the declaration looks like at this version.
+      NameImporter nameImporter(swiftCtx, availability, sema, importerImpl);
+      populateTable(table, nameImporter, &diagnosed);
+    }
+
+    // The collapse can leave a declaration with no attributes at all, and
+    // setAttrs only initializes an empty attribute list.
+    for (auto [decl, attrs] : llvm::zip_equal(captured, capturedAttrs)) {
+      if (decl->hasAttrs())
+        decl->getAttrs() = attrs;
+      else
+        decl->setAttrs(attrs);
+    }
+  }
+}
+
 void SwiftLookupTableWriter::writeExtensionContents(
        clang::Sema &sema,
        llvm::BitstreamWriter &stream) {
-  NameImporter nameImporter(swiftCtx, availability, sema, importerImpl);
-
   // Populate the lookup table.
   SwiftLookupTable table(nullptr);
-  populateTable(table, nameImporter);
+  populateTableForEverySwiftVersion(table, sema);
 
   SmallVector<uint64_t, 64> ScratchRecord;
 
@@ -2146,7 +2245,8 @@ void importer::addMacrosToLookupTable(SwiftLookupTable &table,
 
 void importer::finalizeLookupTable(
     SwiftLookupTable &table, NameImporter &nameImporter,
-    ClangSourceBufferImporter &buffersForDiagnostics) {
+    ClangSourceBufferImporter &buffersForDiagnostics,
+    llvm::SmallPtrSetImpl<const clang::NamedDecl *> *alreadyDiagnosed) {
   // Resolve any unresolved entries.
   SmallVector<SwiftLookupTable::SingleEntry, 4> unresolved;
   if (table.resolveUnresolvedEntries(unresolved)) {
@@ -2171,6 +2271,8 @@ void importer::finalizeLookupTable(
         if (const auto *owningModule = decl->getOwningModule())
           if (owningModule->IsSystem)
             continue;
+        if (alreadyDiagnosed && !alreadyDiagnosed->insert(decl).second)
+          continue;
         swiftDiags.diagnose(swiftSourceLoc, diag::unresolvable_clang_decl,
                             decl->getNameAsString(), swiftName->getName());
         StringRef moduleName =
@@ -2220,8 +2322,9 @@ void SwiftLookupTableWriter::populateTableWithDecl(SwiftLookupTable &table,
   addEntryToLookupTable(table, named, nameImporter);
 }
 
-void SwiftLookupTableWriter::populateTable(SwiftLookupTable &table,
-                                           NameImporter &nameImporter) {
+void SwiftLookupTableWriter::populateTable(
+    SwiftLookupTable &table, NameImporter &nameImporter,
+    llvm::SmallPtrSetImpl<const clang::NamedDecl *> *alreadyDiagnosed) {
   auto &sema = nameImporter.getClangSema();
   for (auto decl : sema.Context.getTranslationUnitDecl()->noload_decls()) {
     populateTableWithDecl(table, nameImporter, decl);
@@ -2231,7 +2334,8 @@ void SwiftLookupTableWriter::populateTable(SwiftLookupTable &table,
   addMacrosToLookupTable(table, nameImporter);
 
   // Finalize the lookup table, which may fail.
-  finalizeLookupTable(table, nameImporter, buffersForDiagnostics);
+  finalizeLookupTable(table, nameImporter, buffersForDiagnostics,
+                      alreadyDiagnosed);
 }
 
 std::unique_ptr<clang::ModuleFileExtensionWriter>

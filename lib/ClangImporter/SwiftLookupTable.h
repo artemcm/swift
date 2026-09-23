@@ -27,10 +27,11 @@
 #include "clang/Serialization/ASTBitCodes.h"
 #include "clang/Serialization/ModuleFileExtension.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/TinyPtrVector.h"
 #include <optional>
 #include <utility>
-#include "llvm/ADT/TinyPtrVector.h"
 
 namespace llvm {
 class BitstreamWriter;
@@ -657,8 +658,14 @@ void addMacrosToLookupTable(SwiftLookupTable &table, NameImporter &);
 
 /// Finalize a lookup table, handling any as-yet-unresolved entries
 /// and emitting diagnostics if necessary.
+///
+/// A table populated in several passes is finalized once per pass. Pass the
+/// same \p alreadyDiagnosed set to each, so a declaration unresolvable in more
+/// than one pass is reported once.
 void finalizeLookupTable(SwiftLookupTable &table, NameImporter &,
-                         ClangSourceBufferImporter &buffersForDiagnostics);
+                         ClangSourceBufferImporter &buffersForDiagnostics,
+                         llvm::SmallPtrSetImpl<const clang::NamedDecl *>
+                             *alreadyDiagnosed = nullptr);
 } // namespace importer
 } // namespace swift
 
