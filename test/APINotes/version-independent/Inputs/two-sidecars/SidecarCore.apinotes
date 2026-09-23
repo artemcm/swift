@@ -1,0 +1,23 @@
+Name: SidecarCore
+
+Functions:
+  - Name: name_CoreU
+    SwiftName: 'name_CoreU_core()'
+  - Name: namePriv_CoreUName_ExportedUPriv
+    SwiftName: 'namePriv_CoreUName_ExportedUPriv_core()'
+  - Name: namePriv_CoreUName_ExportedV4Priv
+    SwiftName: 'namePriv_CoreUName_ExportedV4Priv_core()'
+  - Name: name_CoreU_ExportedV4Priv
+    SwiftName: 'name_CoreU_ExportedV4Priv_core()'
+  - Name: name_CoreU_ExportedU
+    SwiftName: 'name_CoreU_ExportedU_core()'
+  - Name: name_CoreU_ExportedV4
+    SwiftName: 'name_CoreU_ExportedV4_core()'
+
+SwiftVersions:
+  - Version: 4
+    Functions:
+      - Name: namePriv_CoreV4Name_ExportedUPriv
+        SwiftName: 'namePriv_CoreV4Name_ExportedUPriv_core4()'
+      - Name: name_CoreV4_ExportedU
+        SwiftName: 'name_CoreV4_ExportedU_core4()'

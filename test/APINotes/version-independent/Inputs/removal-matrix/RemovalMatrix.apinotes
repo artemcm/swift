@@ -1,0 +1,25 @@
+Name: RemovalMatrix
+
+Functions:
+  - Name: removeU
+    SwiftPrivate: false
+  - Name: addUremoveV4
+    SwiftPrivate: true
+  - Name: removeUaddV4
+    SwiftPrivate: false
+  - Name: removeNoHeader
+    SwiftPrivate: false
+
+SwiftVersions:
+  - Version: 4
+    Functions:
+      - Name: removeV4
+        SwiftPrivate: false
+      - Name: addUremoveV4
+        SwiftPrivate: false
+      - Name: removeUaddV4
+        SwiftPrivate: true
+  - Version: 5
+    Functions:
+      - Name: removeV5
+        SwiftPrivate: false

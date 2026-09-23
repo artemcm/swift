@@ -1,0 +1,17 @@
+Name: ChainBase
+
+Classes:
+  - Name: ChainClass
+    SwiftName: ChainClassSwift
+
+SwiftVersions:
+  - Version: 4
+    Classes:
+      - Name: ChainClassV4
+        SwiftName: ChainClassV4_v4
+    Typedefs:
+      - Name: ChainIndexV4
+        SwiftName: ChainIndexV4_v4
+    Tags:
+      - Name: ChainEnumV4
+        EnumKind: NSOptions

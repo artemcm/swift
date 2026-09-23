@@ -1,0 +1,5 @@
+module SidecarCore {
+  header "SidecarCore.h"
+  export_as Sidecar
+  export *
+}

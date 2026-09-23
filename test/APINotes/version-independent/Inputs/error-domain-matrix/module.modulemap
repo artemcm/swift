@@ -1,0 +1,4 @@
+module ErrorDomainMatrix {
+  header "ErrorDomainMatrix.h"
+  export *
+}

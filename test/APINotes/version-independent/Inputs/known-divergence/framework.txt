@@ -1,0 +1,106 @@
+=== capture-4-at-4: differs from default-4
+--- default-4
++++ capture-4-at-4
+@@ -5 +5 @@
+-func accept(_ ptr: UnsafeMutablePointer<CDouble>?)
++func accept(_ ptr: UnsafeMutablePointer<CDouble>)
+@@ -7,2 +7,2 @@
+-func acceptDoublePointer(_ ptr: UnsafeMutablePointer<CDouble>?)
+-func acceptPointer(_ ptr: UnsafeMutablePointer<CDouble>?)
++func acceptDoublePointer(_ ptr: UnsafeMutablePointer<CDouble>)
++func acceptPointer(_ ptr: UnsafeMutablePointer<CDouble>)
+@@ -22,6 +22,6 @@
+-  class func method(with a: A?) -> A
+-  func method(with a: A?) -> A
+-  @available(swift, obsoleted: 3, renamed: "method(with:)")
+-  class func methodWithA(_ a: A?) -> A
+-  @available(swift, obsoleted: 3, renamed: "method(with:)")
+-  func methodWithA(_ a: A?) -> A
++  class func method(withA a: Any) -> Any
++  func method(withA a: Any) -> Any
++  @available(swift, obsoleted: 3, renamed: "method(withA:)")
++  class func methodWithA(_ a: Any) -> Any
++  @available(swift, obsoleted: 3, renamed: "method(withA:)")
++  func methodWithA(_ a: Any) -> Any
+@@ -322,2 +322,2 @@
+-  func accessorsOnlyWithNewType() -> Base
+-  func setAccessorsOnlyWithNewType(_ accessorsOnlyWithNewType: Base)
++  func accessorsOnlyWithNewType() -> Any
++  func setAccessorsOnlyWithNewType(_ accessorsOnlyWithNewType: Any)
+@@ -339,0 +340 @@
++  func requirement() -> Any?
+=== capture-4.2-at-4: same as capture-4-at-4
+=== capture-5-at-4: same as capture-4-at-4
+=== capture-6-at-4: same as capture-4-at-4
+=== capture-4-at-4.2: differs from default-4.2
+--- default-4.2
++++ capture-4-at-4.2
+@@ -22,6 +22,6 @@
+-  class func method(with a: A?) -> A
+-  func method(with a: A?) -> A
+-  @available(swift, obsoleted: 3, renamed: "method(with:)")
+-  class func methodWithA(_ a: A?) -> A
+-  @available(swift, obsoleted: 3, renamed: "method(with:)")
+-  func methodWithA(_ a: A?) -> A
++  class func method(withA a: Any) -> Any
++  func method(withA a: Any) -> Any
++  @available(swift, obsoleted: 3, renamed: "method(withA:)")
++  class func methodWithA(_ a: Any) -> Any
++  @available(swift, obsoleted: 3, renamed: "method(withA:)")
++  func methodWithA(_ a: Any) -> Any
+@@ -309,2 +309,2 @@
+-  func accessorsOnlyWithNewType() -> Base
+-  func setAccessorsOnlyWithNewType(_ accessorsOnlyWithNewType: Base)
++  func accessorsOnlyWithNewType() -> Any
++  func setAccessorsOnlyWithNewType(_ accessorsOnlyWithNewType: Any)
+=== capture-4.2-at-4.2: same as capture-4-at-4.2
+=== capture-5-at-4.2: same as capture-4-at-4.2
+=== capture-6-at-4.2: same as capture-4-at-4.2
+=== capture-4-at-5: differs from default-5
+--- default-5
++++ capture-4-at-5
+@@ -22,6 +22,6 @@
+-  class func method(with a: A?) -> A
+-  func method(with a: A?) -> A
+-  @available(swift, obsoleted: 3, renamed: "method(with:)")
+-  class func methodWithA(_ a: A?) -> A
+-  @available(swift, obsoleted: 3, renamed: "method(with:)")
+-  func methodWithA(_ a: A?) -> A
++  class func method(withA a: Any) -> Any
++  func method(withA a: Any) -> Any
++  @available(swift, obsoleted: 3, renamed: "method(withA:)")
++  class func methodWithA(_ a: Any) -> Any
++  @available(swift, obsoleted: 3, renamed: "method(withA:)")
++  func methodWithA(_ a: Any) -> Any
+@@ -309,2 +309,2 @@
+-  func accessorsOnlyWithNewType() -> Base
+-  func setAccessorsOnlyWithNewType(_ accessorsOnlyWithNewType: Base)
++  func accessorsOnlyWithNewType() -> Any
++  func setAccessorsOnlyWithNewType(_ accessorsOnlyWithNewType: Any)
+=== capture-4.2-at-5: same as capture-4-at-5
+=== capture-5-at-5: same as capture-4-at-5
+=== capture-6-at-5: same as capture-4-at-5
+=== capture-4-at-6: differs from default-6
+--- default-6
++++ capture-4-at-6
+@@ -22,6 +22,6 @@
+-  class func method(with a: A?) -> A
+-  func method(with a: A?) -> A
+-  @available(swift, obsoleted: 3, renamed: "method(with:)")
+-  class func methodWithA(_ a: A?) -> A
+-  @available(swift, obsoleted: 3, renamed: "method(with:)")
+-  func methodWithA(_ a: A?) -> A
++  class func method(withA a: Any) -> Any
++  func method(withA a: Any) -> Any
++  @available(swift, obsoleted: 3, renamed: "method(withA:)")
++  class func methodWithA(_ a: Any) -> Any
++  @available(swift, obsoleted: 3, renamed: "method(withA:)")
++  func methodWithA(_ a: Any) -> Any
+@@ -321,2 +321,2 @@
+-  func accessorsOnlyWithNewType() -> Base
+-  func setAccessorsOnlyWithNewType(_ accessorsOnlyWithNewType: Base)
++  func accessorsOnlyWithNewType() -> Any
++  func setAccessorsOnlyWithNewType(_ accessorsOnlyWithNewType: Any)
+=== capture-4.2-at-6: same as capture-4-at-6
+=== capture-5-at-6: same as capture-4-at-6
+=== capture-6-at-6: same as capture-4-at-6

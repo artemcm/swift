@@ -1,0 +1,44 @@
+Name: CxxMatrix
+
+Namespaces:
+  - Name: MatrixNS
+    Functions:
+      - Name: nsFuncU
+        SwiftName: 'nsFuncU_unversioned()'
+    Tags:
+      - Name: NSRecord
+        Methods:
+          - Name: methodU
+            SwiftName: 'methodU_unversioned()'
+    Namespaces:
+      - Name: Inner
+        Functions:
+          - Name: innerFuncU
+            SwiftName: 'innerFuncU_unversioned()'
+
+SwiftVersions:
+  - Version: 4
+    Namespaces:
+      - Name: MatrixNS
+        Functions:
+          - Name: nsFuncV4
+            SwiftName: 'nsFuncV4_v4()'
+          - Name: nsPrivV4
+            SwiftPrivate: true
+        Tags:
+          - Name: NSRecord
+            Methods:
+              - Name: methodV4
+                SwiftName: 'methodV4_v4()'
+              - Name: methodPrivV4
+                SwiftPrivate: true
+          - Name: NSScopedEnumV4
+            SwiftName: NSScopedEnumV4_v4
+        Namespaces:
+          - Name: Inner
+            Functions:
+              - Name: innerFuncV4
+                SwiftName: 'innerFuncV4_v4()'
+    Tags:
+      - Name: TopRecordV4
+        SwiftName: TopRecordV4_v4

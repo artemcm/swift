@@ -1,0 +1,4 @@
+module ChainBase {
+  header "ChainBase.h"
+  export *
+}

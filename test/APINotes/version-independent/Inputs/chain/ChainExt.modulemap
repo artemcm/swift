@@ -1,0 +1,4 @@
+module ChainExt {
+  header "ChainExt.h"
+  export *
+}

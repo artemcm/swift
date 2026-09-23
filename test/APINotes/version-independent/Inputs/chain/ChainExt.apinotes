@@ -1,0 +1,27 @@
+Name: ChainExt
+
+Classes:
+  - Name: ChainClass
+    Methods:
+      - Selector: extMethodU
+        MethodKind: Instance
+        SwiftName: 'extMethodU_ext()'
+
+Functions:
+  - Name: ChainClassMake
+    SwiftName: 'ChainClassSwift.make()'
+  - Name: ChainClassV4Make
+    SwiftName: 'ChainClassV4.make()'
+
+SwiftVersions:
+  - Version: 4
+    Classes:
+      - Name: ChainClass
+        Methods:
+          - Selector: extMethodV4
+            MethodKind: Instance
+            SwiftName: 'extMethodV4_ext4()'
+    Functions:
+      # Names ChainBase's type by the name only a 4.0 client has for it.
+      - Name: ChainClassV4MakeV4
+        SwiftName: 'ChainClassV4_v4.makeV4()'

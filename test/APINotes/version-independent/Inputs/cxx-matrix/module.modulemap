@@ -1,0 +1,5 @@
+module CxxMatrix {
+  header "CxxMatrix.h"
+  requires cplusplus
+  export *
+}
