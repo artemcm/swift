@@ -9810,66 +9810,6 @@ static bool isUsingMacroName(clang::SourceManager &SM,
   return content == MacroName;
 }
 
-static void filterUsableVersionedAttrs(
-    const clang::NamedDecl *clangDecl, llvm::VersionTuple currentVersion,
-    std::set<clang::SwiftVersionedAdditionAttr *> &applicableVersionedAttrSet) {
-  // Scan through Swift-Versioned clang attributes and select which one to apply
-  // if multiple candidates exist.
-  SmallVector<clang::SwiftVersionedAdditionAttr *, 4> swiftVersionedAttributes;
-  for (auto *versionedAttr :
-       clangDecl->specific_attrs<clang::SwiftVersionedAdditionAttr>())
-    swiftVersionedAttributes.push_back(versionedAttr);
-
-  // An attribute version is valid to apply if it is greater than the current
-  // version or is unversioned
-  auto applicableVersion =
-      [currentVersion](clang::VersionTuple attrVersion) -> bool {
-    return attrVersion.empty() || attrVersion >= currentVersion;
-  };
-
-  // We have a better attribute option if there exists another versioned attr
-  // wrapper for this attribute kind with a valid version that is lower than the
-  // one of the attribute we are considering
-  auto haveBetterAttr = [swiftVersionedAttributes, applicableVersion](
-                            clang::VersionTuple attrVersion,
-                            clang::attr::Kind attrKind) -> bool {
-    for (auto otherVersionedAttr : swiftVersionedAttributes) {
-      auto otherAttrKind = otherVersionedAttr->getAdditionalAttr()->getKind();
-      auto otherAttrVersion = otherVersionedAttr->getVersion();
-      // Same exact attribute, ignore
-      if (otherAttrKind == attrKind && otherAttrVersion == attrVersion)
-        continue;
-
-      // For a matching attribute kind, an un-versioned attribute
-      // never takes precedence over an exsiting valid versioned one.
-      if (otherAttrKind == attrKind && !attrVersion.empty() &&
-          otherAttrVersion.empty())
-        continue;
-      if (otherAttrKind == attrKind && applicableVersion(otherAttrVersion) &&
-          attrVersion.empty())
-        return true;
-
-      // For two versioned attributes of the same kind, the one with the lower
-      // applicable version takes precedence.
-      if (otherAttrKind == attrKind && applicableVersion(otherAttrVersion) &&
-          otherAttrVersion < attrVersion)
-        return true;
-    }
-    return false;
-  };
-
-  for (auto versionedAttr : swiftVersionedAttributes) {
-    auto attrKind = versionedAttr->getAdditionalAttr()->getKind();
-    auto attrVersion = versionedAttr->getVersion();
-    if (!applicableVersion(attrVersion))
-      continue;
-    if (haveBetterAttr(attrVersion, attrKind))
-      continue;
-
-    applicableVersionedAttrSet.insert(versionedAttr);
-  }
-}
-
 /// Import Clang attributes as Swift attributes.
 void ClangImporter::Implementation::importAttributes(
     const clang::NamedDecl *ClangDecl,
@@ -10211,29 +10151,6 @@ static void applyTypeAndNullabilityAPINotes(
   }
 }
 
-static void canonicalizeVersionedSwiftAttributes(
-    const clang::NamedDecl *ClangDecl,
-    const ImportNameVersion CurrentImporterVersion) {
-  if (!ClangDecl->hasAttrs())
-    return;
-
-  // Filter out only the versioned attributes which apply to the
-  // current compilation's language version
-  std::set<clang::SwiftVersionedAdditionAttr *> applicableVersionedAttrSet;
-  filterUsableVersionedAttrs(ClangDecl,
-                             CurrentImporterVersion.asClangVersionTuple(),
-                             applicableVersionedAttrSet);
-
-  // Drop all versioned addition attributes and re-add
-  // above-filtered out applicable attributes in a non-versioned
-  // form in order to ensure all downstream clients
-  // get the expected attribute view.
-  auto mutableDecl = const_cast<clang::NamedDecl *>(ClangDecl);
-  mutableDecl->dropAttrs<clang::SwiftVersionedAdditionAttr>();
-  for (const auto &attr : applicableVersionedAttrSet)
-    mutableDecl->addAttr(attr->getAdditionalAttr());
-}
-
 Decl *
 ClangImporter::Implementation::importDeclImpl(const clang::NamedDecl *ClangDecl,
                                               ImportNameVersion version,
@@ -10245,14 +10162,7 @@ ClangImporter::Implementation::importDeclImpl(const clang::NamedDecl *ClangDecl,
   if (ClangDecl->isInvalidDecl())
     return nullptr;
 
-  // If '-version-independent-apinotes' is used, the `ClangDecl`
-  // will be carrying various APINotes-sourced attributes wrapped
-  // in `SwiftVersionedAdditionAttr`. Filter out which ones are applicable
-  // for the current compilation version and rewrite the set of versioned
-  // attributes with the corresponding subset of only applicable wrapped
-  // attributes.
   if (SwiftContext.ClangImporterOpts.LoadVersionIndependentAPINotes) {
-    canonicalizeVersionedSwiftAttributes(ClangDecl, CurrentVersion);
     // When '-version-independent-apinotes' is used, "type" and "nullability"
     // notes are applied by the client (Importer) instead of the producer of the
     // Clang module we are consuming. Do so now, early, since these notes
