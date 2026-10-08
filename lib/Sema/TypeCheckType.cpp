@@ -1026,6 +1026,8 @@ TypeResolver::resolveDependentMemberType(Type baseTy,
       if (concreteBase->hasError())
         return ErrorType::get(baseTy);
     }
+    if (options.contains(TypeResolutionFlags::SilenceDiagnostics))
+      return ErrorType::get(ctx);
 
     // Resolve the base to a potential archetype.
     // Perform typo correction.
@@ -1519,8 +1521,14 @@ TypeResolver::applyGenericArguments(Type type, DeclRefTypeRepr *repr,
       return type;
     }
 
+    // Using an empry `SourceLoc()` argument to `checkContextualRequirements`
+    // below will ensure no diagnostics are emitted in `SilenceDiagnostics`
+    // mode.
+    SourceLoc diagLoc =
+        options.contains(TypeResolutionFlags::SilenceDiagnostics) ? SourceLoc()
+                                                                  : loc;
     if (TypeChecker::checkContextualRequirements(
-            decl, parentTy, loc, resolution.getGenericSignature()))
+            decl, parentTy, diagLoc, resolution.getGenericSignature()))
       return type;
 
     return ErrorType::get(getASTContext());
@@ -5525,15 +5533,17 @@ TypeResolver::resolveDeclRefTypeReprRec(DeclRefTypeRepr *repr,
         // TODO: Explicitly pass along whether in a 'shape' context.
         !options.contains(TypeResolutionFlags::SILMode)) {
       bool invalid = false;
+      bool silenced = options.contains(TypeResolutionFlags::SilenceDiagnostics);
       if (!options.contains(TypeResolutionFlags::AllowPackReferences)) {
-        diagnose(repr->getLoc(), diag::pack_reference_must_be_in_expansion,
-                 repr);
+        if (!silenced)
+          diagnose(repr->getLoc(), diag::pack_reference_must_be_in_expansion,
+                   repr);
         invalid = true;
       }
       if (!options.contains(TypeResolutionFlags::FromPackReference)) {
-        diagnose(repr->getLoc(), diag::pack_type_requires_keyword_each,
-                 repr)
-            .fixItInsert(repr->getLoc(), "each ");
+        if (!silenced)
+          diagnose(repr->getLoc(), diag::pack_type_requires_keyword_each, repr)
+              .fixItInsert(repr->getLoc(), "each ");
         invalid = true;
       }
       if (invalid) {
