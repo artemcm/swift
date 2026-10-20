@@ -6801,13 +6801,11 @@ NeverNullType TypeResolver::resolveGenericArgumentExprTypeRepr(
                             getASTContext());
   };
 
-  // We expect there to only be an 'IntegerLiteralExpr' when the LiteralExpressions
-  // feature is not enabled.
-  if (!getASTContext().LangOpts.hasFeature(Feature::LiteralExpressions)) {
-    if (auto litExpr = dyn_cast<IntegerLiteralExpr>(originalValueExpr))
-      return resolveIntegerLiteralExpr(litExpr);
+  if (auto *litExpr = dyn_cast<IntegerLiteralExpr>(originalValueExpr))
+    return resolveIntegerLiteralExpr(litExpr);
+
+  if (!getASTContext().LangOpts.hasFeature(Feature::LiteralExpressions))
     return failedToResolveValue(diag::nonliteral_integer_generic_value);
-  }
 
   // We have already attempted to resolve this TypeRepr
   if (repr->failedToResolve())

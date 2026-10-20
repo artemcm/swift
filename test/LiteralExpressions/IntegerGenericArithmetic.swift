@@ -149,3 +149,23 @@ func makeSugarArray() -> [(4 - 1) of String] {
 
 let addExpr1 = InlineArray<(2 + 3), Int>(repeating: 5)
 let addExpr2 = InlineArray<(0 + 5), Int>(repeating: 4)
+
+// =============================================================================
+// Extensions
+// =============================================================================
+
+extension [3 of Int] {
+  func onLiteralSugar() -> Int { 3 }
+}
+
+extension InlineArray<4, Int> {
+  func onLiteralNominal() -> Int { 4 }
+}
+
+func testExtensions(
+  _ a: [3 of Int],
+  _ c: [4 of Int]
+) {
+  _ = a.onLiteralSugar()
+  _ = c.onLiteralNominal()
+}
