@@ -343,6 +343,23 @@ public:
     return AvailabilityInfo.getPlatformRange();
   }
 
+  /// Returns true if the platform version range of this scope is contained by
+  /// the deployment target.
+  bool isContainedByDeploymentTarget(const ASTContext &Ctx) const;
+
+  /// Returns true if this is an unexpanded scope for an extension whose
+  /// expansion would resolve the extension's extended type while that type is
+  /// already being resolved, e.g. while a literal expression in the extended
+  /// type is type-checked. Expansion of such a scope must be deferred.
+  bool shouldDeferExpansionForExtendedType(ASTContext &Ctx) const;
+
+  /// For a scope whose expansion is deferred (see
+  /// `shouldDeferExpansionForExtendedType()`), returns the availability of the
+  /// extension's signature, inferring availability from the declared type of
+  /// the extended nominal instead of the extended type.
+  AvailabilityContext
+  getDeferredExtensionSignatureAvailability(ASTContext &Ctx) const;
+
   /// Adds a child availability scope.
   void addChild(AvailabilityScope *Child, ASTContext &Ctx);
 

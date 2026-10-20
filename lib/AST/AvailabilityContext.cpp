@@ -177,7 +177,9 @@ contextForLocationInSourceFile(SourceLoc loc, SourceFile *sf,
   if (refinedScope)
     *refinedScope = scope;
 
-  auto availability = scope->getAvailabilityContext();
+  auto availability = scope->getNeedsExpansion()
+                          ? scope->getDeferredExtensionSignatureAvailability(ctx)
+                          : scope->getAvailabilityContext();
   availability.constrainWithContext(baseAvailability, ctx);
   return availability;
 }

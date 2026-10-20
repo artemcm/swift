@@ -1,6 +1,7 @@
 // Literal expressions in integer generic parameter values
 // REQUIRES: swift_feature_LiteralExpressions
 // RUN: %target-typecheck-verify-swift -target %target-swift-6.2-abi-triple -enable-experimental-feature LiteralExpressions -verify
+// RUN: %target-typecheck-verify-swift -target %target-swift-6.2-abi-triple -target-min-inlining-version min -enable-experimental-feature LiteralExpressions -verify
 
 // =============================================================================
 // Arithmetic operators
@@ -158,14 +159,68 @@ extension [3 of Int] {
   func onLiteralSugar() -> Int { 3 }
 }
 
+extension [(1 + 2) of String] {
+  func onFoldedSugar() -> Int { 3 }
+}
+
 extension InlineArray<4, Int> {
   func onLiteralNominal() -> Int { 4 }
 }
 
+extension InlineArray<(2 * 2), String> {
+  func onFoldedNominal() -> Int { 4 }
+}
+
+@available(macOS 26.0, *)
+public struct OuterWithAvail<let N: Int> {
+  public struct Inner {}
+}
+
+extension OuterWithAvail<(1 + 2)>.Inner {
+  public func onNested() -> OuterWithAvail<3>.Inner { self }
+}
+
+extension [(1 + 2) of OuterWithAvail<3>.Inner] {
+  public func onBetweenTargetsArg() -> OuterWithAvail<3>.Inner { self[0] }
+}
+
+@available(macOS 26.0, *)
+enum BetweenTargets {
+  static let count = 3
+}
+
+// The extended type of an internal extension is checked at the deployment
+// target.
+extension [(BetweenTargets.count) of Int] {
+  func onInternalBetweenTargets() -> Int { 3 }
+}
+
+// The extended type of a public extension is checked at the availability of
+// the extended nominal.
+extension OuterWithAvail<(BetweenTargets.count)>.Inner {
+  public func onPublicBetweenTargets() -> Int { 3 }
+}
+
+@available(macOS 99, *)
+enum FutureGrid {
+  static let count = 5
+}
+
+@available(macOS 99, *)
+extension [(FutureGrid.count) of Int] {
+  func onFutureExtension() -> Int { 5 }
+}
+
 func testExtensions(
   _ a: [3 of Int],
-  _ c: [4 of Int]
+  _ b: [3 of String],
+  _ c: [4 of Int],
+  _ d: [4 of String],
+  _ e: OuterWithAvail<3>.Inner
 ) {
   _ = a.onLiteralSugar()
+  _ = b.onFoldedSugar()
   _ = c.onLiteralNominal()
+  _ = d.onFoldedNominal()
+  _ = e.onNested()
 }

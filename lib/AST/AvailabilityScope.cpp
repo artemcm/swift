@@ -269,6 +269,12 @@ void AvailabilityScope::addChild(AvailabilityScope *Child, ASTContext &Ctx) {
   Children.insert(iter, Child);
 }
 
+bool AvailabilityScope::isContainedByDeploymentTarget(
+    const ASTContext &ctx) const {
+  return getPlatformAvailabilityRange().isContainedIn(
+      AvailabilityRange::forDeploymentTarget(ctx));
+}
+
 AvailabilityScope *AvailabilityScope::findMostRefinedSubContextImpl(
     SourceLoc Loc, ASTContext &Ctx,
     llvm::SmallVectorImpl<AvailabilityScope *> *ScopeStack,
@@ -285,6 +291,15 @@ AvailabilityScope *AvailabilityScope::findMostRefinedSubContextImpl(
   // what triggered this lookup in the first place.
   if (stopAtASTNode && getASTNode() == stopAtASTNode)
     return nullptr;
+
+  // Expanding a scope for an extension may resolve its extended type, so it
+  // can't be expanded while that type is being resolved. Return the unexpanded
+  // scope instead; it will be expanded on a later lookup.
+  if (shouldDeferExpansionForExtendedType(Ctx)) {
+    if (ScopeStack)
+      ScopeStack->push_back(this);
+    return this;
+  }
 
   (void)evaluateOrDefault(Ctx.evaluator,
                           ExpandChildAvailabilityScopesRequest{this}, {});
