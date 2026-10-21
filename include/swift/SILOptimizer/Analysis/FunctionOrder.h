@@ -18,12 +18,14 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/TinyPtrVector.h"
 
 namespace swift {
 
 class BasicCalleeAnalysis;
 class SILFunction;
+class SILInstruction;
 class SILModule;
 
 class BottomUpFunctionOrder {
@@ -68,6 +70,12 @@ public:
 
     return TheFunctions;
   }
+
+  /// Calls \p fn on each callee of \p inst that the order respects: the
+  /// callees of a full apply, the destructors a release may run, and the
+  /// initializer of a `builtin "once"`.
+  static void visitCallees(SILInstruction &inst, BasicCalleeAnalysis *BCA,
+                           llvm::function_ref<void(SILFunction *)> fn);
 
 private:
   void DFS(SILFunction *F);
