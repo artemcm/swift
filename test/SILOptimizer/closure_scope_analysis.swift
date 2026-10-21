@@ -1,5 +1,9 @@
-// RUN: %target-swift-frontend -primary-file %s -emit-sil -O -Xllvm -debug-only=closure-scope -module-name main -o /dev/null 2>&1 | %FileCheck %s
+// RUN: %target-swift-frontend -primary-file %s -emit-sil -O -Xllvm -debug-only=closure-scope -Xllvm -sil-capture-scc-scheduling=module -module-name main -o /dev/null 2>&1 | %FileCheck %s
 // REQUIRES: asserts
+
+// The dump checked here is one closure order over the whole module, which
+// AccessEnforcementSelection computes once in module mode. With
+// -sil-capture-scc-scheduling=scc it computes one order per SCC.
 
 public protocol Apply {
   func apply(_ body: (Apply) -> ())

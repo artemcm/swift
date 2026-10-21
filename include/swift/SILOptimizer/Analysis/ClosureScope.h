@@ -171,7 +171,8 @@ public:
 
   /// Compute the order over \p functions only, which must be in module
   /// function-list order. The closure graph is built from \p functions, so it
-  /// reflects functions created by earlier passes.
+  /// reflects functions created by earlier passes. A capture SCC transform uses
+  /// this with its SCC set.
   void compute(ArrayRef<SILFunction *> functions);
 
   ArrayRef<SILFunction *> getTopDownFunctions() const {

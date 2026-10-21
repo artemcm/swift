@@ -13,19 +13,10 @@
 /// This pass eliminates 'unknown' access enforcement by selecting either
 /// static or dynamic enforcement.
 ///
-/// TODO: This is currently a module transform so that it can process closures
-/// after analyzing their parent scope. This isn't a big problem now because
-/// AccessMarkerElimination is also a module pass that follows this pass, so all
-/// markers will still be present when this pass runs. However, we would like to
-/// mostly eliminate module transforms. This could be done by changing the
-/// PassManager to follow ClosureScopeAnalysis. A new ClosureTransform type
-/// would be pipelined just like FunctionTransform, but would have an entry
-/// point that handled a parent closure scope and all its children in one
-/// invocation. For function pipelining to be upheld, we would need to verify
-/// that BasicCalleeAnalysis never conflicts with ClosureScopeAnalysis. i.e. we
-/// could never create a caller->callee edge when the callee is passed as a
-/// function argument. Normal FunctionTransforms would then be called on each
-/// closure function and its parent scope before calling the ClosureTransform.
+/// This is a capture SCC transform (CaptureSCCSchedule.h): a closure is in the
+/// same SCC as the scopes that capture into it, so one invocation sees a parent
+/// and its closures, and processes parents before closures in
+/// ClosureFunctionOrder's top-down order over the SCC set.
 ///
 /// FIXME: handle boxes used by copy_value when neither copy is captured.
 ///
@@ -33,6 +24,7 @@
 
 #include "swift/SIL/SILInstruction.h"
 #define DEBUG_TYPE "access-enforcement-selection"
+#include "swift/Basic/Assertions.h"
 #include "swift/Basic/Defer.h"
 #include "swift/SIL/ApplySite.h"
 #include "swift/SIL/SILArgument.h"
@@ -114,8 +106,14 @@ class DynamicCaptures {
 
   DynamicCaptures(DynamicCaptures &) = delete;
 
+  // The running capture SCC transform. A capture into a closure outside its SCC
+  // set would be lost, and enforcement would be static where it must be
+  // dynamic, so membership is checked in every build.
+  SILCaptureSCCTransform &transform;
+
 public:
-  DynamicCaptures() {}
+  explicit DynamicCaptures(SILCaptureSCCTransform &transform)
+      : transform(transform) {}
 
   void recordCapture(AddressCapture capture) {
     LLVM_DEBUG(llvm::dbgs() << "Dynamic Capture: " << capture);
@@ -126,6 +124,8 @@ public:
     // dynamically replaceable local functions.
     auto callee = capture.site.getCalleeFunction();
     assert(callee && "cannot locate function ref for nonescaping closure");
+    ASSERT((!callee || transform.isInSCC(callee)) &&
+           "capture into a closure outside the SCC set");
 
     auto &dynamicArgs = dynamicCaptureMap[callee];
     if (!llvm::is_contained(dynamicArgs, capture.calleeArgIdx))
@@ -151,7 +151,7 @@ public:
 namespace {
 class SelectEnforcement {
   // Reference back to the known dynamically enforced non-escaping closure
-  // arguments in this module. Parent scopes are processed before the closures
+  // arguments in this SCC. Parent scopes are processed before the closures
   // they reference.
   DynamicCaptures &dynamicCaptures;
 
@@ -596,12 +596,10 @@ struct SourceAccess {
 ///
 /// This can't be a SILFunctionTransform because DynamicCaptures need to be
 /// recorded while analyzing a closure's parent scopes before processing the
-/// closures.
-///
-/// TODO: Make this a "ClosureTransform". See the file-level comments above.
-class AccessEnforcementSelection : public SILModuleTransform {
+/// closures. It is a capture SCC transform; see the file-level comments above.
+class AccessEnforcementSelection : public SILCaptureSCCTransform {
   // Track the known dynamically enforced non-escaping closure
-  // arguments in this module. Parent scopes are processed before the closures
+  // arguments in this SCC. Parent scopes are processed before the closures
   // they reference.
   std::unique_ptr<DynamicCaptures> dynamicCaptures;
 
@@ -623,16 +621,13 @@ protected:
 };
 
 void AccessEnforcementSelection::run() {
-  // ClosureScopeAnalysis caches a module-wide graph and ignores functions
-  // added after it was computed (ClosureScope.h), such as capture promotion's
-  // clones. Build the graph from the module's functions as they are now.
-  SmallVector<SILFunction *, 64> functions;
-  for (SILFunction &function : *getModule())
-    functions.push_back(&function);
   ClosureFunctionOrder closureOrder;
-  closureOrder.compute(functions);
+  // Build the closure graph from the SCC set: a module-wide graph computed by
+  // an earlier SCC would miss scope edges to closures that capture promotion
+  // has cloned since.
+  closureOrder.compute(getSCC());
 
-  dynamicCaptures = std::make_unique<DynamicCaptures>();
+  dynamicCaptures = std::make_unique<DynamicCaptures>(*this);
   SWIFT_DEFER { dynamicCaptures.reset(); };
 
   for (SILFunction *function : closureOrder.getTopDownFunctions()) {
