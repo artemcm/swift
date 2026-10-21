@@ -1081,22 +1081,21 @@ static void checkAccessedAddress(Operand *memOper, StorageMap &Accesses) {
 
 namespace {
 
-/// TODO: This is currently a module transform to ensure that source-level
-/// diagnostics, like DiagnoseInvalidCaptures run on closures (in addition to
-/// other callees) before this pass processes their parent functions. Otherwise,
-/// AccessSummaryAnalysis may crash on invalid SIL. Fix the pass manager to
-/// ensure that closures are always diagnosed before their parent. Then add an
-/// SCC transform to ensure that the previous diagnostic pass runs on all
-/// functions in the SCC before the next diagnostic pass. This will handle
-/// closures that call back into their parent. Then this can be converted to an
-/// SCC transform.
-class DiagnoseStaticExclusivity : public SILModuleTransform {
+/// A capture SCC transform. Source-level diagnostics such as
+/// DiagnoseInvalidEscapingCaptures must have run on a function's closures
+/// before this pass processes the function: otherwise AccessSummaryAnalysis may
+/// crash on invalid SIL. AccessSummaryAnalysis follows @inout_aliasable
+/// arguments into closures, which are in their parent's SCC
+/// (CaptureSCCSchedule.h), and every member of an SCC has finished the earlier
+/// passes when an SCC transform runs.
+class DiagnoseStaticExclusivity : public SILCaptureSCCTransform {
 public:
   DiagnoseStaticExclusivity() {}
 
 private:
   void run() override {
-    for (auto &function : *getModule()) {
+    for (SILFunction *f : getSCC()) {
+      SILFunction &function = *f;
       if (!function.isDefinition())
         continue;
 

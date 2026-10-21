@@ -11,12 +11,14 @@
 //===----------------------------------------------------------------------===//
 
 #define DEBUG_TYPE "sil-access-summary-analysis"
+#include "swift/SILOptimizer/Analysis/AccessSummaryAnalysis.h"
+#include "swift/Basic/Assertions.h"
+#include "swift/SIL/DebugUtils.h"
 #include "swift/SIL/InstructionUtils.h"
 #include "swift/SIL/SILArgument.h"
-#include "swift/SILOptimizer/Analysis/AccessSummaryAnalysis.h"
+#include "swift/SILOptimizer/Analysis/ClosureScope.h"
 #include "swift/SILOptimizer/Analysis/FunctionOrder.h"
 #include "swift/SILOptimizer/PassManager/PassManager.h"
-#include "swift/SIL/DebugUtils.h"
 
 using namespace swift;
 
@@ -461,6 +463,13 @@ bool AccessSummaryAnalysis::propagateFromCalleeToCaller(
 
 AccessSummaryAnalysis::FunctionInfo *
 AccessSummaryAnalysis::getFunctionInfo(SILFunction *F) {
+  // A summary reads the body only through @inout_aliasable arguments
+  // (processFunction). DiagnoseStaticExclusivity asks for the summary of every
+  // applied callee, but for a callee without such arguments only its signature
+  // is read, which no pass in a capture SCC block changes.
+  ASSERT((!PM || !PM->isOutsideCurrentCaptureSCC(F) ||
+          !isNonEscapingClosure(F->getLoweredFunctionType())) &&
+         "access summary reads a body outside the SCC set");
   FunctionInfo *&FInfo = FunctionInfos[F];
   if (!FInfo) {
     FInfo = new (Allocator.Allocate()) FunctionInfo(F);
