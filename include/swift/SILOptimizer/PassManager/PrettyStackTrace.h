@@ -20,6 +20,7 @@ namespace swift {
 
 class SILFunctionTransform;
 class SILModuleTransform;
+class SILCaptureSCCTransform;
 
 class PrettyStackTraceSILFunctionTransform
     : public PrettyStackTraceSILFunction {
@@ -41,6 +42,21 @@ public:
   PrettyStackTraceSILModuleTransform(SILModuleTransform *SMT,
                                      unsigned PassNumber)
       : SMT(SMT), PassNumber(PassNumber) {}
+  virtual void print(llvm::raw_ostream &OS) const override;
+};
+
+class PrettyStackTraceSILCaptureSCCTransform
+    : public llvm::PrettyStackTraceEntry {
+  SILCaptureSCCTransform *T;
+  unsigned PassNumber;
+  /// The SCC set's first member, or null if the set is empty.
+  SILFunction *FirstMember;
+
+public:
+  PrettyStackTraceSILCaptureSCCTransform(SILCaptureSCCTransform *T,
+                                         unsigned PassNumber,
+                                         SILFunction *FirstMember)
+      : T(T), PassNumber(PassNumber), FirstMember(FirstMember) {}
   virtual void print(llvm::raw_ostream &OS) const override;
 };
 

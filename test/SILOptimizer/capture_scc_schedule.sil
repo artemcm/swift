@@ -1,0 +1,410 @@
+// RUN: %target-sil-opt -test-runner %s -o /dev/null 2>&1 | %FileCheck %s
+
+// REQUIRES: asserts
+
+// Capture components and scheduling SCCs (CaptureSCCSchedule.h). Hand-written SIL
+// has no DeclContext, so rule R3 (local declarations) is not exercised here.
+
+sil_stage raw
+
+import Builtin
+
+class DC {}
+
+// Each SCC is printed in schedule order (callees first); each member is
+// printed with its capture component's representative in brackets.
+// CHECK-LABEL: begin running test 1 of 1 on nested_outer: capture_scc_schedule
+
+// R2, nested: nested_outer forms nested_c1, which forms nested_c2.
+// CHECK-NEXT: scc 0
+// CHECK-NEXT:   [nested_c2] nested_c2
+// CHECK-NEXT:   [nested_c2] nested_c1
+// CHECK-NEXT:   [nested_c2] nested_outer
+
+// R1: a box parameter, and an @inout_aliasable parameter.
+// CHECK-NEXT: scc 1
+// CHECK-NEXT:   [box_callee] box_callee
+// CHECK-NEXT:   [box_callee] box_parent
+// CHECK-NEXT: scc 2
+// CHECK-NEXT:   [ia_callee] ia_callee
+// CHECK-NEXT:   [ia_callee] ia_parent
+
+// Sibling local functions that capture the parent's box: one component.
+// CHECK-NEXT: scc 3
+// CHECK-NEXT:   [sib_a] sib_a
+// CHECK-NEXT:   [sib_a] sib_b
+// CHECK-NEXT:   [sib_a] sib_parent
+
+// A closure shared by two roots joins them.
+// CHECK-NEXT: scc 4
+// CHECK-NEXT:   [shared_closure] shared_closure
+// CHECK-NEXT:   [shared_closure] shared_root1
+// CHECK-NEXT:   [shared_closure] shared_root2
+
+// A shared thunk links nothing, even with a box parameter.
+// CHECK-NEXT: scc 5
+// CHECK-NEXT:   [shared_thunk] shared_thunk
+// CHECK-NEXT: scc 6
+// CHECK-NEXT:   [thunk_user1] thunk_user1
+// CHECK-NEXT: scc 7
+// CHECK-NEXT:   [thunk_user2] thunk_user2
+
+// Recursive local functions: one component.
+// CHECK-NEXT: scc 8
+// CHECK-NEXT:   [rec_b] rec_b
+// CHECK-NEXT:   [rec_b] rec_a
+
+// Mutual recursion without closures: two components, one SCC.
+// CHECK-NEXT: scc 9
+// CHECK-NEXT:   [mutual_2] mutual_2
+// CHECK-NEXT:   [mutual_1] mutual_1
+
+// A cycle between two components with no cycle between functions: one SCC.
+// CHECK-NEXT: scc 10
+// CHECK-NEXT:   [compcyc_p2] compcyc_p2
+// CHECK-NEXT:   [compcyc_c1] compcyc_c1
+// CHECK-NEXT:   [compcyc_c1] compcyc_p1
+// CHECK-NEXT:   [compcyc_p2] compcyc_c2
+
+// Callees come before callers.
+// CHECK-NEXT: scc 11
+// CHECK-NEXT:   [order_leaf] order_leaf
+// CHECK-NEXT: scc 12
+// CHECK-NEXT:   [order_caller] order_caller
+
+// dynamic_function_ref links like function_ref.
+// CHECK-NEXT: scc 13
+// CHECK-NEXT:   [dyn_callee] dyn_callee
+// CHECK-NEXT:   [dyn_callee] dyn_parent
+
+// Destructor and builtin "once" edges close call cycles: one SCC each, made of
+// two capture components.
+// CHECK-NEXT: scc 14
+// CHECK-NEXT:   [dc_dealloc] dc_dealloc
+// CHECK-NEXT:   [dtor_user] dtor_user
+// CHECK-NEXT: scc 15
+// CHECK-NEXT:   [once_init] once_init
+// CHECK-NEXT:   [once_user] once_user
+// CHECK-NEXT: end running test 1 of 1 on nested_outer: capture_scc_schedule
+
+//===----------------------------------------------------------------------===//
+// Nested closures (R2)
+//===----------------------------------------------------------------------===//
+
+sil @nested_c2 : $@convention(thin) (Builtin.Int64) -> Builtin.Int64 {
+bb0(%0 : $Builtin.Int64):
+  return %0 : $Builtin.Int64
+}
+
+sil @nested_c1 : $@convention(thin) (Builtin.Int64) -> @owned @callee_owned () -> Builtin.Int64 {
+bb0(%0 : $Builtin.Int64):
+  %f = function_ref @nested_c2 : $@convention(thin) (Builtin.Int64) -> Builtin.Int64
+  %pa = partial_apply %f(%0) : $@convention(thin) (Builtin.Int64) -> Builtin.Int64
+  return %pa : $@callee_owned () -> Builtin.Int64
+}
+
+sil @nested_outer : $@convention(thin) (Builtin.Int64) -> () {
+bb0(%0 : $Builtin.Int64):
+  specify_test "capture_scc_schedule"
+  %f = function_ref @nested_c1 : $@convention(thin) (Builtin.Int64) -> @owned @callee_owned () -> Builtin.Int64
+  %pa = partial_apply %f(%0) : $@convention(thin) (Builtin.Int64) -> @owned @callee_owned () -> Builtin.Int64
+  strong_release %pa : $@callee_owned () -> @owned @callee_owned () -> Builtin.Int64
+  %r = tuple ()
+  return %r : $()
+}
+
+//===----------------------------------------------------------------------===//
+// A box passed to a directly applied function (R1, box)
+//===----------------------------------------------------------------------===//
+
+sil @box_callee : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> () {
+bb0(%0 : ${ var Builtin.Int64 }):
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @box_parent : $@convention(thin) () -> () {
+bb0:
+  %b = alloc_box ${ var Builtin.Int64 }
+  %f = function_ref @box_callee : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  %a = apply %f(%b) : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  strong_release %b : ${ var Builtin.Int64 }
+  %r = tuple ()
+  return %r : $()
+}
+
+//===----------------------------------------------------------------------===//
+// An address passed as @inout_aliasable (R1, inout_aliasable)
+//===----------------------------------------------------------------------===//
+
+sil @ia_callee : $@convention(thin) (@inout_aliasable Builtin.Int64) -> () {
+bb0(%0 : $*Builtin.Int64):
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @ia_parent : $@convention(thin) () -> () {
+bb0:
+  %s = alloc_stack $Builtin.Int64
+  %f = function_ref @ia_callee : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+  %a = apply %f(%s) : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+  dealloc_stack %s : $*Builtin.Int64
+  %r = tuple ()
+  return %r : $()
+}
+
+//===----------------------------------------------------------------------===//
+// Sibling local functions: sib_b calls sib_a, both capture the parent's box
+//===----------------------------------------------------------------------===//
+
+sil @sib_a : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> () {
+bb0(%0 : ${ var Builtin.Int64 }):
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @sib_b : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> () {
+bb0(%0 : ${ var Builtin.Int64 }):
+  %f = function_ref @sib_a : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  %a = apply %f(%0) : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @sib_parent : $@convention(thin) () -> () {
+bb0:
+  %b = alloc_box ${ var Builtin.Int64 }
+  %f = function_ref @sib_b : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  %a = apply %f(%b) : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  strong_release %b : ${ var Builtin.Int64 }
+  %r = tuple ()
+  return %r : $()
+}
+
+//===----------------------------------------------------------------------===//
+// A closure shared by two roots joins both into one component
+//===----------------------------------------------------------------------===//
+
+sil @shared_closure : $@convention(thin) (Builtin.Int64) -> Builtin.Int64 {
+bb0(%0 : $Builtin.Int64):
+  return %0 : $Builtin.Int64
+}
+
+sil @shared_root1 : $@convention(thin) (Builtin.Int64) -> () {
+bb0(%0 : $Builtin.Int64):
+  %f = function_ref @shared_closure : $@convention(thin) (Builtin.Int64) -> Builtin.Int64
+  %pa = partial_apply %f(%0) : $@convention(thin) (Builtin.Int64) -> Builtin.Int64
+  strong_release %pa : $@callee_owned () -> Builtin.Int64
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @shared_root2 : $@convention(thin) (Builtin.Int64) -> () {
+bb0(%0 : $Builtin.Int64):
+  %f = function_ref @shared_closure : $@convention(thin) (Builtin.Int64) -> Builtin.Int64
+  %pa = partial_apply %f(%0) : $@convention(thin) (Builtin.Int64) -> Builtin.Int64
+  strong_release %pa : $@callee_owned () -> Builtin.Int64
+  %r = tuple ()
+  return %r : $()
+}
+
+//===----------------------------------------------------------------------===//
+// A shared thunk does not link the functions that reference it, even with a
+// box parameter
+//===----------------------------------------------------------------------===//
+
+sil [thunk] @shared_thunk : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> () {
+bb0(%0 : ${ var Builtin.Int64 }):
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @thunk_user1 : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> () {
+bb0(%0 : ${ var Builtin.Int64 }):
+  %f = function_ref @shared_thunk : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  strong_retain %0 : ${ var Builtin.Int64 }
+  %pa = partial_apply %f(%0) : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  strong_release %pa : $@callee_owned () -> ()
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @thunk_user2 : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> () {
+bb0(%0 : ${ var Builtin.Int64 }):
+  %f = function_ref @shared_thunk : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  strong_retain %0 : ${ var Builtin.Int64 }
+  %pa = partial_apply %f(%0) : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  strong_release %pa : $@callee_owned () -> ()
+  %r = tuple ()
+  return %r : $()
+}
+
+//===----------------------------------------------------------------------===//
+// Recursive local functions: one component, one call-graph SCC
+//===----------------------------------------------------------------------===//
+
+sil @rec_a : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> () {
+bb0(%0 : ${ var Builtin.Int64 }):
+  %f = function_ref @rec_b : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  %a = apply %f(%0) : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @rec_b : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> () {
+bb0(%0 : ${ var Builtin.Int64 }):
+  %f = function_ref @rec_a : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  %a = apply %f(%0) : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  %r = tuple ()
+  return %r : $()
+}
+
+//===----------------------------------------------------------------------===//
+// Mutually recursive functions without closures: two singleton components,
+// one SCC
+//===----------------------------------------------------------------------===//
+
+sil @mutual_1 : $@convention(thin) () -> () {
+bb0:
+  %f = function_ref @mutual_2 : $@convention(thin) () -> ()
+  %a = apply %f() : $@convention(thin) () -> ()
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @mutual_2 : $@convention(thin) () -> () {
+bb0:
+  %f = function_ref @mutual_1 : $@convention(thin) () -> ()
+  %a = apply %f() : $@convention(thin) () -> ()
+  %r = tuple ()
+  return %r : $()
+}
+
+//===----------------------------------------------------------------------===//
+// A cycle between components without a cycle between functions: compcyc_p1
+// forms compcyc_c1 (no call), compcyc_c1 calls compcyc_p2, compcyc_p2 forms
+// compcyc_c2, compcyc_c2 calls compcyc_p1. The two components form one SCC.
+//===----------------------------------------------------------------------===//
+
+sil @compcyc_c1 : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> () {
+bb0(%0 : ${ var Builtin.Int64 }):
+  %f = function_ref @compcyc_p2 : $@convention(thin) () -> ()
+  %a = apply %f() : $@convention(thin) () -> ()
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @compcyc_p1 : $@convention(thin) () -> () {
+bb0:
+  %b = alloc_box ${ var Builtin.Int64 }
+  %f = function_ref @compcyc_c1 : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  %pa = partial_apply %f(%b) : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  strong_release %pa : $@callee_owned () -> ()
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @compcyc_c2 : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> () {
+bb0(%0 : ${ var Builtin.Int64 }):
+  %f = function_ref @compcyc_p1 : $@convention(thin) () -> ()
+  %a = apply %f() : $@convention(thin) () -> ()
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @compcyc_p2 : $@convention(thin) () -> () {
+bb0:
+  %b = alloc_box ${ var Builtin.Int64 }
+  %f = function_ref @compcyc_c2 : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  %pa = partial_apply %f(%b) : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  strong_release %pa : $@callee_owned () -> ()
+  %r = tuple ()
+  return %r : $()
+}
+
+//===----------------------------------------------------------------------===//
+// Callee SCCs come first
+//===----------------------------------------------------------------------===//
+
+sil @order_caller : $@convention(thin) () -> () {
+bb0:
+  %f = function_ref @order_leaf : $@convention(thin) () -> ()
+  %a = apply %f() : $@convention(thin) () -> ()
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @order_leaf : $@convention(thin) () -> () {
+bb0:
+  %r = tuple ()
+  return %r : $()
+}
+
+//===----------------------------------------------------------------------===//
+// dynamic_function_ref links like function_ref (R1)
+//===----------------------------------------------------------------------===//
+
+sil [dynamically_replacable] @dyn_callee : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> () {
+bb0(%0 : ${ var Builtin.Int64 }):
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @dyn_parent : $@convention(thin) () -> () {
+bb0:
+  %b = alloc_box ${ var Builtin.Int64 }
+  %f = dynamic_function_ref @dyn_callee : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  %a = apply %f(%b) : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  strong_release %b : ${ var Builtin.Int64 }
+  %r = tuple ()
+  return %r : $()
+}
+
+//===----------------------------------------------------------------------===//
+// A destructor edge closes a call cycle: dtor_user releases a DC, and DC's
+// deallocator calls dtor_user. One SCC.
+//===----------------------------------------------------------------------===//
+
+sil @dtor_user : $@convention(thin) (@owned DC) -> () {
+bb0(%0 : $DC):
+  strong_release %0 : $DC
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @dc_dealloc : $@convention(method) (@owned DC) -> () {
+bb0(%0 : $DC):
+  %n = alloc_ref $DC
+  %f = function_ref @dtor_user : $@convention(thin) (@owned DC) -> ()
+  %a = apply %f(%n) : $@convention(thin) (@owned DC) -> ()
+  dealloc_ref %0 : $DC
+  %r = tuple ()
+  return %r : $()
+}
+
+sil_vtable DC {
+  #DC.deinit!deallocator: @dc_dealloc
+}
+
+//===----------------------------------------------------------------------===//
+// A builtin "once" edge closes a call cycle: once_user runs once_init, which
+// calls once_user. One SCC.
+//===----------------------------------------------------------------------===//
+
+sil @once_user : $@convention(thin) (Builtin.RawPointer) -> () {
+bb0(%0 : $Builtin.RawPointer):
+  %f = function_ref @once_init : $@convention(c) () -> ()
+  %o = builtin "once"(%0 : $Builtin.RawPointer, %f : $@convention(c) () -> ()) : $()
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @once_init : $@convention(c) () -> () {
+bb0:
+  %p = integer_literal $Builtin.Word, 0
+  %q = builtin "inttoptr_Word"(%p : $Builtin.Word) : $Builtin.RawPointer
+  %f = function_ref @once_user : $@convention(thin) (Builtin.RawPointer) -> ()
+  %a = apply %f(%q) : $@convention(thin) (Builtin.RawPointer) -> ()
+  %r = tuple ()
+  return %r : $()
+}

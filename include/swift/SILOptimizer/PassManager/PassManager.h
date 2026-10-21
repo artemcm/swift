@@ -25,6 +25,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include <vector>
 #include <bitset>
+#include <optional>
 
 #ifndef SWIFT_SILOPTIMIZER_PASSMANAGER_PASSMANAGER_H
 #define SWIFT_SILOPTIMIZER_PASSMANAGER_PASSMANAGER_H
@@ -234,6 +235,14 @@ class SILPassManager {
 
   std::chrono::nanoseconds totalPassRuntime = std::chrono::nanoseconds(0);
 
+  /// The state of a running capture SCC block in scc mode, or null outside one.
+  struct CaptureSCCBlock;
+  CaptureSCCBlock *captureSCCBlock = nullptr;
+
+  /// The SCC set of the running capture SCC transform, in module function-list
+  /// order.
+  std::optional<llvm::ArrayRef<SILFunction *>> currentCaptureSCC;
+
 public:
   /// C'tor. It creates and registers all analysis passes, which are defined
   /// in Analysis.def.
@@ -314,6 +323,9 @@ public:
   /// Broadcast the invalidation of the function to all analysis.
   void invalidateAnalysis(SILFunction *F,
                           SILAnalysis::InvalidationKind K) {
+    if (captureSCCBlock)
+      checkCaptureSCCWrite(F);
+
     // Invalidate the analysis (unless they are locked)
     for (auto AP : Analyses)
       if (!AP->isLocked())
@@ -338,8 +350,22 @@ public:
     CompletedPassesMap.clear();
   }
 
+  /// The SCC set of the running capture SCC transform, in module function-list
+  /// order.
+  llvm::ArrayRef<SILFunction *> getCurrentCaptureSCC() const;
+
+  /// True if \p F is in the SCC set of the running capture SCC transform.
+  bool isInCurrentCaptureSCC(SILFunction *F) const;
+
+  /// True if a capture SCC transform is running in scc mode and \p F is not in
+  /// its SCC set. Checked in every build wherever a capture SCC transform
+  /// reads, changes, or deletes a function.
+  bool isOutsideCurrentCaptureSCC(SILFunction *F) const;
+
   /// Iterate over all analysis and notify them of a deleted function.
   void notifyWillDeleteFunction(SILFunction *F) {
+    if (captureSCCBlock)
+      noteCaptureSCCFunctionDeleted(F);
     // Invalidate the analysis (unless they are locked)
     for (auto AP : Analyses)
       if (!AP->isLocked())
@@ -431,6 +457,33 @@ private:
 
   /// Run the passes in Transform from \p FromTransIdx to \p ToTransIdx.
   void runFunctionPasses(unsigned FromTransIdx, unsigned ToTransIdx);
+
+  /// Run the function passes from \p FromTransIdx to \p ToTransIdx on
+  /// \p Functions, which are in bottom-up order.
+  void runFunctionPassesOn(unsigned FromTransIdx, unsigned ToTransIdx,
+                           llvm::ArrayRef<SILFunction *> Functions);
+
+  /// Run a maximal sequence of function and capture SCC transforms in scc mode.
+  /// The span from the first to the last capture SCC transform is scheduled as
+  /// an SCC block (runCaptureSCCBlock); the function transforms before and
+  /// after it run as ordinary function-pass groups.
+  void runFunctionAndCaptureSCCPasses(unsigned FromTransIdx,
+                                      unsigned ToTransIdx);
+
+  /// Run the transforms from \p FromTransIdx to \p ToTransIdx, which start
+  /// and end with a capture SCC transform, once per SCC.
+  void runCaptureSCCBlock(unsigned FromTransIdx, unsigned ToTransIdx);
+
+  /// Run the \p TransIdx'th transform, a capture SCC transform, on the SCC set
+  /// \p Members (in module function-list order).
+  void runCaptureSCCPass(unsigned TransIdx,
+                         llvm::ArrayRef<SILFunction *> Members);
+
+  void noteCaptureSCCFunctionDeleted(SILFunction *F);
+
+  /// Checked in every build: \p F, which the running capture SCC transform
+  /// changed, must be in its SCC set.
+  void checkCaptureSCCWrite(SILFunction *F) const;
 
   /// Helper function to check if the function pass should be run mandatorily
   /// All passes in mandatory pass pipeline and ownership model elimination are

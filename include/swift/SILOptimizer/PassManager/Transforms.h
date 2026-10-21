@@ -29,6 +29,7 @@ namespace swift {
     enum class TransformKind {
       Function,
       Module,
+      CaptureSCC,
     };
 
     /// Stores the kind of derived class.
@@ -146,15 +147,21 @@ namespace swift {
   class SILModuleTransform : public SILTransform {
     SILModule *M;
 
+  protected:
+    explicit SILModuleTransform(TransformKind K) : SILTransform(K), M(0) {}
+
   public:
     /// C'tor.
-    SILModuleTransform() : SILTransform(TransformKind::Module), M(0) {}
+    SILModuleTransform() : SILModuleTransform(TransformKind::Module) {}
 
     /// The entry point to the transformation.
     virtual void run() = 0;
 
+    /// Capture SCC transforms are module transforms too
+    /// (SILCaptureSCCTransform).
     static bool classof(const SILTransform *S) {
-      return S->getKind() == TransformKind::Module;
+      return S->getKind() == TransformKind::Module ||
+             S->getKind() == TransformKind::CaptureSCC;
     }
 
     void injectModule(SILModule *Mod) { M = Mod; }
@@ -180,6 +187,40 @@ namespace swift {
     void notifyWillDeleteFunction(SILFunction *F) {
       PM->notifyWillDeleteFunction(F);
     }
+  };
+
+  /// A transformation that runs once per capture SCC: an SCC of the call graph
+  /// extended with the capture links between a function and the closures and
+  /// local functions it forms or passes captures to (CaptureSCCSchedule.h).
+  /// "SCC" below means a capture SCC. When the transform runs, every member of
+  /// the SCC has run every earlier pass of its block and none has started a
+  /// later one.
+  ///
+  /// With -sil-capture-scc-scheduling=module it is a module transform: the SCC
+  /// set is every function in the module. With -sil-capture-scc-scheduling=scc
+  /// it runs once per SCC.
+  ///
+  /// A capture SCC transform may only look at, change, create, or delete
+  /// functions in its SCC set. Functions it creates through
+  /// SILOptFunctionBuilder join the set.
+  class SILCaptureSCCTransform : public SILModuleTransform {
+  public:
+    SILCaptureSCCTransform() : SILModuleTransform(TransformKind::CaptureSCC) {}
+
+    static bool classof(const SILTransform *S) {
+      return S->getKind() == TransformKind::CaptureSCC;
+    }
+
+    /// The SCC set when the transform started, in module function-list order.
+    /// In module mode that is every function in the module, declarations
+    /// included; in scc mode, the SCC's definitions.
+    llvm::ArrayRef<SILFunction *> getSCC() {
+      return PM->getCurrentCaptureSCC();
+    }
+
+    /// True if \p F is in the SCC set, including functions created since
+    /// the transform started.
+    bool isInSCC(SILFunction *F) { return PM->isInCurrentCaptureSCC(F); }
   };
 } // end namespace swift
 

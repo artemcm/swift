@@ -16,6 +16,7 @@
 #include "../../IRGen/IRGenModule.h"
 #include "swift/AST/SILOptimizerRequests.h"
 #include "swift/Basic/Assertions.h"
+#include "swift/Basic/Defer.h"
 #include "swift/Basic/MD5Stream.h"
 #include "swift/Demangling/Demangle.h"
 #include "swift/Demangling/Demangler.h"
@@ -27,6 +28,7 @@
 #include "swift/SILOptimizer/Analysis/FunctionOrder.h"
 #include "swift/SILOptimizer/PassManager/PrettyStackTrace.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
+#include "swift/SILOptimizer/Utils/CaptureSCCSchedule.h"
 #include "swift/SILOptimizer/Utils/OptimizerStatsUtils.h"
 #include "swift/SILOptimizer/Utils/SILOptFunctionBuilder.h"
 #include "swift/SILOptimizer/Utils/SILSSAUpdater.h"
@@ -51,6 +53,29 @@ using namespace swift;
 llvm::cl::opt<bool> SILPrintAll(
     "sil-print-all", llvm::cl::init(false),
     llvm::cl::desc("Print SIL after each pass"));
+
+namespace {
+enum class CaptureSCCSchedulingMode { Module, SCC };
+} // end anonymous namespace
+
+static llvm::cl::opt<CaptureSCCSchedulingMode> CaptureSCCScheduling(
+    "sil-capture-scc-scheduling",
+    llvm::cl::init(CaptureSCCSchedulingMode::Module),
+    llvm::cl::desc("How to schedule capture SCC transforms"),
+    llvm::cl::values(
+        clEnumValN(
+            CaptureSCCSchedulingMode::Module, "module",
+            "Run each capture SCC transform once on the whole module, where a "
+            "module pass would run"),
+        clEnumValN(CaptureSCCSchedulingMode::SCC, "scc",
+                   "Run each capture SCC block once per SCC of the scheduling "
+                   "graph")));
+
+static llvm::cl::opt<bool> SILPrintCaptureSCCSets(
+    "sil-print-capture-scc-sets", llvm::cl::init(false),
+    llvm::cl::desc(
+        "Print the SCC set of each capture SCC transform invocation in "
+        "scc mode"));
 
 llvm::cl::opt<bool> SILPrintPassName(
     "sil-print-pass-name", llvm::cl::init(false),
@@ -923,8 +948,12 @@ runFunctionPasses(unsigned FromTransIdx, unsigned ToTransIdx) {
 
   BasicCalleeAnalysis *BCA = getAnalysis<BasicCalleeAnalysis>();
   BottomUpFunctionOrder BottomUpOrder(*Mod, BCA);
-  auto BottomUpFunctions = BottomUpOrder.getFunctions();
+  runFunctionPassesOn(FromTransIdx, ToTransIdx, BottomUpOrder.getFunctions());
+}
 
+void SILPassManager::runFunctionPassesOn(
+    unsigned FromTransIdx, unsigned ToTransIdx,
+    ArrayRef<SILFunction *> BottomUpFunctions) {
   assert(FunctionWorklist.empty() && "Expected empty function worklist!");
 
   FunctionWorklist.reserve(BottomUpFunctions.size());
@@ -1019,6 +1048,15 @@ void SILPassManager::runModulePass(unsigned TransIdx) {
     runSwiftModuleVerification();
   }
 
+  // A capture SCC transform in module mode: its SCC set is every function,
+  // declarations included, as the module passes it replaces iterated them.
+  std::vector<SILFunction *> moduleSCC;
+  if (isa<SILCaptureSCCTransform>(SMT)) {
+    for (SILFunction &F : *Mod)
+      moduleSCC.push_back(&F);
+    currentCaptureSCC = moduleSCC;
+  }
+
   swiftPassInvocation.startModulePassRun(SMT);
 
   llvm::sys::TimePoint<> StartTime = std::chrono::system_clock::now();
@@ -1033,6 +1071,7 @@ void SILPassManager::runModulePass(unsigned TransIdx) {
   
   Mod->flushDeletedInsts();
   swiftPassInvocation.finishedModulePassRun();
+  currentCaptureSCC.reset();
 
   std::chrono::nanoseconds duration = std::chrono::system_clock::now() - StartTime;
   totalPassRuntime += duration;
@@ -1116,6 +1155,14 @@ void SILPassManager::executePassPipelinePlan(const SILPassPipelinePlan &Plan) {
   }
 }
 
+/// True if \p T runs as a module transform. A capture SCC transform does in
+/// module mode, and runs per SCC (runFunctionAndCaptureSCCPasses) in scc mode.
+static bool runsAsModuleTransform(SILTransform *T) {
+  return isa<SILModuleTransform>(T) &&
+         !(isa<SILCaptureSCCTransform>(T) &&
+           CaptureSCCScheduling == CaptureSCCSchedulingMode::SCC);
+}
+
 void SILPassManager::execute() {
   const SILOptions &Options = getOptions();
 
@@ -1152,13 +1199,13 @@ void SILPassManager::execute() {
     (void)Tr;
 
     unsigned FirstFuncTrans = Idx;
-    while (Idx < NumTransforms && isa<SILFunctionTransform>(Transformations[Idx]))
+    while (Idx < NumTransforms && !runsAsModuleTransform(Transformations[Idx]))
       ++Idx;
 
-    runFunctionPasses(FirstFuncTrans, Idx);
+    runFunctionAndCaptureSCCPasses(FirstFuncTrans, Idx);
 
-    while (Idx < NumTransforms && isa<SILModuleTransform>(Transformations[Idx])
-           && continueTransforming()) {
+    while (Idx < NumTransforms && runsAsModuleTransform(Transformations[Idx]) &&
+           continueTransforming()) {
       runModulePass(Idx);
 
       ++Idx;
@@ -1239,11 +1286,360 @@ SILPassManager::~SILPassManager() {
   }
 }
 
+struct SILPassManager::CaptureSCCBlock {
+  /// The current SCC's members, including functions created in it.
+  llvm::DenseSet<SILFunction *> members;
+
+  /// Functions created by capture SCC transforms in the current SCC, in
+  /// creation order.
+  llvm::SmallVector<SILFunction *, 8> created;
+
+  /// The current SCC's scheduled members and created functions, each listed
+  /// once. A deleted function that SILFunction::create resurrects under the
+  /// same pointer is not listed again.
+  llvm::SmallPtrSet<SILFunction *, 16> listed;
+
+  /// Every function scheduled in an SCC so far, or created by an SCC
+  /// transform during the block.
+  llvm::DenseSet<SILFunction *> scheduled;
+
+  /// A key per function that orders by module function-list position.
+  /// Functions created during the block get a key between their neighbors
+  /// (creators insert clones before the original).
+  llvm::DenseMap<SILFunction *, double> listKey;
+
+  double keyOf(SILFunction *F) {
+    auto it = listKey.find(F);
+    if (it != listKey.end())
+      return it->second;
+    SILModule &M = F->getModule();
+    std::optional<double> prev, next;
+    for (auto I = F->getIterator(); I != M.getFunctionList().begin();) {
+      --I;
+      auto found = listKey.find(&*I);
+      if (found != listKey.end()) {
+        prev = found->second;
+        break;
+      }
+    }
+    for (auto I = std::next(F->getIterator()); I != M.getFunctionList().end();
+         ++I) {
+      auto found = listKey.find(&*I);
+      if (found != listKey.end()) {
+        next = found->second;
+        break;
+      }
+    }
+    double key = prev && next ? (*prev + *next) / 2
+                 : prev       ? *prev + 1
+                 : next       ? *next - 1
+                              : 0;
+    listKey[F] = key;
+    return key;
+  }
+};
+
 void SILPassManager::notifyOfNewFunction(SILFunction *F, SILTransform *T) {
   if (doPrintAfter(T, F, /*PassChangedSIL*/ true)) {
     dumpPassInfo("*** New SIL function in ", T, F);
     F->dump(getOptions().EmitVerboseSIL);
   }
+  // A function created by a capture SCC transform joins the SCC set. It may be
+  // a zombie that SILFunction::create resurrected under the same pointer, at a
+  // new list position.
+  if (captureSCCBlock && currentCaptureSCC) {
+    captureSCCBlock->listKey.erase(F);
+    captureSCCBlock->members.insert(F);
+    if (captureSCCBlock->listed.insert(F).second)
+      captureSCCBlock->created.push_back(F);
+    captureSCCBlock->scheduled.insert(F);
+  }
+}
+
+//===----------------------------------------------------------------------===//
+//                           Capture SCC scheduling
+//===----------------------------------------------------------------------===//
+
+ArrayRef<SILFunction *> SILPassManager::getCurrentCaptureSCC() const {
+  ASSERT(currentCaptureSCC && "no capture SCC transform is running");
+  return *currentCaptureSCC;
+}
+
+bool SILPassManager::isInCurrentCaptureSCC(SILFunction *F) const {
+  ASSERT(currentCaptureSCC && "no capture SCC transform is running");
+  return !isOutsideCurrentCaptureSCC(F);
+}
+
+bool SILPassManager::isOutsideCurrentCaptureSCC(SILFunction *F) const {
+  return captureSCCBlock && currentCaptureSCC &&
+         !captureSCCBlock->members.count(F);
+}
+
+void SILPassManager::checkCaptureSCCWrite(SILFunction *F) const {
+  ASSERT(!isOutsideCurrentCaptureSCC(F) &&
+         "capture SCC transform changed a function outside its set");
+}
+
+void SILPassManager::noteCaptureSCCFunctionDeleted(SILFunction *F) {
+  ASSERT(!isOutsideCurrentCaptureSCC(F) &&
+         "capture SCC transform deleted a function outside its set");
+  captureSCCBlock->members.erase(F);
+}
+
+void SILPassManager::runFunctionAndCaptureSCCPasses(unsigned FromTransIdx,
+                                                    unsigned ToTransIdx) {
+  unsigned firstSCCPass = ToTransIdx, lastSCCPass = FromTransIdx;
+  for (unsigned i = FromTransIdx; i != ToTransIdx; ++i) {
+    if (isa<SILCaptureSCCTransform>(Transformations[i])) {
+      firstSCCPass = std::min(firstSCCPass, i);
+      lastSCCPass = i;
+    }
+  }
+  if (firstSCCPass == ToTransIdx) {
+    runFunctionPasses(FromTransIdx, ToTransIdx);
+    return;
+  }
+  runFunctionPasses(FromTransIdx, firstSCCPass);
+  if (!continueTransforming())
+    return;
+  runCaptureSCCBlock(firstSCCPass, lastSCCPass + 1);
+  if (!continueTransforming())
+    return;
+  runFunctionPasses(lastSCCPass + 1, ToTransIdx);
+}
+
+void SILPassManager::runCaptureSCCBlock(unsigned FromTransIdx,
+                                        unsigned ToTransIdx) {
+  assert(!captureSCCBlock && "capture SCC blocks don't nest");
+  CaptureSCCBlock block;
+  captureSCCBlock = &block;
+  SWIFT_DEFER { captureSCCBlock = nullptr; };
+
+  CaptureSCCSchedule schedule(*Mod, getAnalysis<BasicCalleeAnalysis>());
+  {
+    double key = 0;
+    for (SILFunction &F : *Mod)
+      block.listKey[&F] = key++;
+  }
+  if (SILPrintPassName)
+    llvm::dbgs() << "Start capture SCC block at stage: " << StageName << " ("
+                 << schedule.getSCCs().size() << " SCCs)\n";
+
+  for (const CaptureSCCSchedule::SCC &scc : schedule.getSCCs()) {
+    block.members.clear();
+    block.created.clear();
+    block.listed.clear();
+    for (SILFunction *F : scc) {
+      block.members.insert(F);
+      block.listed.insert(F);
+      block.scheduled.insert(F);
+    }
+
+    for (unsigned i = FromTransIdx; i < ToTransIdx && continueTransforming();) {
+      if (isa<SILCaptureSCCTransform>(Transformations[i])) {
+        std::vector<SILFunction *> members;
+        for (SILFunction *F : block.members)
+          if (F->isDefinition())
+            members.push_back(F);
+        // Keys can tie after many insertions at one position; the name
+        // keeps the order deterministic.
+        llvm::sort(members, [&](SILFunction *a, SILFunction *b) {
+          double ka = block.keyOf(a), kb = block.keyOf(b);
+          return ka != kb ? ka < kb : a->getName() < b->getName();
+        });
+        runCaptureSCCPass(i, members);
+        ++i;
+        continue;
+      }
+      unsigned j = i;
+      while (j < ToTransIdx && isa<SILFunctionTransform>(Transformations[j]))
+        ++j;
+      // Functions created by an earlier capture SCC transform in this SCC have
+      // no bottom-up position. They are leaves of their creator (clones and
+      // specializations of callees), so they run first.
+      llvm::SmallVector<SILFunction *, 8> functions;
+      for (SILFunction *F : block.created)
+        if (block.members.count(F))
+          functions.push_back(F);
+      for (SILFunction *F : scc)
+        if (block.members.count(F))
+          functions.push_back(F);
+      runFunctionPassesOn(i, j, functions);
+      i = j;
+    }
+  }
+
+  // Per-member verification can't see references from outside an SCC, such as
+  // a vtable entry or a function_ref to a function that a capture SCC transform
+  // deleted. Verify the whole module once at the end of the block.
+  auto verifiesAfter = [&](SILTransform *T) {
+    auto MatchFun = [&](const std::string &Str) -> bool {
+      return T->getTag().contains(Str) || T->getID().contains(Str);
+    };
+    return llvm::any_of(SILVerifyAfterPass, MatchFun) ||
+           llvm::any_of(SILVerifyAroundPass, MatchFun);
+  };
+  bool verifyModule = getOptions().VerifyAll;
+  for (unsigned i = FromTransIdx; i != ToTransIdx && !verifyModule; ++i)
+    verifyModule = isa<SILCaptureSCCTransform>(Transformations[i]) &&
+                   verifiesAfter(Transformations[i]);
+  if (verifyModule && continueTransforming()) {
+    Mod->verify(getAnalysis<BasicCalleeAnalysis>()->getCalleeCache());
+    verifyAnalyses();
+    runSwiftModuleVerification();
+  }
+
+  // A definition that appeared during the block by any route other than an
+  // capture SCC transform (a function pass's clone, a deserialized body) is in
+  // no SCC and skipped the block's remaining passes, which module mode would
+  // run.
+  if (continueTransforming()) {
+    for (SILFunction &F : *Mod)
+      ASSERT(
+          (!F.isDefinition() || block.scheduled.count(&F)) &&
+          "a definition appeared during a capture SCC block outside any SCC");
+  }
+}
+
+void SILPassManager::runCaptureSCCPass(unsigned TransIdx,
+                                       ArrayRef<SILFunction *> Members) {
+  auto *T = cast<SILCaptureSCCTransform>(Transformations[TransIdx]);
+  SWIFT_DEFER { ++NumPassesRun; };
+  if (isDisabled(T))
+    return;
+
+  const SILOptions &Options = getOptions();
+  SILFunction *firstMember = Members.empty() ? nullptr : Members.front();
+
+  T->injectPassManager(this);
+  T->injectModule(Mod);
+
+  PrettyStackTraceSILCaptureSCCTransform X(T, NumPassesRun, firstMember);
+  DebugPrintEnabler DebugPrint(NumPassesRun);
+  updateSILModuleStatsBeforeTransform(*Mod, T, *this, NumPassesRun);
+
+  auto MatchFun = [&](const std::string &Str) -> bool {
+    return T->getTag().contains(Str) || T->getID().contains(Str);
+  };
+  auto matches = [&](const llvm::cl::list<std::string> &Passes) {
+    return llvm::any_of(Passes, MatchFun);
+  };
+  // Verification follows runPassOnFunction on each member: -sil-verify-all
+  // verifies each function's analyses, and the explicit verify options verify
+  // all analyses.
+  auto verify = [&](ArrayRef<SILFunction *> Functions, bool VerifyAll) {
+    for (SILFunction *F : Functions) {
+      if (!F->isDefinition())
+        continue;
+      F->verify(getAnalysis<BasicCalleeAnalysis>()->getCalleeCache(),
+                getAnalysis<DominanceAnalysis>()->get(F));
+      if (VerifyAll)
+        verifyAnalyses(F);
+      runSwiftFunctionVerification(F);
+    }
+    if (!VerifyAll)
+      verifyAnalyses();
+  };
+
+  CurrentPassHasInvalidated = false;
+  numSubpassesRun = 0;
+
+  if (SILPrintPassName)
+    dumpPassInfo("Run capture SCC pass", TransIdx, firstMember);
+
+  for (SILFunction *F : Members) {
+    if (doPrintBefore(T, F)) {
+      dumpPassInfo("*** SIL function before ", TransIdx);
+      F->dump(Options.EmitVerboseSIL);
+    }
+  }
+
+  if (matches(SILVerifyBeforePass) || matches(SILVerifyAroundPass))
+    verify(Members, /*VerifyAll=*/false);
+
+  if (SILPrintCaptureSCCSets) {
+    llvm::dbgs() << "Capture SCC set for " << T->getTag() << ":";
+    for (SILFunction *F : Members)
+      llvm::dbgs() << " " << F->getName();
+    llvm::dbgs() << "\n";
+  }
+
+  currentCaptureSCC = Members;
+  size_t numCreatedBefore = captureSCCBlock->created.size();
+
+  swiftPassInvocation.startModulePassRun(T);
+
+  llvm::sys::TimePoint<> StartTime = std::chrono::system_clock::now();
+  assert(analysesUnlocked() && "Expected all analyses to be unlocked!");
+  T->run();
+  assert(analysesUnlocked() && "Expected all analyses to be unlocked!");
+
+  if (!CurrentPassHasInvalidated &&
+      Mod->hasInstructionsScheduledForDeletion()) {
+    // Last chance for invalidating analysis if the pass forgot to call
+    // invalidateAnalysis.
+    invalidateAllAnalysis();
+  }
+
+  Mod->flushDeletedInsts();
+  swiftPassInvocation.finishedModulePassRun();
+  currentCaptureSCC.reset();
+
+  std::chrono::nanoseconds duration =
+      std::chrono::system_clock::now() - StartTime;
+  totalPassRuntime += duration;
+
+  // The SCC set after the pass: the members that survived, then the
+  // functions it created.
+  llvm::SmallVector<SILFunction *, 16> after;
+  for (SILFunction *F : Members)
+    if (captureSCCBlock->members.count(F))
+      after.push_back(F);
+  for (size_t i = numCreatedBefore; i < captureSCCBlock->created.size(); ++i)
+    if (captureSCCBlock->members.count(captureSCCBlock->created[i]))
+      after.push_back(captureSCCBlock->created[i]);
+  SILFunction *firstAfter = after.empty() ? nullptr : after.front();
+
+  if (SILPrintPassTime) {
+    double milliSecs = (double)duration.count() / 1000000.;
+    if (milliSecs > (double)SILMinPassTime) {
+      llvm::dbgs() << llvm::format("%9.3f", milliSecs) << " ms: " << T->getTag()
+                   << " #" << NumPassesRun;
+      if (firstAfter)
+        llvm::dbgs() << " @" << firstAfter->getName();
+      llvm::dbgs() << "\n";
+    }
+  }
+  if (!SILPrintPassMD5.empty() && CurrentPassHasInvalidated) {
+    MD5Stream md5Stream;
+    for (SILFunction *F : after)
+      F->print(md5Stream);
+    llvm::MD5::MD5Result result;
+    md5Stream.final(result);
+
+    llvm::raw_ostream &os = getSILPrintPassMD5Stream();
+    dumpPassInfo("MD5", TransIdx, firstAfter, /*skipNewline=*/true, os);
+
+    llvm::SmallVector<char, 32> hexStr;
+    llvm::MD5::stringifyResult(result, hexStr);
+    os << " = " << StringRef(hexStr.begin(), 32) << "\n";
+  }
+
+  for (SILFunction *F : after) {
+    if (doPrintAfter(T, F, CurrentPassHasInvalidated)) {
+      dumpPassInfo("*** SIL function after ", TransIdx);
+      F->dump(Options.EmitVerboseSIL);
+    }
+  }
+
+  updateSILModuleStatsAfterTransform(*Mod, T, *this, NumPassesRun,
+                                     duration.count());
+
+  if (Options.VerifyAll &&
+      (CurrentPassHasInvalidated || SILVerifyWithoutInvalidation))
+    verify(after, /*VerifyAll=*/true);
+  else if (matches(SILVerifyAfterPass) || matches(SILVerifyAroundPass))
+    verify(after, /*VerifyAll=*/false);
 }
 
 void SILPassManager::addFunctionToWorklist(SILFunction *F,

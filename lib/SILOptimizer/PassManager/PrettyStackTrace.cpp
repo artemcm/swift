@@ -37,3 +37,12 @@ void PrettyStackTraceSILModuleTransform::print(llvm::raw_ostream &out) const {
   out << "While running pass #" << PassNumber
       << " SILModuleTransform \"" << SMT->getID() << "\".\n";
 }
+
+void PrettyStackTraceSILCaptureSCCTransform::print(
+    llvm::raw_ostream &out) const {
+  out << "While running pass #" << PassNumber << " SILCaptureSCCTransform \""
+      << T->getID() << "\"";
+  if (FirstMember)
+    out << " on the SCC of '" << FirstMember->getName() << "'";
+  out << ".\n";
+}
