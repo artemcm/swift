@@ -1483,6 +1483,9 @@ processPartialApplyInst(SILOptFunctionBuilder &funcBuilder,
   SILFunction *f = pai->getFunction();
   SILModule &mod = pai->getModule();
   auto *fri = dyn_cast<FunctionRefInst>(pai->getCallee());
+  ASSERT((!fri || funcBuilder.getPassManager().isInCurrentCaptureSCC(
+                      fri->getReferencedFunction())) &&
+         "capture promotion of a closure outside the SCC set");
 
   // Clone the closure with the given promoted captures.
   SILFunction *clonedFn = ClosureCloner::constructClonedFunction(
@@ -1646,15 +1649,18 @@ static void constructMapFromPartialApplyToPromotableIndices(
 
 namespace {
 
-class CapturePromotionPass : public SILModuleTransform {
+/// A capture SCC transform: promotion reads and clones the closures that a
+/// function forms, which are in the function's SCC (CaptureSCCSchedule.h).
+/// Clones join the SCC when SILOptFunctionBuilder creates them.
+class CapturePromotionPass : public SILCaptureSCCTransform {
   /// The entry point to the transformation.
   void run() override {
     SmallVector<SILFunction *, 8> worklist;
-    for (auto &f : *getModule()) {
-      if (f.wasDeserializedCanonical() || !f.hasOwnership())
+    for (SILFunction *f : getSCC()) {
+      if (f->wasDeserializedCanonical() || !f->hasOwnership())
         continue;
 
-      processFunction(&f, worklist);
+      processFunction(f, worklist);
     }
 
     while (!worklist.empty()) {
