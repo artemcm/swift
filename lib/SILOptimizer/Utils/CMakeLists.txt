@@ -25,6 +25,7 @@ target_sources(swiftSILOptimizer PRIVATE
   PartialApplyCombiner.cpp
   PartitionUtils.cpp
   PerformanceInlinerUtils.cpp
+  CaptureSCCSchedule.cpp
   ShrinkBorrowScope.cpp
   SILInliner.cpp
   SILIsolationInfo.cpp
