@@ -152,7 +152,8 @@ class ClosureFunctionOrder {
   class ClosureDFS;
   friend class ClosureDFS;
 
-  ClosureScopeAnalysis *csa;
+  // The closure graph over the function set the order is computed for.
+  std::unique_ptr<ClosureGraph> graph;
 
   // All functions in this module in top-down order (RPO) following the closure
   // scope graph. Functions that define a closure occur before the closure.
@@ -165,13 +166,16 @@ class ClosureFunctionOrder {
   SmallPtrSet<SILFunction *, 4> closureCycleHeads;
 
 public:
-  ClosureFunctionOrder(ClosureScopeAnalysis *csa) : csa(csa) {}
+  ClosureFunctionOrder();
+  ~ClosureFunctionOrder();
 
-  void compute();
+  /// Compute the order over \p functions only, which must be in module
+  /// function-list order. The closure graph is built from \p functions, so it
+  /// reflects functions created by earlier passes.
+  void compute(ArrayRef<SILFunction *> functions);
 
   ArrayRef<SILFunction *> getTopDownFunctions() const {
-    assert(!topDownFunctions.empty()
-           || csa->getModule()->getFunctions().empty());
+    assert(graph && "order not computed");
     return topDownFunctions;
   }
 

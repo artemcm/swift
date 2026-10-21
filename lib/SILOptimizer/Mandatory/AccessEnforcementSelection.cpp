@@ -623,9 +623,14 @@ protected:
 };
 
 void AccessEnforcementSelection::run() {
-  auto *CSA = getAnalysis<ClosureScopeAnalysis>();
-  ClosureFunctionOrder closureOrder(CSA);
-  closureOrder.compute();
+  // ClosureScopeAnalysis caches a module-wide graph and ignores functions
+  // added after it was computed (ClosureScope.h), such as capture promotion's
+  // clones. Build the graph from the module's functions as they are now.
+  SmallVector<SILFunction *, 64> functions;
+  for (SILFunction &function : *getModule())
+    functions.push_back(&function);
+  ClosureFunctionOrder closureOrder;
+  closureOrder.compute(functions);
 
   dynamicCaptures = std::make_unique<DynamicCaptures>();
   SWIFT_DEFER { dynamicCaptures.reset(); };
