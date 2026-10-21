@@ -1375,6 +1375,16 @@ bool SILPassManager::isOutsideCurrentCaptureSCC(SILFunction *F) const {
          !captureSCCBlock->members.count(F);
 }
 
+void SILPassManager::invalidateCurrentCaptureSCCAnalysis() {
+  ASSERT(currentCaptureSCC && "no capture SCC transform is running");
+  if (!captureSCCBlock) {
+    invalidateAllAnalysis();
+    return;
+  }
+  for (SILFunction *F : captureSCCBlock->members)
+    invalidateAnalysis(F, SILAnalysis::InvalidationKind::Everything);
+}
+
 void SILPassManager::checkCaptureSCCWrite(SILFunction *F) const {
   ASSERT(!isOutsideCurrentCaptureSCC(F) &&
          "capture SCC transform changed a function outside its set");

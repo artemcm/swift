@@ -362,6 +362,10 @@ public:
   /// reads, changes, or deletes a function.
   bool isOutsideCurrentCaptureSCC(SILFunction *F) const;
 
+  /// Invalidate all analysis data of the running capture SCC transform's SCC
+  /// set.
+  void invalidateCurrentCaptureSCCAnalysis();
+
   /// Iterate over all analysis and notify them of a deleted function.
   void notifyWillDeleteFunction(SILFunction *F) {
     if (captureSCCBlock)

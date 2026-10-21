@@ -12,6 +12,7 @@
 
 #define DEBUG_TYPE "sil-mark-never-written-mutable-closure-boxes-as-immutable"
 
+#include "swift/Basic/Assertions.h"
 #include "swift/SIL/ApplySite.h"
 #include "swift/SIL/OperandDatastructures.h"
 #include "swift/SILOptimizer/PassManager/Passes.h"
@@ -25,7 +26,8 @@ using namespace swift;
 //===----------------------------------------------------------------------===//
 
 static bool isImmutable(SILValue start, StoreWeakInst *allowableWeakStore,
-                        llvm::DenseSet<SILFunctionArgument *> &visitedArgs) {
+                        llvm::DenseSet<SILFunctionArgument *> &visitedArgs,
+                        SILCaptureSCCTransform &transform) {
   LLVM_DEBUG(llvm::dbgs() << "Checking in function "
                           << start->getFunction()->getName() << ": " << *start);
   // We store the partial apply that we are going to visit serially after we
@@ -85,6 +87,8 @@ static bool isImmutable(SILValue start, StoreWeakInst *allowableWeakStore,
       // finite amount of them at the same time.
       if (auto *pai = dyn_cast<PartialApplyInst>(user)) {
         if (auto *calleeFunc = pai->getReferencedFunctionOrNull()) {
+          ASSERT(transform.isInSCC(calleeFunc) &&
+                 "partial_apply callee outside the SCC set");
           auto *fArg = cast<SILFunctionArgument>(
               ApplySite(pai).getCalleeArgument(calleeFunc, *use));
           if (fArg->isInferredImmutable()) {
@@ -119,7 +123,7 @@ static bool isImmutable(SILValue start, StoreWeakInst *allowableWeakStore,
   for (auto *fArg : funcArgsToVisit) {
     assert(!fArg->isInferredImmutable() && "Should have been checked earlier");
     visitedArgs.insert(fArg);
-    if (isImmutable(fArg, nullptr, visitedArgs)) {
+    if (isImmutable(fArg, nullptr, visitedArgs, transform)) {
       fArg->setInferredImmutable(true);
       continue;
     }
@@ -234,11 +238,14 @@ static StoreWeakInst *isPatternMatchableBox(AllocBoxInst *abi) {
 namespace {
 
 class MarkNeverWrittenMutableClosureBoxesAsImmutable
-    : public SILModuleTransform {
+    : public SILCaptureSCCTransform {
   void run() override {
     bool madeChange = false;
     llvm::DenseSet<SILFunctionArgument *> visitedArgs;
-    for (auto &fn : *getModule()) {
+    // isImmutable follows boxes into partial_apply callees, which are in the
+    // SCC of the function that forms the partial_apply (CaptureSCCSchedule.h).
+    for (SILFunction *f : getSCC()) {
+      SILFunction &fn = *f;
       for (auto &block : fn) {
         for (auto &inst : block) {
           auto *abi = dyn_cast<AllocBoxInst>(&inst);
@@ -246,7 +253,7 @@ class MarkNeverWrittenMutableClosureBoxesAsImmutable
             continue;
           auto *singleInitialization = isPatternMatchableBox(abi);
           if (!singleInitialization ||
-              !isImmutable(abi, singleInitialization, visitedArgs))
+              !isImmutable(abi, singleInitialization, visitedArgs, *this))
             continue;
 
           abi->setInferredImmutable(true);

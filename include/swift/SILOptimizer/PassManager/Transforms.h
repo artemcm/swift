@@ -221,6 +221,10 @@ namespace swift {
     /// True if \p F is in the SCC set, including functions created since
     /// the transform started.
     bool isInSCC(SILFunction *F) { return PM->isInCurrentCaptureSCC(F); }
+
+    /// Invalidate all analysis data of the SCC set: of the whole module in
+    /// module mode.
+    void invalidateAll() { PM->invalidateCurrentCaptureSCCAnalysis(); }
   };
 } // end namespace swift
 
