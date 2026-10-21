@@ -325,8 +325,8 @@ class ID##Pass : public SILFunctionTransform {                             \
 BridgedFunctionPassRunFn ID##Pass::runFunction = nullptr;                  \
 SILTransform *swift::create##ID() { return new ID##Pass(); }               \
 
-#define MODULE_PASS(ID, TAG, DESCRIPTION) \
-class ID##Pass : public SILModuleTransform {                               \
+#define SWIFT_MODULE_PASS_COMMON(ID, TAG, BASE) \
+class ID##Pass : public BASE {                                             \
   static BridgedModulePassRunFn runFunction;                               \
   void run() override {                                                    \
     runBridgedModulePass(runFunction, PM, TAG);                            \
@@ -335,6 +335,15 @@ class ID##Pass : public SILModuleTransform {                               \
 BridgedModulePassRunFn ID##Pass::runFunction = nullptr;                    \
 SILTransform *swift::create##ID() { return new ID##Pass(); }               \
 
+#define MODULE_PASS(ID, TAG, DESCRIPTION) \
+  SWIFT_MODULE_PASS_COMMON(ID, TAG, SILModuleTransform)
+
+// A Swift ModulePass that runs as a capture SCC transform. It registers and
+// runs like a module pass; ModulePassContext.captureSCC gives it the SCC set.
+#define CAPTURE_SCC_PASS(ID, TAG, DESCRIPTION) \
+  SWIFT_MODULE_PASS_COMMON(ID, TAG, SILCaptureSCCTransform)
+
 #include "swift/SILOptimizer/PassManager/Passes.def"
 
 #undef SWIFT_FUNCTION_PASS_COMMON
+#undef SWIFT_MODULE_PASS_COMMON

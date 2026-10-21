@@ -62,15 +62,17 @@ let allocBoxToStack = FunctionPass(name: "allocbox-to-stack") {
 }
 
 /// The "mandatory" version of the pass, which runs in the mandatory pipeline.
-/// In contrast to the regular version, it is a module pass because it deletes the originals
-/// of specialized closures, so that successive diagnostic passes don't report errors for
-/// the unspecialized closures.
+/// In contrast to the regular version, it runs on a whole capture SCC (it is a
+/// `CAPTURE_SCC_PASS`) because it deletes the originals of specialized closures, so
+/// that successive diagnostic passes don't report errors for the unspecialized
+/// closures. The originals and their specializations are in the capture SCC of the
+/// function that passes them its boxes.
 ///
 let mandatoryAllocBoxToStack = ModulePass(name: "mandatory-allocbox-to-stack") {
   (moduleContext: ModulePassContext) in
 
   var worklist = FunctionWorklist()
-  worklist.pushIfNotVisited(contentsOf: moduleContext.functions)
+  worklist.pushIfNotVisited(contentsOf: moduleContext.captureSCC)
 
   var originalsOfSpecializedFunctions = FunctionWorklist()
 

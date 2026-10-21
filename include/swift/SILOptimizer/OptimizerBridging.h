@@ -274,6 +274,9 @@ struct BridgedPassContext {
   // Access SIL module data structures
 
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE OptionalBridgedFunction getFirstFunctionInModule() const;
+  /// The size of the running capture SCC transform's SCC set.
+  SwiftInt getCaptureSCCSize() const;
+  SWIFT_IMPORT_UNSAFE BridgedFunction getCaptureSCCMember(SwiftInt index) const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE static OptionalBridgedFunction getNextFunctionInModule(BridgedFunction function);
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE OptionalBridgedGlobalVar getFirstGlobalInModule() const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE static OptionalBridgedGlobalVar getNextGlobalInModule(BridgedGlobalVar global);

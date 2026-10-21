@@ -97,6 +97,18 @@ struct ModulePassContext : Context, CustomStringConvertible {
   var functions: FunctionList {
     FunctionList(first: bridgedPassContext.getFirstFunctionInModule().function)
   }
+
+  /// The capture SCC of a pass declared with `CAPTURE_SCC_PASS` in Passes.def, as
+  /// it was when the pass started, in module function-list order: every function in
+  /// the module with `-sil-capture-scc-scheduling=module`, one capture SCC's
+  /// definitions with `-sil-capture-scc-scheduling=scc`. Such a pass may only look
+  /// at, change, create, or erase functions in its set. Functions it creates join
+  /// the set, but this snapshot doesn't list them.
+  var captureSCC: [Function] {
+    (0..<bridgedPassContext.getCaptureSCCSize()).map {
+      bridgedPassContext.getCaptureSCCMember($0).function
+    }
+  }
   
   var globalVariables: GlobalVariableList {
     GlobalVariableList(first: bridgedPassContext.getFirstGlobalInModule().globalVar)

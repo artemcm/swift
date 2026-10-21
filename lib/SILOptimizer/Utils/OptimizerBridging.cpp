@@ -154,6 +154,14 @@ void BridgedPassContext::inlineFunction(BridgedInstruction apply, bool mandatory
                               funcBuilder, deleter);
 }
 
+SwiftInt BridgedPassContext::getCaptureSCCSize() const {
+  return invocation->getPassManager()->getCurrentCaptureSCC().size();
+}
+
+BridgedFunction BridgedPassContext::getCaptureSCCMember(SwiftInt index) const {
+  return {invocation->getPassManager()->getCurrentCaptureSCC()[index]};
+}
+
 void BridgedPassContext::eraseFunction(BridgedFunction function) const {
   invocation->getPassManager()->notifyWillDeleteFunction(function.getFunction());
   invocation->getPassManager()->getModule()->eraseFunction(function.getFunction());

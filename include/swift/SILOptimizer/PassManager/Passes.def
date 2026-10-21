@@ -40,6 +40,15 @@
 #define MODULE_PASS(Id, Tag, Description) PASS(Id, Tag, Description)
 #endif
 
+/// CAPTURE_SCC_PASS(Id, Tag, Description)
+///   A pass implemented in Swift as a ModulePass that runs as a capture SCC
+///   transform (SILCaptureSCCTransform): once per capture SCC, whose functions
+///   the pass reads through ModulePassContext.captureSCC. Includers that don't
+///   distinguish it see a module pass.
+#ifndef CAPTURE_SCC_PASS
+#define CAPTURE_SCC_PASS(Id, Tag, Description) MODULE_PASS(Id, Tag, Description)
+#endif
+
 /// Used for passes which are implemented in C++.
 ///   Do not add any LEGACY_PASS entries. Implement new passes in swift
 ///   and add them with PASS or MODULE_PASS.
@@ -183,7 +192,7 @@ PASS(ClosureSpecialization, "closure-specialization",
 PASS(AutodiffClosureSpecialization, "autodiff-closure-specialization",
      "Autodiff specific closure-specialization pass")
 
-MODULE_PASS(MandatoryAllocBoxToStack, "mandatory-allocbox-to-stack",
+CAPTURE_SCC_PASS(MandatoryAllocBoxToStack, "mandatory-allocbox-to-stack",
      "Mandatory stack promotion of box objects")
 MODULE_PASS(AsyncDemotion, "async-demotion",
      "Convert async functions to be synchronous")
@@ -507,6 +516,7 @@ LEGACY_PASS(MarkNeverWrittenMutableClosureBoxesAsImmutable, "mark-never-written-
 //===----------------------------------------------------------------------===//
 
 #undef IRGEN_PASS
+#undef CAPTURE_SCC_PASS
 #undef MODULE_PASS
 #undef LEGACY_PASS
 #undef PASS
