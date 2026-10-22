@@ -16,6 +16,7 @@
 #include "../../IRGen/IRGenModule.h"
 #include "swift/AST/SILOptimizerRequests.h"
 #include "swift/Basic/Assertions.h"
+#include "swift/Basic/Defer.h"
 #include "swift/Basic/MD5Stream.h"
 #include "swift/Demangling/Demangle.h"
 #include "swift/Demangling/Demangler.h"
@@ -27,10 +28,12 @@
 #include "swift/SILOptimizer/Analysis/FunctionOrder.h"
 #include "swift/SILOptimizer/PassManager/PrettyStackTrace.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
+#include "swift/SILOptimizer/Utils/ClosureGroupSchedule.h"
 #include "swift/SILOptimizer/Utils/OptimizerStatsUtils.h"
 #include "swift/SILOptimizer/Utils/SILOptFunctionBuilder.h"
 #include "swift/SILOptimizer/Utils/SILSSAUpdater.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/CommandLine.h"
@@ -51,6 +54,11 @@ using namespace swift;
 llvm::cl::opt<bool> SILPrintAll(
     "sil-print-all", llvm::cl::init(false),
     llvm::cl::desc("Print SIL after each pass"));
+
+static llvm::cl::opt<bool> SILPrintClosureGroups(
+    "sil-print-closure-groups", llvm::cl::init(false),
+    llvm::cl::desc("Print the group of each closure group transform "
+                   "invocation"));
 
 llvm::cl::opt<bool> SILPrintPassName(
     "sil-print-pass-name", llvm::cl::init(false),
@@ -622,8 +630,7 @@ bool SILPassManager::analysesUnlocked() {
 // Test the function and pass names we're given against the debug
 // options that force us to break prior to a given pass and/or on a
 // given function.
-bool SILPassManager::breakBeforeRunning(StringRef fnName,
-                                        SILFunctionTransform *SFT) {
+bool SILPassManager::breakBeforeRunning(StringRef fnName, SILTransform *SFT) {
   if (SILBreakOnFun.empty() && SILBreakOnPass.empty() &&
       SILBreakBeforePassCount.empty())
     return false;
@@ -979,6 +986,52 @@ runFunctionPasses(unsigned FromTransIdx, unsigned ToTransIdx) {
   }
 }
 
+/// True if \p T's tag or ID contains one of \p Passes.
+static bool passMatches(SILTransform *T,
+                        const llvm::cl::list<std::string> &Passes) {
+  return llvm::any_of(Passes, [&](const std::string &Str) {
+    return T->getTag().contains(Str) || T->getID().contains(Str);
+  });
+}
+
+/// True if -sil-verify-before-pass or -sil-verify-around-pass names \p T.
+static bool verifyBefore(SILTransform *T) {
+  return passMatches(T, SILVerifyBeforePass) ||
+         passMatches(T, SILVerifyAroundPass);
+}
+
+/// True if -sil-verify-after-pass or -sil-verify-around-pass names \p T.
+static bool verifyAfter(SILTransform *T) {
+  return passMatches(T, SILVerifyAfterPass) ||
+         passMatches(T, SILVerifyAroundPass);
+}
+
+std::chrono::nanoseconds
+SILPassManager::runTransformBody(SILTransform *T,
+                                 llvm::function_ref<void()> run) {
+  swiftPassInvocation.startMultiFunctionPassRun(T);
+
+  llvm::sys::TimePoint<> StartTime = std::chrono::system_clock::now();
+  assert(analysesUnlocked() && "Expected all analyses to be unlocked!");
+  run();
+  assert(analysesUnlocked() && "Expected all analyses to be unlocked!");
+
+  if (!CurrentPassHasInvalidated &&
+      Mod->hasInstructionsScheduledForDeletion()) {
+    // Last chance for invalidating analysis if the pass forgot to call
+    // invalidateAnalysis.
+    invalidateAllAnalysis();
+  }
+
+  Mod->flushDeletedInsts();
+  swiftPassInvocation.finishedMultiFunctionPassRun();
+
+  std::chrono::nanoseconds duration =
+      std::chrono::system_clock::now() - StartTime;
+  totalPassRuntime += duration;
+  return duration;
+}
+
 void SILPassManager::runModulePass(unsigned TransIdx) {
   auto *SMT = cast<SILModuleTransform>(Transformations[TransIdx]);
   if (isDisabled(SMT))
@@ -1005,37 +1058,11 @@ void SILPassManager::runModulePass(unsigned TransIdx) {
     printModule(Mod, Options.EmitVerboseSIL);
   }
 
-  auto MatchFun = [&](const std::string &Str) -> bool {
-    return SMT->getTag().contains(Str) || SMT->getID().contains(Str);
-  };
-  if ((SILVerifyBeforePass.end() != std::find_if(SILVerifyBeforePass.begin(),
-                                                 SILVerifyBeforePass.end(),
-                                                 MatchFun)) ||
-      (SILVerifyAroundPass.end() != std::find_if(SILVerifyAroundPass.begin(),
-                                                 SILVerifyAroundPass.end(),
-                                                 MatchFun))) {
-    Mod->verify(getAnalysis<BasicCalleeAnalysis>()->getCalleeCache());
-    verifyAnalyses();
-    runSwiftModuleVerification();
-  }
+  if (verifyBefore(SMT))
+    verifyModule();
 
-  swiftPassInvocation.startModulePassRun(SMT);
-
-  llvm::sys::TimePoint<> StartTime = std::chrono::system_clock::now();
-  assert(analysesUnlocked() && "Expected all analyses to be unlocked!");
-  SMT->run();
-  assert(analysesUnlocked() && "Expected all analyses to be unlocked!");
-  
-  if (!CurrentPassHasInvalidated && Mod->hasInstructionsScheduledForDeletion()) {
-    // Last chance for invalidating analysis if the pass forgot to call invalidateAnalysis.
-    invalidateAllAnalysis();
-  }
-  
-  Mod->flushDeletedInsts();
-  swiftPassInvocation.finishedModulePassRun();
-
-  std::chrono::nanoseconds duration = std::chrono::system_clock::now() - StartTime;
-  totalPassRuntime += duration;
+  std::chrono::nanoseconds duration =
+      runTransformBody(SMT, [&] { SMT->run(); });
 
   if (SILPrintPassTime) {
     double milliSecs = (double)duration.count() / 1000000.;
@@ -1066,23 +1093,16 @@ void SILPassManager::runModulePass(unsigned TransIdx) {
 
   updateSILModuleStatsAfterTransform(*Mod, SMT, *this, NumPassesRun, duration.count());
 
-  if (Options.VerifyAll &&
-      (CurrentPassHasInvalidated || SILVerifyWithoutInvalidation)) {
-    Mod->verify(getAnalysis<BasicCalleeAnalysis>()->getCalleeCache());
-    verifyAnalyses();
-    runSwiftModuleVerification();
-  } else {
-    if ((SILVerifyAfterPass.end() != std::find_if(SILVerifyAfterPass.begin(),
-                                                  SILVerifyAfterPass.end(),
-                                                  MatchFun)) ||
-        (SILVerifyAroundPass.end() != std::find_if(SILVerifyAroundPass.begin(),
-                                                   SILVerifyAroundPass.end(),
-                                                   MatchFun))) {
-      Mod->verify(getAnalysis<BasicCalleeAnalysis>()->getCalleeCache());
-      verifyAnalyses();
-      runSwiftModuleVerification();
-    }
-  }
+  if ((Options.VerifyAll &&
+       (CurrentPassHasInvalidated || SILVerifyWithoutInvalidation)) ||
+      verifyAfter(SMT))
+    verifyModule();
+}
+
+void SILPassManager::verifyModule() {
+  Mod->verify(getAnalysis<BasicCalleeAnalysis>()->getCalleeCache());
+  verifyAnalyses();
+  runSwiftModuleVerification();
 }
 
 void SILPassManager::verifyAnalyses() const {
@@ -1141,13 +1161,15 @@ void SILPassManager::execute() {
   // Run the transforms by alternating between function transforms and
   // module transforms. We'll queue up all the function transforms
   // that we see in a row and then run the entire group of transforms
-  // on each function in turn. Then we move on to running the next set
-  // of consecutive module transforms.
+  // on each function in turn. Consecutive closure group transforms that follow
+  // run as one block, group by group (runClosureGroupPasses). Then we move on
+  // to running the next set of consecutive module transforms.
   unsigned Idx = 0, NumTransforms = Transformations.size();
 
   while (Idx < NumTransforms && continueTransforming()) {
     SILTransform *Tr = Transformations[Idx];
-    assert((isa<SILFunctionTransform>(Tr) || isa<SILModuleTransform>(Tr)) &&
+    assert((isa<SILFunctionTransform>(Tr) || isa<SILModuleTransform>(Tr) ||
+            isa<SILClosureGroupTransform>(Tr)) &&
            "Unexpected pass kind!");
     (void)Tr;
 
@@ -1157,8 +1179,16 @@ void SILPassManager::execute() {
 
     runFunctionPasses(FirstFuncTrans, Idx);
 
-    while (Idx < NumTransforms && isa<SILModuleTransform>(Transformations[Idx])
-           && continueTransforming()) {
+    unsigned FirstGroupTrans = Idx;
+    while (Idx < NumTransforms &&
+           isa<SILClosureGroupTransform>(Transformations[Idx]))
+      ++Idx;
+
+    runClosureGroupPasses(FirstGroupTrans, Idx);
+
+    while (Idx < NumTransforms &&
+           isa<SILModuleTransform>(Transformations[Idx]) &&
+           continueTransforming()) {
       runModulePass(Idx);
 
       ++Idx;
@@ -1239,10 +1269,308 @@ SILPassManager::~SILPassManager() {
   }
 }
 
+/// The state of one closure group block, driven by runClosureGroupPasses:
+/// - The constructor records each function's group from the schedule.
+/// - startGroup(i) makes group i current; its members are the schedule's.
+/// - Before each pass, currentDefinitions() lists the members to run on.
+///   runClosureGroupPass brackets the run with startPass and finishPass, and
+///   getCurrentClosureGroup returns the list startPass took.
+/// - During a pass, notifyOfNewFunction joins a function the pass creates or
+///   looks up that has no group yet, and notifyWillDeleteFunction makes a
+///   deleted function leave.
+/// - finishGroup() makes joined functions that are still declarations leave,
+///   so a later group can take them.
+struct SILPassManager::ClosureGroupBlock {
+  explicit ClosureGroupBlock(llvm::ArrayRef<ClosureGroupSchedule::Group> groups)
+      : groups(groups) {
+    for (unsigned index = 0, e = groups.size(); index != e; ++index)
+      for (SILFunction *F : groups[index])
+        groupOf[F] = index;
+  }
+
+  void startGroup(unsigned index) {
+    current = index;
+    members.clear();
+    members.insert(groups[index].begin(), groups[index].end());
+  }
+
+  /// The current group's definitions: the schedule's members still in it,
+  /// then the functions that joined, in joining order.
+  llvm::SmallVector<SILFunction *, 8> currentDefinitions() const {
+    llvm::SmallVector<SILFunction *, 8> definitions;
+    for (SILFunction *F : members)
+      if (isMember(F) && F->isDefinition())
+        definitions.push_back(F);
+    return definitions;
+  }
+
+  void startPass(llvm::ArrayRef<SILFunction *> definitions) {
+    passMembers = definitions;
+  }
+  void finishPass() { passMembers.reset(); }
+  bool isPassRunning() const { return passMembers.has_value(); }
+  llvm::ArrayRef<SILFunction *> getPassMembers() const { return *passMembers; }
+
+  /// True if \p F is in the current group.
+  bool isMember(SILFunction *F) const {
+    auto it = groupOf.find(F);
+    return it != groupOf.end() && it->second == current;
+  }
+
+  /// True if \p F is in any group.
+  bool hasGroup(SILFunction *F) const { return groupOf.count(F); }
+
+  /// Adds \p F to the current group, unless it already has a group.
+  void join(SILFunction *F) {
+    if (groupOf.try_emplace(F, current).second)
+      members.insert(F);
+  }
+
+  /// Removes a deleted \p F from its group, so a zombie that
+  /// SILFunction::create resurrects joins a group as new.
+  void leave(SILFunction *F) { groupOf.erase(F); }
+
+  void finishGroup() {
+    for (SILFunction *F :
+         members.getArrayRef().drop_front(groups[current].size()))
+      if (!F->isDefinition())
+        groupOf.erase(F);
+  }
+
+private:
+  /// The schedule's groups, which outlive the block.
+  llvm::ArrayRef<ClosureGroupSchedule::Group> groups;
+
+  /// The schedule index of the current group.
+  unsigned current = 0;
+
+  /// The group, as a schedule index, of each live function that belongs to
+  /// one: the group the schedule gave it, or the group that was current when
+  /// it joined.
+  llvm::DenseMap<SILFunction *, unsigned> groupOf;
+
+  /// The current group's members: the schedule's, then each function that
+  /// joined, in joining order. Deleted functions stay; isMember filters them.
+  /// A set, so a function that SILFunction::create resurrects under the same
+  /// pointer appears once.
+  llvm::SmallSetVector<SILFunction *, 16> members;
+
+  /// Set while a closure group transform runs: what getGroup() returns.
+  std::optional<llvm::ArrayRef<SILFunction *>> passMembers;
+};
+
 void SILPassManager::notifyOfNewFunction(SILFunction *F, SILTransform *T) {
   if (doPrintAfter(T, F, /*PassChangedSIL*/ true)) {
     dumpPassInfo("*** New SIL function in ", T, F);
     F->dump(getOptions().EmitVerboseSIL);
+  }
+  if (!closureGroupBlock)
+    return;
+
+  // SILOptFunctionBuilder reports each function it creates or looks up.
+  // A function without a group joins the group the block is running, even a
+  // declaration: a created function has no body when it is reported, and the
+  // transform may define a declaration it looks up.
+  // If it is still body-less at the group's end, it is removed. A looked-up
+  // definition keeps its group.
+  closureGroupBlock->join(F);
+}
+
+//===----------------------------------------------------------------------===//
+//                          Closure group scheduling
+//===----------------------------------------------------------------------===//
+
+bool SILPassManager::isRunningClosureGroupTransform() const {
+  return closureGroupBlock && closureGroupBlock->isPassRunning();
+}
+
+ArrayRef<SILFunction *> SILPassManager::getCurrentClosureGroup() const {
+  ASSERT(isRunningClosureGroupTransform() &&
+         "no closure group transform is running");
+  return closureGroupBlock->getPassMembers();
+}
+
+bool SILPassManager::isInCurrentClosureGroup(SILFunction *F) const {
+  return !isRunningClosureGroupTransform() || closureGroupBlock->isMember(F);
+}
+
+void SILPassManager::checkClosureGroupWrite(SILFunction *F) const {
+  ASSERT(isInCurrentClosureGroup(F) &&
+         "closure group transform changed a function outside its group");
+}
+
+void SILPassManager::noteClosureGroupFunctionDeleted(SILFunction *F) {
+  ASSERT(isInCurrentClosureGroup(F) &&
+         "closure group transform deleted a function outside its group");
+  closureGroupBlock->leave(F);
+}
+
+void SILPassManager::runClosureGroupPasses(unsigned FromTransIdx,
+                                           unsigned ToTransIdx) {
+  if (ToTransIdx <= FromTransIdx || !continueTransforming())
+    return;
+
+  assert(!closureGroupBlock && "closure group blocks don't nest");
+  ClosureGroupSchedule schedule(*Mod, getAnalysis<BasicCalleeAnalysis>());
+  ArrayRef<ClosureGroupSchedule::Group> groups = schedule.getGroups();
+  ClosureGroupBlock block(groups);
+  closureGroupBlock = &block;
+  SWIFT_DEFER { closureGroupBlock = nullptr; };
+  if (SILPrintPassName)
+    llvm::dbgs() << "Start closure group block at stage: " << StageName << " ("
+                 << groups.size() << " groups)\n";
+
+  // Whether \p verifyOption (verifyBefore or verifyAfter) names a group pass
+  // in the block.
+  auto anyGroupPassMatches = [&](bool (*verifyOption)(SILTransform *)) {
+    return llvm::any_of(llvm::ArrayRef(Transformations)
+                            .slice(FromTransIdx, ToTransIdx - FromTransIdx),
+                        verifyOption);
+  };
+
+  // A group pass verifies only its members, so verify the module once before
+  // the block for verify-before options, as a module pass would.
+  if (anyGroupPassMatches(verifyBefore))
+    verifyModule();
+
+  for (unsigned index = 0, e = groups.size(); index != e; ++index) {
+    block.startGroup(index);
+    for (unsigned i = FromTransIdx; i < ToTransIdx && continueTransforming();
+         ++i)
+      runClosureGroupPass(i, block.currentDefinitions());
+    block.finishGroup();
+  }
+
+  // Per-member verification never checks module-level state, so verify the
+  // module after the block, as runModulePass does after a module pass.
+  if ((getOptions().VerifyAll || anyGroupPassMatches(verifyAfter)) &&
+      continueTransforming())
+    verifyModule();
+
+  // A definition that appeared during the block without notifyOfNewFunction
+  // belongs to no group and missed the block's passes. A body deserialized as
+  // canonical SIL needs no mandatory passes.
+  if (continueTransforming()) {
+    for (SILFunction &F : *Mod)
+      ASSERT((!F.isDefinition() || F.wasDeserializedCanonical() ||
+              block.hasGroup(&F)) &&
+             "a definition appeared during a closure group block outside any "
+             "group");
+  }
+}
+
+void SILPassManager::runClosureGroupPass(unsigned TransIdx,
+                                         ArrayRef<SILFunction *> Members) {
+  auto *T = cast<SILClosureGroupTransform>(Transformations[TransIdx]);
+  SWIFT_DEFER { ++NumPassesRun; };
+  if (isDisabled(T))
+    return;
+
+  const SILOptions &Options = getOptions();
+  SILFunction *firstMember = Members.empty() ? nullptr : Members.front();
+
+  T->injectPassManager(this);
+
+  PrettyStackTraceSILClosureGroupTransform X(T, NumPassesRun, firstMember);
+  DebugPrintEnabler DebugPrint(NumPassesRun);
+  updateSILModuleStatsBeforeTransform(*Mod, T, *this, NumPassesRun);
+
+  // Mirrors runPassOnFunction: -sil-verify-all verifies per-function analyses;
+  // the explicit verify options verify all analyses.
+  auto verify = [&](ArrayRef<SILFunction *> Functions, bool VerifyAll) {
+    for (SILFunction *F : Functions) {
+      if (!F->isDefinition())
+        continue;
+      F->verify(getAnalysis<BasicCalleeAnalysis>()->getCalleeCache(),
+                getAnalysis<DominanceAnalysis>()->get(F));
+      if (VerifyAll)
+        verifyAnalyses(F);
+      runSwiftFunctionVerification(F);
+    }
+    if (!VerifyAll)
+      verifyAnalyses();
+  };
+
+  CurrentPassHasInvalidated = false;
+  numSubpassesRun = 0;
+
+  if (SILPrintPassName)
+    dumpPassInfo("Run closure group pass", TransIdx, firstMember);
+
+  // Mirrors runPassOnFunction's per-function options for each member.
+  bool forceVerify =
+      SILForceVerifyAll || passMatches(T, SILForceVerifyAroundPass);
+  for (SILFunction *F : Members) {
+    if (doPrintBefore(T, F)) {
+      dumpPassInfo("*** SIL function before ", TransIdx);
+      F->dump(Options.EmitVerboseSIL);
+    }
+    if (breakBeforeRunning(F->getName(), T))
+      LLVM_BUILTIN_DEBUGTRAP;
+    if (forceVerify)
+      forcePrecomputeAnalyses(F);
+  }
+
+  if (verifyBefore(T))
+    verify(Members, /*VerifyAll=*/false);
+
+  if (SILPrintClosureGroups) {
+    llvm::dbgs() << "Closure group for " << T->getTag() << ":";
+    for (SILFunction *F : Members)
+      llvm::dbgs() << " " << F->getName();
+    llvm::dbgs() << "\n";
+  }
+
+  closureGroupBlock->startPass(Members);
+  std::chrono::nanoseconds duration = runTransformBody(T, [&] { T->run(); });
+  closureGroupBlock->finishPass();
+
+  // Surviving members, then functions the pass created.
+  auto after = closureGroupBlock->currentDefinitions();
+  SILFunction *firstAfter = after.empty() ? nullptr : after.front();
+
+  if (SILPrintPassTime) {
+    double milliSecs = (double)duration.count() / 1000000.;
+    if (milliSecs > (double)SILMinPassTime) {
+      llvm::dbgs() << llvm::format("%9.3f", milliSecs) << " ms: " << T->getTag()
+                   << " #" << NumPassesRun;
+      if (firstAfter)
+        llvm::dbgs() << " @" << firstAfter->getName();
+      llvm::dbgs() << "\n";
+    }
+  }
+  if (!SILPrintPassMD5.empty() && CurrentPassHasInvalidated) {
+    MD5Stream md5Stream;
+    for (SILFunction *F : after)
+      F->print(md5Stream);
+    llvm::MD5::MD5Result result;
+    md5Stream.final(result);
+
+    llvm::raw_ostream &os = getSILPrintPassMD5Stream();
+    dumpPassInfo("MD5", TransIdx, firstAfter, /*skipNewline=*/true, os);
+    os << " = " << result.digest() << "\n";
+  }
+
+  for (SILFunction *F : after) {
+    if (forceVerify)
+      verifyAnalyses(F);
+    if (doPrintAfter(T, F, CurrentPassHasInvalidated)) {
+      dumpPassInfo("*** SIL function after ", TransIdx);
+      F->dump(Options.EmitVerboseSIL);
+    }
+  }
+
+  updateSILModuleStatsAfterTransform(*Mod, T, *this, NumPassesRun,
+                                     duration.count());
+
+  bool changed = CurrentPassHasInvalidated || SILVerifyWithoutInvalidation;
+  if (Options.VerifyAll && changed) {
+    verify(after, /*VerifyAll=*/true);
+  } else if (Options.VerifyOwnershipAll && changed) {
+    for (SILFunction *F : after)
+      F->verifyOwnership();
+  } else if (verifyAfter(T)) {
+    verify(after, /*VerifyAll=*/false);
   }
 }
 
@@ -1573,16 +1901,17 @@ void SILPassManager::viewCallGraph() {
 //                           SwiftPassInvocation
 //===----------------------------------------------------------------------===//
 
-void SwiftPassInvocation::startModulePassRun(SILModuleTransform *transform) {
+void SwiftPassInvocation::startMultiFunctionPassRun(SILTransform *transform) {
   ASSERT(!this->function && !this->transform && "a pass is already running");
   this->transform = transform;
 }
 
-void SwiftPassInvocation::finishedModulePassRun() {
-  ASSERT(!function && transform && "not running a module pass");
+void SwiftPassInvocation::finishedMultiFunctionPassRun() {
+  ASSERT(!function && transform && "not running a multi-function pass");
   if (changeNotifications != 0) {
-    ASSERT((changeNotifications & ~SILContext::NotificationKind::FunctionTables) == 0
-           && "a module pass must not change the SIL of a function");
+    ASSERT((changeNotifications &
+            ~SILContext::NotificationKind::FunctionTables) == 0 &&
+           "a multi-function pass must not change the SIL of a function");
     passManager->invalidateFunctionTables();
     changeNotifications = SILContext::NotificationKind::Nothing;
   }
