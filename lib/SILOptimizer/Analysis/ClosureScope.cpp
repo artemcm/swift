@@ -10,7 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 ///
-/// Implementation of ClosureScopeAnalysis.
+/// Implementation of ClosureGraph and ClosureFunctionOrder.
 ///
 /// The "scope" of a closure is the function body that refers to the closure.
 ///
@@ -110,11 +110,15 @@ public:
   bool visitClosures(SILFunction *scopeFunc,
                      std::function<bool(SILFunction *closure)> visitor);
 
-  /// Called when a \p function is removed from this module.
-  void erase(SILFunction *function);
+  /// Return true if this function is a reachable closure.
+  bool isReachableClosure(SILFunction *function) {
+    // This visitor returns false immediately on the first scope.
+    return !visitClosureScopes(function, [](SILFunction *) { return false; });
+  }
 
-  /// Record all closure scopes in this module.
-  void compute(SILModule *M);
+  /// Records the scope edges among \p functions, which must be closed under
+  /// scope edges to definitions.
+  void compute(ArrayRef<SILFunction *> functions);
 
 protected:
   ClosureGraph(const ClosureGraph &) = delete;
@@ -140,7 +144,8 @@ protected:
     return getEdgeRange(closure, closureToFunctions);
   }
 
-  void recordScope(ApplySite apply);
+  void recordScope(ApplySite apply,
+                   const llvm::SmallPtrSetImpl<SILFunction *> &within);
 
   void finalize();
 
@@ -165,22 +170,10 @@ bool ClosureGraph::visitClosures(
   return true;
 }
 
-void ClosureGraph::erase(SILFunction *function) {
-  struct RefersToFunction {
-    SILFunction *function;
-
-    bool operator()(const Edge &edge) {
-      return edge.from == function || edge.to == function;
-    }
-  };
-  llvm::erase_if(functionToClosures, RefersToFunction{function});
-  llvm::erase_if(closureToFunctions, RefersToFunction{function});
-}
-
 // Handle both partial_apply and directly applied closures of the form:
 //   %f = function_ref @... : $(...inout_aliasable...) -> ...
 //   apply %f(...)
-void ClosureGraph::recordScope(ApplySite apply) {
+SILFunction *getScopedClosure(ApplySite apply) {
   // Only track scopes of non-escaping closures.
   auto closureTy = apply.getCallee()->getType().castTo<SILFunctionType>();
 
@@ -188,12 +181,27 @@ void ClosureGraph::recordScope(ApplySite apply) {
   // because local functions can be marked dynamic.
   if (!isNonEscapingClosure(closureTy)
       || apply.isCalleeDynamicallyReplaceable()) {
-    return;
+    return nullptr;
   }
   auto closureFunc = apply.getCalleeFunction();
   assert(closureFunc && "non-escaping closure needs a direct partial_apply.");
+  return closureFunc;
+}
+
+void ClosureGraph::recordScope(
+    ApplySite apply, const llvm::SmallPtrSetImpl<SILFunction *> &within) {
+  SILFunction *closureFunc = getScopedClosure(apply);
+  if (!closureFunc)
+    return;
 
   auto scopeFunc = apply.getFunction();
+  if (!within.count(closureFunc)) {
+    // Dropping an edge to a definition would lose its parent's dynamic
+    // captures.
+    ASSERT(!closureFunc->isDefinition() &&
+           "function set is not closed under scope edges");
+    return;
+  }
   // Passes may assume that a deserialized function can only refer to
   // deserialized closures. For example, AccessEnforcementSelection skips
   // deserialized functions but assumes all a closure's parent scope have been
@@ -249,72 +257,34 @@ void ClosureGraph::dump() {
 }
 #endif
 
-void ClosureGraph::compute(SILModule *M) {
-  for (auto &F : *M) {
-    for (auto &BB : F) {
-      for (auto &I : BB) {
-        if (auto apply = ApplySite::isa(&I)) {
-          recordScope(apply);
-        }
-      }
-    }
-  }
+void ClosureGraph::compute(ArrayRef<SILFunction *> functions) {
+  llvm::SmallPtrSet<SILFunction *, 16> within(functions.begin(),
+                                              functions.end());
+  for (SILFunction *F : functions)
+    for (auto &BB : *F)
+      for (auto &I : BB)
+        if (auto apply = ApplySite::isa(&I))
+          recordScope(apply, within);
   finalize();
-}
-
-ClosureScopeAnalysis::ClosureScopeAnalysis(SILModule *M)
-    : SILAnalysis(SILAnalysisKind::ClosureScope), M(M), scopeGraph(nullptr) {}
-
-ClosureScopeAnalysis::~ClosureScopeAnalysis() = default;
-
-bool ClosureScopeAnalysis::visitClosureScopes(
-    SILFunction *closure, std::function<bool(SILFunction *scopeFunc)> visitor) {
-  return getOrComputeGraph()->visitClosureScopes(closure, visitor);
-}
-
-bool ClosureScopeAnalysis::visitClosures(
-    SILFunction *scopeFunc, std::function<bool(SILFunction *closure)> visitor) {
-  return getOrComputeGraph()->visitClosures(scopeFunc, visitor);
-}
-
-void ClosureScopeAnalysis::invalidate() {
-  scopeGraph.reset();
-}
-
-void ClosureScopeAnalysis::notifyWillDeleteFunction(SILFunction *F) {
-  if (scopeGraph)
-    scopeGraph->erase(F);
-}
-
-ClosureGraph *ClosureScopeAnalysis::getOrComputeGraph() {
-  if (!scopeGraph) {
-    scopeGraph = std::make_unique<ClosureGraph>();
-    scopeGraph->compute(M);
-  }
-  return scopeGraph.get();
-}
-
-SILAnalysis *createClosureScopeAnalysis(SILModule *M) {
-  return new ClosureScopeAnalysis(M);
 }
 
 class ClosureFunctionOrder::ClosureDFS {
   ClosureFunctionOrder &functionOrder;
+  ClosureGraph &graph;
 
-  llvm::SmallBitVector visited;
-  llvm::SmallBitVector finished;
+  // Sets, not bit vectors over function indices, so the cost scales with the
+  // function list rather than the module.
+  llvm::SmallPtrSet<SILFunction *, 16> visited;
+  llvm::SmallPtrSet<SILFunction *, 16> finished;
 
   SmallVector<SILFunction *, 4> postorderClosures;
 
 public:
-  ClosureDFS(ClosureFunctionOrder &functionOrder)
-    : functionOrder(functionOrder),
-      visited(functionOrder.csa->getModule()->getNumFunctionIndices()),
-      finished(functionOrder.csa->getModule()->getNumFunctionIndices())
-  {}
+  ClosureDFS(ClosureFunctionOrder &functionOrder, ClosureGraph &graph)
+      : functionOrder(functionOrder), graph(graph) {}
 
   bool isVisited(SILFunction *function) const {
-    return visited.test(function->getIndex());
+    return visited.contains(function);
   }
 
   void performDFS(SILFunction *root) {
@@ -330,42 +300,36 @@ public:
 
 protected:
   void recursiveDFS(SILFunction *function) {
-    unsigned index = function->getIndex();
-    if (visited.test(index)) {
-      if (!finished.test(index)) {
+    if (!visited.insert(function).second) {
+      if (!finished.contains(function)) {
         // Cycle in the closure graph.
         functionOrder.closureCycleHeads.insert(function);
       }
       return;
     }
-    visited.set(index);
 
-    functionOrder.csa->visitClosures(function, [this](SILFunction *closure) {
+    graph.visitClosures(function, [this](SILFunction *closure) {
       recursiveDFS(closure);
       return true;
     });
-    finished.set(index);
+    finished.insert(function);
     postorderClosures.push_back(function);
   };
 };
 
-void ClosureFunctionOrder::compute() {
-  auto *module = csa->getModule();
+ClosureFunctionOrder::ClosureFunctionOrder(ArrayRef<SILFunction *> functions) {
+  ClosureGraph graph;
+  graph.compute(functions);
+  topDownFunctions.reserve(functions.size());
 
-  assert(topDownFunctions.empty() && closureCycleHeads.empty() &&
-         "attempting to recompute");
-  topDownFunctions.reserve(module->getNumFunctionIndices());
-
-  ClosureDFS dfs(*this);
+  ClosureDFS dfs(*this, graph);
   SmallVector<SILFunction *, 4> closureWorklist;
 
-  unsigned numFunctions = 0;
-  for (auto &function : module->getFunctionList()) {
-    ++numFunctions;
-    if (dfs.isVisited(&function))
+  for (SILFunction *function : functions) {
+    if (dfs.isVisited(function))
       continue;
 
-    if (csa->isReachableClosure(&function)) {
+    if (graph.isReachableClosure(function)) {
       // This is a closure, reachable from some other function. Reaching this
       // point is rare, because closures typically follow their parent in the
       // function list.
@@ -373,10 +337,10 @@ void ClosureFunctionOrder::compute() {
       // A closure at the head of a cycle might only be reachable from other
       // closures. So use a worklist to visit them once more as DFS roots after
       // finishing DFS from all acyclic functions.
-      closureWorklist.push_back(&function);
+      closureWorklist.push_back(function);
       continue;
     }
-    dfs.performDFS(&function);
+    dfs.performDFS(function);
   }
   // Revisit closures in forward order. DFS will immediately return except in
   // the unlikely event that this is an orphaned closure.
@@ -384,7 +348,7 @@ void ClosureFunctionOrder::compute() {
     dfs.performDFS(closure);
   }
   LLVM_DEBUG(dump());
-  assert(numFunctions == topDownFunctions.size() && "DFS missed a function");
+  assert(functions.size() == topDownFunctions.size() && "DFS missed a function");
 }
 
 #ifndef NDEBUG

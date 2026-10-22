@@ -13,37 +13,30 @@
 /// Map each non-escaping closure SILFunction to a set of SILFunctions
 /// corresponding to its parent scopes.
 ///
-/// This is a lightweight analysis specific to non-escaping closures. Unlike
-/// CallerAnalysis, this does not reflect the call tree. A closure's scope is a
+/// The closure graph is specific to non-escaping closures. Unlike
+/// CallerAnalysis, it does not reflect the call tree. A closure's scope is a
 /// function that directly references the closure. It may directly invoke the
 /// closure (as a caller) or may simply pass it off as an argument.
 ///
-/// Like CallerAnalysis, ClosureScope is top-down, but unlike CallerAnalysis, it
-/// does not require complex invalidation and recomputation. The underlying
-/// assumption is that no transformation will add new references to existing
-/// non-escaping closures, with some exceptions like SILCloner.
-///
-/// TODO: When this analysis is used across passes, fix SILCloner to update or
-/// invalidate. In SILVerifier, if this analysis is marked valid, check that no
-/// new unseen closure references have been added.
+/// ClosureFunctionOrder builds its own graph when constructed, so it needs no
+/// invalidation.
 ///
 /// We do not currently mark SILFunctions as non-escaping. However, only
 /// closures that are not assigned to an lvalue and are never passed as escaping
 /// closures can use the @inout_aliasable convention. For now, we simply limit
-/// this analysis to such closures. This covers the set of closures that
+/// the graph to such closures. This covers the set of closures that
 /// SILOptimizer must view as non-escaping, which must in turn be a subset of
 /// Sema's non-escaping closures.
 ///
 /// NOTE: a non-escaping function can be passed as an escaping function via
 /// withoutActuallyEscaping. However, using that API to introduce recursion is
 /// disallowed according to exclusivity semantics. That is, non-escaping
-/// function types cannot be reentrant (SE-0176). In this analysis, we assert
-/// that closure scopes are acyclic. Although the language does not currently
-/// enforce non-reentrant, non-escaping closures, the scope graph cannot be
-/// cyclic because there's no way to name a non-escaping closure. So, in the
-/// long term the acyclic assumption made by this analysis is protected by
-/// non-reentrant semantics, and in the short-term it's safe because of the
-/// language's practical limitations.
+/// function types cannot be reentrant (SE-0176). We assume that closure scopes
+/// are acyclic. Although the language does not currently enforce non-reentrant,
+/// non-escaping closures, the scope graph cannot be cyclic because there's no
+/// way to name a non-escaping closure. So, in the long term the acyclic
+/// assumption is protected by non-reentrant semantics, and in the short-term
+/// it's safe because of the language's practical limitations.
 ///
 //===----------------------------------------------------------------------===//
 
@@ -53,7 +46,6 @@
 #include "swift/Basic/Assertions.h"
 #include "swift/SIL/SILFunction.h"
 #include "swift/SIL/SILModule.h"
-#include "swift/SILOptimizer/Analysis/Analysis.h"
 
 namespace swift {
 
@@ -79,80 +71,17 @@ inline bool isNonEscapingClosure(CanSILFunctionType funcTy) {
   return llvm::any_of(funcTy->getParameters(), isInoutAliasable);
 }
 
-class ClosureGraph;
+class ApplySite;
 
-class ClosureScopeAnalysis : public SILAnalysis {
-  friend class ClosureGraph;
+/// Returns the non-escaping closure that \p apply applies or partially applies
+/// through an @inout_aliasable parameter, or null. Each such apply is a closure
+/// graph edge from the apply's function (the closure's scope) to the closure.
+SILFunction *getScopedClosure(ApplySite apply);
 
-  SILModule *M;
-
-  // The analysis data. nullptr if it has never been computed.
-  std::unique_ptr<ClosureGraph> scopeGraph;
-
-public:
-  ClosureScopeAnalysis(SILModule *M);
-  ~ClosureScopeAnalysis();
-
-  static bool classof(const SILAnalysis *S) {
-    return S->getKind() == SILAnalysisKind::ClosureScope;
-  }
-
-  SILModule *getModule() const { return M; }
-
-  /// Visit the parent scopes of \p closure if it has any. If \p visitor returns
-  /// false, exit early and return false. Otherwise return true.
-  bool visitClosureScopes(SILFunction *closure,
-                          std::function<bool(SILFunction *scopeFunc)> visitor);
-
-  /// Visit the closures directly referenced by \p scopeFunc.
-  bool visitClosures(SILFunction *scopeFunc,
-                     std::function<bool(SILFunction *closure)> visitor);
-
-  /// Return true if this function is a reachable closure.
-  bool isReachableClosure(SILFunction *function) {
-    // This visitor returns false immediately on the first scope.
-    return !visitClosureScopes(function, [](SILFunction *) { return false; });
-  }
-
-  /// Invalidate all information in this analysis.
-  virtual void invalidate() override;
-
-  /// Invalidate all of the information for a specific function.
-  virtual void invalidate(SILFunction *F, InvalidationKind K) override {
-    // No invalidation needed because the analysis does not cache anything
-    // per call-site in functions, and we assume that references to closures
-    // cannot be added to functions, aside from cloning.
-  }
-
-  /// Notify the analysis about a newly created function.
-  virtual void notifyAddedOrModifiedFunction(SILFunction *F) override {
-    // Nothing to be done because the analysis does not cache anything
-    // per call-site in functions.
-  }
-
-  /// Notify the analysis about a function which will be deleted from the
-  /// module.
-  virtual void notifyWillDeleteFunction(SILFunction *F) override;
-
-  /// Notify the analysis about changed witness or vtables.
-  virtual void invalidateFunctionTables() override {
-    // witness tables have no effect on closure scopes.
-  }
-
-protected:
-  ClosureScopeAnalysis(const ClosureScopeAnalysis &) = delete;
-  ClosureScopeAnalysis &operator=(const ClosureScopeAnalysis &) = delete;
-
-  ClosureGraph *getOrComputeGraph();
-};
-
-// ClosureScopeAnalysis utility for visiting functions top-down or bottom-up in
-// closure scope order.
+// Orders functions top-down in closure scope order.
 class ClosureFunctionOrder {
   class ClosureDFS;
   friend class ClosureDFS;
-
-  ClosureScopeAnalysis *csa;
 
   // All functions in this module in top-down order (RPO) following the closure
   // scope graph. Functions that define a closure occur before the closure.
@@ -165,13 +94,11 @@ class ClosureFunctionOrder {
   SmallPtrSet<SILFunction *, 4> closureCycleHeads;
 
 public:
-  ClosureFunctionOrder(ClosureScopeAnalysis *csa) : csa(csa) {}
-
-  void compute();
+  /// Orders \p functions, which must be in module function-list order and
+  /// closed under scope edges to definitions.
+  explicit ClosureFunctionOrder(ArrayRef<SILFunction *> functions);
 
   ArrayRef<SILFunction *> getTopDownFunctions() const {
-    assert(!topDownFunctions.empty()
-           || csa->getModule()->getFunctions().empty());
     return topDownFunctions;
   }
 
