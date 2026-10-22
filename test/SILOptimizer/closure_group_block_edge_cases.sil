@@ -1,0 +1,51 @@
+// RUN: %target-sil-opt -access-enforcement-selection -generic-specializer -diagnose-static-exclusivity -sil-print-closure-groups %s -o /dev/null 2>&1 | %FileCheck %s
+
+// Edge cases of closure group blocks. The function pass between the two
+// closure group passes puts all three passes in one block.
+
+sil_stage canonical
+
+import Builtin
+
+//===----------------------------------------------------------------------===//
+// A dynamic capture into a closure that is only a declaration. Groups hold
+// only definitions, so the capture's callee is in no group.
+//===----------------------------------------------------------------------===//
+
+// CHECK-LABEL: Closure group for access-enforcement-selection: captureIntoDeclaration{{$}}
+
+sil @closureDeclaration : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+
+sil @captureIntoDeclaration : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> () {
+bb0(%0 : ${ var Builtin.Int64 }):
+  %1 = project_box %0 : ${ var Builtin.Int64 }, 0
+  %2 = function_ref @closureDeclaration : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+  %3 = apply %2(%1) : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+  %4 = tuple ()
+  return %4 : $()
+}
+
+//===----------------------------------------------------------------------===//
+// A function pass in the block creates a specialization. It joins the group
+// being processed, so the later closure group pass runs on it.
+//===----------------------------------------------------------------------===//
+
+// CHECK-LABEL: Closure group for access-enforcement-selection: caller{{$}}
+// CHECK-NEXT: Closure group for diagnose-static-exclusivity: $s7genericBi64__Tg5 caller{{$}}
+
+sil @generic : $@convention(thin) <T> (@in_guaranteed T) -> () {
+bb0(%0 : $*T):
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @caller : $@convention(thin) (Builtin.Int64) -> () {
+bb0(%0 : $Builtin.Int64):
+  %s = alloc_stack $Builtin.Int64
+  store %0 to %s : $*Builtin.Int64
+  %f = function_ref @generic : $@convention(thin) <T> (@in_guaranteed T) -> ()
+  %a = apply %f<Builtin.Int64>(%s) : $@convention(thin) <T> (@in_guaranteed T) -> ()
+  dealloc_stack %s : $*Builtin.Int64
+  %r = tuple ()
+  return %r : $()
+}
