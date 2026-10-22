@@ -29,6 +29,7 @@ namespace swift {
     enum class TransformKind {
       Function,
       Module,
+      ClosureGroup,
     };
 
     /// Stores the kind of derived class.
@@ -146,15 +147,21 @@ namespace swift {
   class SILModuleTransform : public SILTransform {
     SILModule *M;
 
+  protected:
+    explicit SILModuleTransform(TransformKind K) : SILTransform(K), M(0) {}
+
   public:
     /// C'tor.
-    SILModuleTransform() : SILTransform(TransformKind::Module), M(0) {}
+    SILModuleTransform() : SILModuleTransform(TransformKind::Module) {}
 
     /// The entry point to the transformation.
     virtual void run() = 0;
 
+    /// Closure group transforms are module transforms too
+    /// (SILClosureGroupTransform).
     static bool classof(const SILTransform *S) {
-      return S->getKind() == TransformKind::Module;
+      return S->getKind() == TransformKind::Module ||
+             S->getKind() == TransformKind::ClosureGroup;
     }
 
     void injectModule(SILModule *Mod) { M = Mod; }
@@ -180,6 +187,36 @@ namespace swift {
     void notifyWillDeleteFunction(SILFunction *F) {
       PM->notifyWillDeleteFunction(F);
     }
+  };
+
+  /// A transformation that runs once per closure group: an SCC of the call
+  /// graph extended with the edges between a function and the closures it
+  /// applies or partially applies through an @inout_aliasable parameter
+  /// (ClosureGroupSchedule.h). Groups run callees first. When the transform
+  /// runs, every member of the group has run every earlier pass of its block
+  /// and none has started a later one.
+  ///
+  /// A closure group transform may only look at, change, create, or delete
+  /// functions in its group. Functions it creates through
+  /// SILOptFunctionBuilder join the group.
+  class SILClosureGroupTransform : public SILModuleTransform {
+  public:
+    SILClosureGroupTransform()
+        : SILModuleTransform(TransformKind::ClosureGroup) {}
+
+    static bool classof(const SILTransform *S) {
+      return S->getKind() == TransformKind::ClosureGroup;
+    }
+
+    /// The group's definitions when the transform started, in module
+    /// function-list order.
+    llvm::ArrayRef<SILFunction *> getGroup() {
+      return PM->getCurrentClosureGroup();
+    }
+
+    /// True if \p F is in the group, including functions created since
+    /// the transform started.
+    bool isInGroup(SILFunction *F) { return PM->isInCurrentClosureGroup(F); }
   };
 } // end namespace swift
 

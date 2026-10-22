@@ -25,6 +25,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include <vector>
 #include <bitset>
+#include <optional>
 
 #ifndef SWIFT_SILOPTIMIZER_PASSMANAGER_PASSMANAGER_H
 #define SWIFT_SILOPTIMIZER_PASSMANAGER_PASSMANAGER_H
@@ -234,6 +235,14 @@ class SILPassManager {
 
   std::chrono::nanoseconds totalPassRuntime = std::chrono::nanoseconds(0);
 
+  /// The state of a running closure group block, or null outside one.
+  struct ClosureGroupBlock;
+  ClosureGroupBlock *closureGroupBlock = nullptr;
+
+  /// The group of the running closure group transform, in module function-list
+  /// order.
+  std::optional<llvm::ArrayRef<SILFunction *>> currentClosureGroup;
+
 public:
   /// C'tor. It creates and registers all analysis passes, which are defined
   /// in Analysis.def.
@@ -314,6 +323,9 @@ public:
   /// Broadcast the invalidation of the function to all analysis.
   void invalidateAnalysis(SILFunction *F,
                           SILAnalysis::InvalidationKind K) {
+    if (closureGroupBlock)
+      checkClosureGroupWrite(F);
+
     // Invalidate the analysis (unless they are locked)
     for (auto AP : Analyses)
       if (!AP->isLocked())
@@ -338,8 +350,22 @@ public:
     CompletedPassesMap.clear();
   }
 
+  /// The group of the running closure group transform, in module function-list
+  /// order.
+  llvm::ArrayRef<SILFunction *> getCurrentClosureGroup() const;
+
+  /// True if \p F is in the group of the running closure group transform.
+  bool isInCurrentClosureGroup(SILFunction *F) const;
+
+  /// True if a closure group transform is running and \p F is not in its
+  /// group. Checked in every build wherever a closure group transform
+  /// reads, changes, or deletes a function.
+  bool isOutsideCurrentClosureGroup(SILFunction *F) const;
+
   /// Iterate over all analysis and notify them of a deleted function.
   void notifyWillDeleteFunction(SILFunction *F) {
+    if (closureGroupBlock)
+      noteClosureGroupFunctionDeleted(F);
     // Invalidate the analysis (unless they are locked)
     for (auto AP : Analyses)
       if (!AP->isLocked())
@@ -426,11 +452,43 @@ private:
   /// the module.
   void runModulePass(unsigned TransIdx);
 
+  /// Run \p T, a module or closure group transform, and clean up after it:
+  /// invalidate analyses if it deleted instructions without saying so, and
+  /// flush deleted instructions. Returns the run time.
+  std::chrono::nanoseconds runModuleTransformBody(SILModuleTransform *T);
+
   /// Run the \p TransIdx'th pass on the function \p F.
   void runPassOnFunction(unsigned TransIdx, SILFunction *F);
 
   /// Run the passes in Transform from \p FromTransIdx to \p ToTransIdx.
   void runFunctionPasses(unsigned FromTransIdx, unsigned ToTransIdx);
+
+  /// Run the function passes from \p FromTransIdx to \p ToTransIdx on
+  /// \p Functions, which are in bottom-up order.
+  void runFunctionPassesOn(unsigned FromTransIdx, unsigned ToTransIdx,
+                           llvm::ArrayRef<SILFunction *> Functions);
+
+  /// Run a maximal sequence of function and closure group transforms. The span
+  /// from the first to the last closure group transform is scheduled as a
+  /// group block (runClosureGroupBlock); the function transforms before and
+  /// after it run as ordinary function-pass groups.
+  void runFunctionAndClosureGroupPasses(unsigned FromTransIdx,
+                                        unsigned ToTransIdx);
+
+  /// Run the transforms from \p FromTransIdx to \p ToTransIdx, which start
+  /// and end with a closure group transform, once per group.
+  void runClosureGroupBlock(unsigned FromTransIdx, unsigned ToTransIdx);
+
+  /// Run the \p TransIdx'th transform, a closure group transform, on the group
+  /// \p Members (in module function-list order).
+  void runClosureGroupPass(unsigned TransIdx,
+                           llvm::ArrayRef<SILFunction *> Members);
+
+  void noteClosureGroupFunctionDeleted(SILFunction *F);
+
+  /// Checked in every build: \p F, which the running closure group transform
+  /// changed, must be in its group.
+  void checkClosureGroupWrite(SILFunction *F) const;
 
   /// Helper function to check if the function pass should be run mandatorily
   /// All passes in mandatory pass pipeline and ownership model elimination are

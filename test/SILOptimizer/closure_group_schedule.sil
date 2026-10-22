@@ -1,0 +1,242 @@
+// RUN: %target-sil-opt -test-runner %s -o /dev/null 2>&1 | %FileCheck %s
+
+// REQUIRES: asserts
+
+// Closure components and closure groups (ClosureGroupSchedule.h). The closure
+// graph has an edge from a function to each closure it applies or partially
+// applies through an @inout_aliasable parameter. Groups are the SCCs of the
+// call graph extended with those edges in both directions, in schedule order
+// (callees first). Each member is printed with its closure component's
+// representative in brackets.
+
+sil_stage raw
+
+import Builtin
+
+// CHECK-LABEL: begin running test 1 of 1 on ia_parent: closure_group_schedule
+
+// A directly applied closure.
+// CHECK-NEXT: group 0
+// CHECK-NEXT:   [ia_callee] ia_callee
+// CHECK-NEXT:   [ia_callee] ia_parent
+
+// Nested closures, through partial_apply.
+// CHECK-NEXT: group 1
+// CHECK-NEXT:   [nested_inner] nested_inner
+// CHECK-NEXT:   [nested_inner] nested_mid
+// CHECK-NEXT:   [nested_inner] nested_outer
+
+// A closure shared by two roots joins them.
+// CHECK-NEXT: group 2
+// CHECK-NEXT:   [shared_closure] shared_closure
+// CHECK-NEXT:   [shared_closure] shared_root1
+// CHECK-NEXT:   [shared_closure] shared_root2
+
+// A box parameter is not an edge; the call puts the callee first.
+// CHECK-NEXT: group 3
+// CHECK-NEXT:   [box_callee] box_callee
+// CHECK-NEXT: group 4
+// CHECK-NEXT:   [box_parent] box_parent
+
+// Mutual recursion without closures: two components, one group.
+// CHECK-NEXT: group 5
+// CHECK-NEXT:   [mutual_2] mutual_2
+// CHECK-NEXT:   [mutual_1] mutual_1
+
+// A cycle between two components with no cycle between functions: one group.
+// CHECK-NEXT: group 6
+// CHECK-NEXT:   [compcyc_p2] compcyc_p2
+// CHECK-NEXT:   [compcyc_c1] compcyc_c1
+// CHECK-NEXT:   [compcyc_c1] compcyc_p1
+// CHECK-NEXT:   [compcyc_p2] compcyc_c2
+
+// Callees come before callers.
+// CHECK-NEXT: group 7
+// CHECK-NEXT:   [order_leaf] order_leaf
+// CHECK-NEXT: group 8
+// CHECK-NEXT:   [order_caller] order_caller
+// CHECK-NEXT: end running test 1 of 1 on ia_parent: closure_group_schedule
+
+//===----------------------------------------------------------------------===//
+// A directly applied closure with an @inout_aliasable parameter
+//===----------------------------------------------------------------------===//
+
+sil @ia_callee : $@convention(thin) (@inout_aliasable Builtin.Int64) -> () {
+bb0(%0 : $*Builtin.Int64):
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @ia_parent : $@convention(thin) () -> () {
+bb0:
+  specify_test "closure_group_schedule"
+  %s = alloc_stack $Builtin.Int64
+  %f = function_ref @ia_callee : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+  %a = apply %f(%s) : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+  dealloc_stack %s : $*Builtin.Int64
+  %r = tuple ()
+  return %r : $()
+}
+
+//===----------------------------------------------------------------------===//
+// Nested non-escaping closures
+//===----------------------------------------------------------------------===//
+
+sil @nested_inner : $@convention(thin) (@inout_aliasable Builtin.Int64) -> () {
+bb0(%0 : $*Builtin.Int64):
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @nested_mid : $@convention(thin) (@inout_aliasable Builtin.Int64) -> () {
+bb0(%0 : $*Builtin.Int64):
+  %f = function_ref @nested_inner : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+  %pa = partial_apply [callee_guaranteed] [on_stack] %f(%0) : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+  %c = apply %pa() : $@noescape @callee_guaranteed () -> ()
+  dealloc_stack %pa : $@noescape @callee_guaranteed () -> ()
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @nested_outer : $@convention(thin) () -> () {
+bb0:
+  %s = alloc_stack $Builtin.Int64
+  %f = function_ref @nested_mid : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+  %pa = partial_apply [callee_guaranteed] [on_stack] %f(%s) : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+  %c = apply %pa() : $@noescape @callee_guaranteed () -> ()
+  dealloc_stack %pa : $@noescape @callee_guaranteed () -> ()
+  dealloc_stack %s : $*Builtin.Int64
+  %r = tuple ()
+  return %r : $()
+}
+
+//===----------------------------------------------------------------------===//
+// A closure shared by two roots, as with a @backDeployed function's fallback
+//===----------------------------------------------------------------------===//
+
+sil @shared_closure : $@convention(thin) (@inout_aliasable Builtin.Int64) -> () {
+bb0(%0 : $*Builtin.Int64):
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @shared_root1 : $@convention(thin) () -> () {
+bb0:
+  %s = alloc_stack $Builtin.Int64
+  %f = function_ref @shared_closure : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+  %a = apply %f(%s) : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+  dealloc_stack %s : $*Builtin.Int64
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @shared_root2 : $@convention(thin) () -> () {
+bb0:
+  %s = alloc_stack $Builtin.Int64
+  %f = function_ref @shared_closure : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+  %a = apply %f(%s) : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+  dealloc_stack %s : $*Builtin.Int64
+  %r = tuple ()
+  return %r : $()
+}
+
+//===----------------------------------------------------------------------===//
+// A box parameter is not a closure graph edge; the call orders the groups
+//===----------------------------------------------------------------------===//
+
+sil @box_callee : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> () {
+bb0(%0 : ${ var Builtin.Int64 }):
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @box_parent : $@convention(thin) () -> () {
+bb0:
+  %b = alloc_box ${ var Builtin.Int64 }
+  %f = function_ref @box_callee : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  %a = apply %f(%b) : $@convention(thin) (@guaranteed { var Builtin.Int64 }) -> ()
+  strong_release %b : ${ var Builtin.Int64 }
+  %r = tuple ()
+  return %r : $()
+}
+
+//===----------------------------------------------------------------------===//
+// Mutual recursion without closures: two components, one group
+//===----------------------------------------------------------------------===//
+
+sil @mutual_1 : $@convention(thin) () -> () {
+bb0:
+  %f = function_ref @mutual_2 : $@convention(thin) () -> ()
+  %a = apply %f() : $@convention(thin) () -> ()
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @mutual_2 : $@convention(thin) () -> () {
+bb0:
+  %f = function_ref @mutual_1 : $@convention(thin) () -> ()
+  %a = apply %f() : $@convention(thin) () -> ()
+  %r = tuple ()
+  return %r : $()
+}
+
+//===----------------------------------------------------------------------===//
+// A cycle between two components with no cycle between functions: each
+// parent's closure calls the other parent.
+//===----------------------------------------------------------------------===//
+
+sil @compcyc_c1 : $@convention(thin) (@inout_aliasable Builtin.Int64) -> () {
+bb0(%0 : $*Builtin.Int64):
+  %f = function_ref @compcyc_p2 : $@convention(thin) () -> ()
+  %a = apply %f() : $@convention(thin) () -> ()
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @compcyc_p1 : $@convention(thin) () -> () {
+bb0:
+  %s = alloc_stack $Builtin.Int64
+  %f = function_ref @compcyc_c1 : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+  %pa = partial_apply [callee_guaranteed] [on_stack] %f(%s) : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+  dealloc_stack %pa : $@noescape @callee_guaranteed () -> ()
+  dealloc_stack %s : $*Builtin.Int64
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @compcyc_c2 : $@convention(thin) (@inout_aliasable Builtin.Int64) -> () {
+bb0(%0 : $*Builtin.Int64):
+  %f = function_ref @compcyc_p1 : $@convention(thin) () -> ()
+  %a = apply %f() : $@convention(thin) () -> ()
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @compcyc_p2 : $@convention(thin) () -> () {
+bb0:
+  %s = alloc_stack $Builtin.Int64
+  %f = function_ref @compcyc_c2 : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+  %pa = partial_apply [callee_guaranteed] [on_stack] %f(%s) : $@convention(thin) (@inout_aliasable Builtin.Int64) -> ()
+  dealloc_stack %pa : $@noescape @callee_guaranteed () -> ()
+  dealloc_stack %s : $*Builtin.Int64
+  %r = tuple ()
+  return %r : $()
+}
+
+//===----------------------------------------------------------------------===//
+// Callees come before callers
+//===----------------------------------------------------------------------===//
+
+sil @order_caller : $@convention(thin) () -> () {
+bb0:
+  %f = function_ref @order_leaf : $@convention(thin) () -> ()
+  %a = apply %f() : $@convention(thin) () -> ()
+  %r = tuple ()
+  return %r : $()
+}
+
+sil @order_leaf : $@convention(thin) () -> () {
+bb0:
+  %r = tuple ()
+  return %r : $()
+}
