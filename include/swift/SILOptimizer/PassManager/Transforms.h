@@ -29,6 +29,7 @@ namespace swift {
     enum class TransformKind {
       Function,
       Module,
+      ClosureGroup,
     };
 
     /// Stores the kind of derived class.
@@ -174,6 +175,48 @@ namespace swift {
     /// Invalidate the analysis data for witness- and vtables.
     void invalidateFunctionTables() {
       PM->invalidateFunctionTables();
+    }
+
+    /// Inform the pass manager that we are going to delete a function.
+    void notifyWillDeleteFunction(SILFunction *F) {
+      PM->notifyWillDeleteFunction(F);
+    }
+  };
+
+  /// A transform that runs once per closure group: an SCC of the call graph
+  /// extended with closure scope edges in both directions
+  /// (ClosureGroupSchedule.h). Groups run callees first. When the transform
+  /// runs on a group, every member has run all earlier passes of the block and
+  /// none has started a later one.
+  ///
+  /// It may only read or modify the bodies of functions in its group.
+  /// Functions it creates through SILOptFunctionBuilder join the group. It is
+  /// not a SILModuleTransform, so it has no getModule() to reach other
+  /// functions through.
+  class SILClosureGroupTransform : public SILTransform {
+  public:
+    SILClosureGroupTransform() : SILTransform(TransformKind::ClosureGroup) {}
+
+    static bool classof(const SILTransform *S) {
+      return S->getKind() == TransformKind::ClosureGroup;
+    }
+
+    /// The entry point to the transformation. Runs once per group.
+    virtual void run() = 0;
+
+    /// The group's definitions when the transform started, in module
+    /// function-list order.
+    llvm::ArrayRef<SILFunction *> getGroup() {
+      return PM->getCurrentClosureGroup();
+    }
+
+    /// True if \p F is in the group, including functions created since
+    /// the transform started.
+    bool isInGroup(SILFunction *F) { return PM->isInCurrentClosureGroup(F); }
+
+    /// Invalidate only the function \p F, using invalidation information \p K.
+    void invalidateAnalysis(SILFunction *F, SILAnalysis::InvalidationKind K) {
+      PM->invalidateAnalysis(F, K);
     }
 
     /// Inform the pass manager that we are going to delete a function.
