@@ -172,6 +172,10 @@ private:
   /// Maps functions to the information the analysis keeps for each function.
   llvm::DenseMap<SILFunction *, FunctionInfo *> FunctionInfos;
 
+  /// Checks that a running closure group transform only summarizes functions in
+  /// its group.
+  SILPassManager *PM = nullptr;
+
   llvm::SpecificBumpPtrAllocator<FunctionInfo> Allocator;
 
 public:
@@ -185,7 +189,7 @@ public:
   /// BAI or the root if no such node exists.
   const IndexTrieNode *findSubPathAccessed(BeginAccessInst *BAI);
 
-  virtual void initialize(SILPassManager *PM) override {}
+  virtual void initialize(SILPassManager *PM) override { this->PM = PM; }
   virtual void invalidate() override;
   virtual void invalidate(SILFunction *F, InvalidationKind K) override;
   virtual void notifyAddedOrModifiedFunction(SILFunction *F) override {}
