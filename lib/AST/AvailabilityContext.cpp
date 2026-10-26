@@ -177,7 +177,7 @@ contextForLocationInSourceFile(SourceLoc loc, SourceFile *sf,
   if (refinedScope)
     *refinedScope = scope;
 
-  auto availability = scope->getAvailabilityContext();
+  auto availability = scope->getAvailabilityContextForLookup(ctx);
   availability.constrainWithContext(baseAvailability, ctx);
   return availability;
 }

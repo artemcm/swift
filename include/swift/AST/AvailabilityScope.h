@@ -205,6 +205,12 @@ private:
 
   void verify(const AvailabilityScope *parent, ASTContext &ctx) const;
 
+  /// Returns true if this is an unexpanded scope for an extension whose
+  /// expansion would resolve the extension's extended type while that type is
+  /// already being resolved, e.g. while a literal expression in the extended
+  /// type is type-checked. Expansion of such a scope must be deferred.
+  bool shouldDeferExpansionForExtendedType(ASTContext &Ctx) const;
+
   AvailabilityScope *findMostRefinedSubContextImpl(
       SourceLoc Loc, ASTContext &Ctx,
       llvm::SmallVectorImpl<AvailabilityScope *> *ScopeStack,
@@ -346,6 +352,14 @@ public:
   /// Returns true if the platform version range of this scope is contained by
   /// the deployment target.
   bool isContainedByDeploymentTarget(const ASTContext &Ctx) const;
+
+  /// Returns the availability context of code at a location for which this
+  /// scope is the result of `findMostRefinedSubContext()`. This is the same as
+  /// `getAvailabilityContext()` unless expansion of this scope was deferred
+  /// because it is the scope of an extension whose extended type is being
+  /// resolved; then it is the availability of the extension's signature,
+  /// inferred from the declared type of the extended nominal.
+  AvailabilityContext getAvailabilityContextForLookup(ASTContext &Ctx) const;
 
   /// Adds a child availability scope.
   void addChild(AvailabilityScope *Child, ASTContext &Ctx);

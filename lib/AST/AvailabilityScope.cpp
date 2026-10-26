@@ -292,12 +292,18 @@ AvailabilityScope *AvailabilityScope::findMostRefinedSubContextImpl(
   if (stopAtASTNode && getASTNode() == stopAtASTNode)
     return nullptr;
 
+  if (ScopeStack)
+    ScopeStack->push_back(this);
+
+  // Expanding a scope for an extension may resolve its extended type, so it
+  // can't be expanded while that type is being resolved. Return the unexpanded
+  // scope instead; it will be expanded on a later lookup.
+  if (shouldDeferExpansionForExtendedType(Ctx))
+    return this;
+
   (void)evaluateOrDefault(Ctx.evaluator,
                           ExpandChildAvailabilityScopesRequest{this}, {});
   DEBUG_ASSERT(!getNeedsExpansion());
-
-  if (ScopeStack)
-    ScopeStack->push_back(this);
 
   // Do a binary search to find the first child with a source range that
   // ends after the given location.

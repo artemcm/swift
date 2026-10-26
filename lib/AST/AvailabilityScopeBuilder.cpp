@@ -32,6 +32,22 @@
 
 using namespace swift;
 
+/// Returns true if the signature availability of \p ext, introduced in a scope
+/// that is contained by the deployment target if
+/// \p scopeContainedByDeploymentTarget, is inferred from the extended type.
+/// Inference cannot change a scope that is already contained by the
+/// deployment target, and does not apply to an extension that has explicit
+/// platform availability.
+static bool
+infersAvailabilityFromExtendedType(const ExtensionDecl *ext,
+                                   bool scopeContainedByDeploymentTarget) {
+  return !scopeContainedByDeploymentTarget &&
+         !ext->hasAnyMatchingActiveAvailableAttr(
+             [](SemanticAvailableAttr attr) -> bool {
+               return attr.isPlatformSpecific();
+             });
+}
+
 /// Checks whether the entire declaration, including its signature, should be
 /// constrained to the deployment target when it is introduced in \p scope.
 /// Generally public API declarations are not constrained since they appear in
@@ -70,11 +86,34 @@ static bool shouldConstrainSignatureToDeploymentTarget(
   return isExported(decl) != ExportedLevel::Exported;
 }
 
+/// Returns the type from which the signature availability of \p ext is inferred:
+/// the declared type of its extended nominal if \p inferFromExtendedNominal,
+/// otherwise its extended type.
+static Type getTypeForAvailabilityInference(const ExtensionDecl *ext,
+                                            bool inferFromExtendedNominal) {
+  if (!inferFromExtendedNominal)
+    return ext->getExtendedType();
+  if (!ext->hasBeenBound())
+    return Type();
+  if (auto *nominal = ext->getExtendedNominal())
+    return nominal->getDeclaredInterfaceType();
+  return Type();
+}
+
 /// Returns the availability of the signature of \p decl when it is introduced
-/// in \p scope.
+/// in \p scope. If \p inferFromExtendedNominal is true, availability for an
+/// extension is inferred from the declared type of its extended nominal rather
+/// than from its extended type, which must not be resolved.
+///
+/// That inference visits only a subset of the types that inference from the
+/// extended type visits, so its platform range can be wider (have a lower
+/// version floor). The resulting context is then stricter than the one the
+/// expanded scope will have: a reference to a declaration that is only as
+/// available as a generic argument of the extended type may be diagnosed as
+/// potentially unavailable.
 static AvailabilityContext getEffectiveAvailabilityForDeclSignature(
     const Decl *decl, const AvailabilityScope *scope,
-    bool scopeContainedByDeploymentTarget) {
+    bool scopeContainedByDeploymentTarget, bool inferFromExtendedNominal) {
   auto &ctx = decl->getASTContext();
   auto effectiveIntroduction = AvailabilityRange::alwaysAvailable();
 
@@ -87,20 +126,20 @@ static AvailabilityContext getEffectiveAvailabilityForDeclSignature(
   // extensions without specifying platform availability on the extension
   // itself.
   if (auto *extension = dyn_cast<ExtensionDecl>(decl)) {
-    auto extendedType = extension->getExtendedType();
-    if (extendedType && !decl->hasAnyMatchingActiveAvailableAttr(
-                            [](SemanticAvailableAttr attr) -> bool {
-                              return attr.isPlatformSpecific();
-                            })) {
-      effectiveIntroduction.intersectWith(
-          swift::AvailabilityInference::inferForType(extendedType));
+    if (infersAvailabilityFromExtendedType(extension,
+                                           scopeContainedByDeploymentTarget)) {
+      if (auto extendedType = getTypeForAvailabilityInference(
+              extension, inferFromExtendedNominal)) {
+        effectiveIntroduction.intersectWith(
+            swift::AvailabilityInference::inferForType(extendedType));
 
-      // We want to require availability to be specified on extensions of
-      // types that would be potentially unavailable to the module containing
-      // the extension, so limit the effective availability to the deployment
-      // target.
-      effectiveIntroduction.unionWith(
-          AvailabilityRange::forDeploymentTarget(ctx));
+        // We want to require availability to be specified on extensions of
+        // types that would be potentially unavailable to the module
+        // containing the extension, so limit the effective availability to
+        // the deployment target.
+        effectiveIntroduction.unionWith(
+            AvailabilityRange::forDeploymentTarget(ctx));
+      }
     }
   }
 
@@ -112,6 +151,33 @@ static AvailabilityContext getEffectiveAvailabilityForDeclSignature(
   auto availability = scope->getAvailabilityContext();
   availability.constrainWithDeclAndPlatformRange(decl, effectiveIntroduction);
   return availability;
+}
+
+bool AvailabilityScope::shouldDeferExpansionForExtendedType(
+    ASTContext &ctx) const {
+  if (!getNeedsExpansion())
+    return false;
+
+  auto *ext = dyn_cast_or_null<ExtensionDecl>(getDeclOrNull());
+  if (!ext || !ctx.evaluator.hasActiveRequest(ExtendedTypeRequest{ext}))
+    return false;
+
+  return infersAvailabilityFromExtendedType(ext,
+                                            isContainedByDeploymentTarget(ctx));
+}
+
+AvailabilityContext
+AvailabilityScope::getAvailabilityContextForLookup(ASTContext &ctx) const {
+  if (!shouldDeferExpansionForExtendedType(ctx))
+    return getAvailabilityContext();
+
+  // An unexpanded placeholder carries only its parent's availability. Compute
+  // the availability of the extension's signature without resolving its
+  // extended type. Deferral implies that this scope is not contained by the
+  // deployment target.
+  return getEffectiveAvailabilityForDeclSignature(
+      getDeclOrNull(), this, /*scopeContainedByDeploymentTarget=*/false,
+      /*inferFromExtendedNominal=*/true);
 }
 
 namespace {
@@ -496,7 +562,8 @@ private:
   const AvailabilityContext
   getEffectiveAvailabilityForDeclSignature(const Decl *decl) {
     return ::getEffectiveAvailabilityForDeclSignature(
-        decl, getCurrentScope(), isCurrentScopeContainedByDeploymentTarget());
+        decl, getCurrentScope(), isCurrentScopeContainedByDeploymentTarget(),
+        /*inferFromExtendedNominal=*/false);
   }
 
   /// Returns the source range which should be refined by declaration. This
