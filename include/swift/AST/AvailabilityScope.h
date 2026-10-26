@@ -343,6 +343,10 @@ public:
     return AvailabilityInfo.getPlatformRange();
   }
 
+  /// Returns true if the platform version range of this scope is contained by
+  /// the deployment target.
+  bool isContainedByDeploymentTarget(const ASTContext &Ctx) const;
+
   /// Adds a child availability scope.
   void addChild(AvailabilityScope *Child, ASTContext &Ctx);
 

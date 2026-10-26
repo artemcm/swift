@@ -32,10 +32,86 @@
 
 using namespace swift;
 
-static bool computeContainedByDeploymentTarget(AvailabilityScope *scope,
-                                               ASTContext &ctx) {
-  return scope->getPlatformAvailabilityRange().isContainedIn(
-      AvailabilityRange::forDeploymentTarget(ctx));
+/// Checks whether the entire declaration, including its signature, should be
+/// constrained to the deployment target when it is introduced in \p scope.
+/// Generally public API declarations are not constrained since they appear in
+/// the interface of the module and may be consumed by clients with lower
+/// deployment targets, but there are some exceptions.
+static bool shouldConstrainSignatureToDeploymentTarget(
+    const Decl *decl, const AvailabilityScope *scope,
+    bool scopeContainedByDeploymentTarget) {
+  if (scopeContainedByDeploymentTarget)
+    return false;
+
+  // A declaration inside of a local context always inherits the availability
+  // of the parent.
+  if (decl->getDeclContext()->isLocalContext())
+    return false;
+
+  // As a convenience, explicitly unavailable decls are constrained to the
+  // deployment target. There's not much benefit to checking these decls at a
+  // lower availability version floor since they can't be invoked by clients.
+  auto context = scope->getAvailabilityContext();
+  if (context.isUnavailable())
+    return true;
+
+  // Check whether the decl is unavailable relative to the current context.
+  if (auto restriction = context.restrictionForDecl(decl)) {
+    if (restriction->isUnavailable())
+      return true;
+  }
+
+  // To remain compatible with a lot of existing SPIs that are declared
+  // without availability attributes, constrain them to the deployment target
+  // too.
+  if (decl->isSPI())
+    return true;
+
+  return isExported(decl) != ExportedLevel::Exported;
+}
+
+/// Returns the availability of the signature of \p decl when it is introduced
+/// in \p scope.
+static AvailabilityContext getEffectiveAvailabilityForDeclSignature(
+    const Decl *decl, const AvailabilityScope *scope,
+    bool scopeContainedByDeploymentTarget) {
+  auto &ctx = decl->getASTContext();
+  auto effectiveIntroduction = AvailabilityRange::alwaysAvailable();
+
+  // Availability attributes are found on abstract syntax decls.
+  decl = decl->getAbstractSyntaxDeclForAttributes();
+
+  // As a special case, extension decls are treated as effectively as
+  // available as the nominal type they extend, up to the deployment target.
+  // This rule is a convenience for library authors who have written
+  // extensions without specifying platform availability on the extension
+  // itself.
+  if (auto *extension = dyn_cast<ExtensionDecl>(decl)) {
+    auto extendedType = extension->getExtendedType();
+    if (extendedType && !decl->hasAnyMatchingActiveAvailableAttr(
+                            [](SemanticAvailableAttr attr) -> bool {
+                              return attr.isPlatformSpecific();
+                            })) {
+      effectiveIntroduction.intersectWith(
+          swift::AvailabilityInference::inferForType(extendedType));
+
+      // We want to require availability to be specified on extensions of
+      // types that would be potentially unavailable to the module containing
+      // the extension, so limit the effective availability to the deployment
+      // target.
+      effectiveIntroduction.unionWith(
+          AvailabilityRange::forDeploymentTarget(ctx));
+    }
+  }
+
+  if (shouldConstrainSignatureToDeploymentTarget(
+          decl, scope, scopeContainedByDeploymentTarget))
+    effectiveIntroduction.intersectWith(
+        AvailabilityRange::forDeploymentTarget(ctx));
+
+  auto availability = scope->getAvailabilityContext();
+  availability.constrainWithDeclAndPlatformRange(decl, effectiveIntroduction);
+  return availability;
 }
 
 namespace {
@@ -104,12 +180,12 @@ class AvailabilityScopeBuilder : private ASTWalker {
     info.ScopeNode = popAfterNode;
 
     if (!ContextStack.empty() && isCurrentScopeContainedByDeploymentTarget()) {
-      assert(computeContainedByDeploymentTarget(scope, Context) &&
-             "incorrectly skipping computeContainedByDeploymentTarget()");
+      assert(scope->isContainedByDeploymentTarget(Context) &&
+             "incorrectly skipping isContainedByDeploymentTarget()");
       info.ContainedByDeploymentTarget = true;
     } else {
       info.ContainedByDeploymentTarget =
-          computeContainedByDeploymentTarget(scope, Context);
+          scope->isContainedByDeploymentTarget(Context);
     }
 
     ContextStack.push_back(info);
@@ -419,77 +495,8 @@ private:
 
   const AvailabilityContext
   getEffectiveAvailabilityForDeclSignature(const Decl *decl) {
-    auto effectiveIntroduction = AvailabilityRange::alwaysAvailable();
-
-    // Availability attributes are found on abstract syntax decls.
-    decl = decl->getAbstractSyntaxDeclForAttributes();
-
-    // As a special case, extension decls are treated as effectively as
-    // available as the nominal type they extend, up to the deployment target.
-    // This rule is a convenience for library authors who have written
-    // extensions without specifying platform availability on the extension
-    // itself.
-    if (auto *extension = dyn_cast<ExtensionDecl>(decl)) {
-      auto extendedType = extension->getExtendedType();
-      if (extendedType && !decl->hasAnyMatchingActiveAvailableAttr(
-                              [](SemanticAvailableAttr attr) -> bool {
-                                return attr.getDomain().isPlatform();
-                              })) {
-        effectiveIntroduction.intersectWith(
-            swift::AvailabilityInference::inferForType(extendedType));
-
-        // We want to require availability to be specified on extensions of
-        // types that would be potentially unavailable to the module containing
-        // the extension, so limit the effective availability to the deployment
-        // target.
-        effectiveIntroduction.unionWith(
-            AvailabilityRange::forDeploymentTarget(Context));
-      }
-    }
-
-    if (shouldConstrainSignatureToDeploymentTarget(decl))
-      effectiveIntroduction.intersectWith(
-          AvailabilityRange::forDeploymentTarget(Context));
-
-    auto availability = getCurrentScope()->getAvailabilityContext();
-    availability.constrainWithDeclAndPlatformRange(decl, effectiveIntroduction);
-    return availability;
-  }
-
-  /// Checks whether the entire declaration, including its signature, should be
-  /// constrained to the deployment target. Generally public API declarations
-  /// are not constrained since they appear in the interface of the module and
-  /// may be consumed by clients with lower deployment targets, but there are
-  /// some exceptions.
-  bool shouldConstrainSignatureToDeploymentTarget(const Decl *decl) {
-    if (isCurrentScopeContainedByDeploymentTarget())
-      return false;
-
-    // A declaration inside of a local context always inherits the availability
-    // of the parent.
-    if (decl->getDeclContext()->isLocalContext())
-      return false;
-
-    // As a convenience, explicitly unavailable decls are constrained to the
-    // deployment target. There's not much benefit to checking these decls at a
-    // lower availability version floor since they can't be invoked by clients.
-    auto context = getCurrentScope()->getAvailabilityContext();
-    if (context.isUnavailable())
-      return true;
-
-    // Check whether the decl is unavailable relative to the current context.
-    if (auto restriction = context.restrictionForDecl(decl)) {
-      if (restriction->isUnavailable())
-        return true;
-    }
-
-    // To remain compatible with a lot of existing SPIs that are declared
-    // without availability attributes, constrain them to the deployment target
-    // too.
-    if (decl->isSPI())
-      return true;
-
-    return isExported(decl) != ExportedLevel::Exported;
+    return ::getEffectiveAvailabilityForDeclSignature(
+        decl, getCurrentScope(), isCurrentScopeContainedByDeploymentTarget());
   }
 
   /// Returns the source range which should be refined by declaration. This

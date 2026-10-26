@@ -269,6 +269,12 @@ void AvailabilityScope::addChild(AvailabilityScope *Child, ASTContext &Ctx) {
   Children.insert(iter, Child);
 }
 
+bool AvailabilityScope::isContainedByDeploymentTarget(
+    const ASTContext &ctx) const {
+  return getPlatformAvailabilityRange().isContainedIn(
+      AvailabilityRange::forDeploymentTarget(ctx));
+}
+
 AvailabilityScope *AvailabilityScope::findMostRefinedSubContextImpl(
     SourceLoc Loc, ASTContext &Ctx,
     llvm::SmallVectorImpl<AvailabilityScope *> *ScopeStack,
