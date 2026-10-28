@@ -40,6 +40,16 @@
 #define MODULE_PASS(Id, Tag, Description) PASS(Id, Tag, Description)
 #endif
 
+/// CLOSURE_GROUP_PASS(Id, Tag, Description)
+///   This macro follows the same conventions as PASS(Id, Tag, Description),
+///   but is used for closure group passes: Swift passes that run once per
+///   closure group (ClosureGroupPass), as a SILClosureGroupTransform.
+///   Includers that don't distinguish them see a module pass.
+#ifndef CLOSURE_GROUP_PASS
+#define CLOSURE_GROUP_PASS(Id, Tag, Description) \
+  MODULE_PASS(Id, Tag, Description)
+#endif
+
 /// Used for passes which are implemented in C++.
 ///   Do not add any LEGACY_PASS entries. Implement new passes in swift
 ///   and add them with PASS or MODULE_PASS.
@@ -510,6 +520,7 @@ LEGACY_PASS(MarkNeverWrittenMutableClosureBoxesAsImmutable, "mark-never-written-
 //===----------------------------------------------------------------------===//
 
 #undef IRGEN_PASS
+#undef CLOSURE_GROUP_PASS
 #undef MODULE_PASS
 #undef LEGACY_PASS
 #undef PASS

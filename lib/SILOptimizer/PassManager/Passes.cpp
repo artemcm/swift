@@ -313,6 +313,14 @@ void SILPassManager_registerFunctionPass(BridgedStringRef name,
   passesRegistered = true;
 }
 
+// A closure group pass's run function has a module pass's signature, so it
+// shares their map.
+void SILPassManager_registerClosureGroupPass(BridgedStringRef name,
+                                             BridgedModulePassRunFn runFn) {
+  bridgedModulePassRunFunctions[name.unbridged()] = runFn;
+  passesRegistered = true;
+}
+
 #define LEGACY_PASS(ID, TAG, DESCRIPTION)
 
 #define PASS(ID, TAG, DESCRIPTION) \
@@ -325,8 +333,8 @@ class ID##Pass : public SILFunctionTransform {                             \
 BridgedFunctionPassRunFn ID##Pass::runFunction = nullptr;                  \
 SILTransform *swift::create##ID() { return new ID##Pass(); }               \
 
-#define MODULE_PASS(ID, TAG, DESCRIPTION) \
-class ID##Pass : public SILModuleTransform {                               \
+#define SWIFT_MODULE_PASS_COMMON(ID, TAG, BASE) \
+class ID##Pass : public BASE {                                             \
   static BridgedModulePassRunFn runFunction;                               \
   void run() override {                                                    \
     runBridgedModulePass(runFunction, PM, TAG);                            \
@@ -335,6 +343,14 @@ class ID##Pass : public SILModuleTransform {                               \
 BridgedModulePassRunFn ID##Pass::runFunction = nullptr;                    \
 SILTransform *swift::create##ID() { return new ID##Pass(); }               \
 
+#define MODULE_PASS(ID, TAG, DESCRIPTION) \
+  SWIFT_MODULE_PASS_COMMON(ID, TAG, SILModuleTransform)
+
+// A Swift ClosureGroupPass. Its run function runs once per closure group.
+#define CLOSURE_GROUP_PASS(ID, TAG, DESCRIPTION) \
+  SWIFT_MODULE_PASS_COMMON(ID, TAG, SILClosureGroupTransform)
+
 #include "swift/SILOptimizer/PassManager/Passes.def"
 
 #undef SWIFT_FUNCTION_PASS_COMMON
+#undef SWIFT_MODULE_PASS_COMMON

@@ -44,3 +44,20 @@ struct ModulePass {
     runFunction(context)
   }
 }
+
+/// A pass that runs once per closure group, callees first. See `ClosureGroupPassContext`.
+struct ClosureGroupPass {
+
+  let name: String
+  let runFunction: (ClosureGroupPassContext) -> ()
+
+  init(name: String, _ runFunction: @escaping (ClosureGroupPassContext) -> ()) {
+    self.name = name
+    self.runFunction = runFunction
+  }
+
+  func run(_ bridgedCtxt: BridgedContext) {
+    let context = ClosureGroupPassContext(_bridged: bridgedCtxt)
+    runFunction(context)
+  }
+}

@@ -40,6 +40,14 @@ private func registerPass(
   }
 }
 
+private func registerPass(
+      _ pass: ClosureGroupPass,
+      _ runFn: @escaping (@convention(c) (BridgedContext) -> ())) {
+  pass.name._withBridgedStringRef { nameStr in
+    SILPassManager_registerClosureGroupPass(nameStr, runFn)
+  }
+}
+
 protocol SILCombineSimplifiable : Instruction {
   func simplify(_ context: SimplifyContext)
 }

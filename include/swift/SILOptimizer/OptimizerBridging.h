@@ -286,6 +286,14 @@ struct BridgedPassContext {
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE static OptionalBridgedDefaultWitnessTable getNextDefaultWitnessTableInModule(
                                                                                   BridgedDefaultWitnessTable table);
 
+  // The closure group of a running closure group transform. Members are
+  // bridged one at a time, because each needs BridgedFunction's conversion.
+
+  SwiftInt getClosureGroupSize() const;
+  SWIFT_IMPORT_UNSAFE BridgedFunction
+  getClosureGroupMember(SwiftInt index) const;
+  bool isInClosureGroup(BridgedFunction function) const;
+
   // Passmanager housekeeping
 
   BRIDGED_INLINE bool continueWithNextSubpassRun(OptionalBridgedInstruction inst) const;
@@ -377,6 +385,8 @@ void SILPassManager_registerModulePass(BridgedStringRef name,
                                        BridgedModulePassRunFn runFn);
 void SILPassManager_registerFunctionPass(BridgedStringRef name,
                                          BridgedFunctionPassRunFn runFn);
+void SILPassManager_registerClosureGroupPass(BridgedStringRef name,
+                                             BridgedModulePassRunFn runFn);
 void SILCombine_registerInstructionPass(BridgedStringRef instClassName,
                                         BridgedInstructionPassRunFn runFn);
 

@@ -159,6 +159,20 @@ void BridgedPassContext::eraseFunction(BridgedFunction function) const {
   invocation->getPassManager()->getModule()->eraseFunction(function.getFunction());
 }
 
+SwiftInt BridgedPassContext::getClosureGroupSize() const {
+  return invocation->getPassManager()->getCurrentClosureGroup().size();
+}
+
+BridgedFunction
+BridgedPassContext::getClosureGroupMember(SwiftInt index) const {
+  return {invocation->getPassManager()->getCurrentClosureGroup()[index]};
+}
+
+bool BridgedPassContext::isInClosureGroup(BridgedFunction function) const {
+  return invocation->getPassManager()->isInCurrentClosureGroup(
+      function.getFunction());
+}
+
 static const irgen::TypeInfo &getTypeInfoOfBuiltin(swift::SILType type, irgen::IRGenModule &IGM) {
   SILType lowered = IGM.getLoweredType(swift::Lowering::AbstractionPattern::getOpaque(), type.getASTType());
   return IGM.getTypeInfo(lowered);
