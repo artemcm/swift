@@ -555,6 +555,10 @@ SILFunction *ClosureCloner::constructClonedFunction(
   // If we already have such a cloned function in the module then just use it.
   if (auto *prevF = f->getModule().lookUpFunction(clonedName)) {
     assert(prevF->getSerializedKind() == serializedKind);
+    // Only a partial_apply of origF creates this clone, and origF's
+    // partial_applys are in origF's closure group.
+    ASSERT(funcBuilder.getPassManager().isInCurrentClosureGroup(prevF) &&
+           "existing clone outside the closure group");
     return prevF;
   }
 
@@ -820,6 +824,10 @@ struct EscapeMutationScanningState {
 
   /// The global partial_apply -> index map.
   llvm::DenseMap<PartialApplyInst *, unsigned> &globalIndexMap;
+
+  /// The running transform. Every partial_apply callee that the scan reads
+  /// must be in its closure group.
+  SILClosureGroupTransform &transform;
 };
 
 } // end anonymous namespace
@@ -970,6 +978,10 @@ bool isPartialApplyNonEscapingUser(Operand *currentOp, PartialApplyInst *pai,
     state.accumulatedEscapes.push_back(currentOp);
     return false;
   }
+
+  // pai passes fn the box, a capture edge, so fn is in f's closure group.
+  ASSERT(state.transform.isInGroup(fn) &&
+         "partial_apply callee outside the closure group");
 
   SILArgument *boxArg = getBoxFromIndex(fn, index);
 
@@ -1325,9 +1337,10 @@ static void diagnoseInvalidCaptureByConcurrentClosure(
 /// argument list is added to IM.
 static bool
 examineAllocBoxInst(AllocBoxInst *abi, ReachabilityInfo &ri,
-                    llvm::DenseMap<PartialApplyInst *, unsigned> &im) {
+                    llvm::DenseMap<PartialApplyInst *, unsigned> &im,
+                    SILClosureGroupTransform &transform) {
   LLVM_DEBUG(llvm::dbgs() << "Visiting alloc box: " << *abi);
-  EscapeMutationScanningState state{{}, {}, {}, false, im};
+  EscapeMutationScanningState state{{}, {}, {}, false, im, transform};
 
   // Scan the box for escaping or mutating uses.
   for (auto *use : abi->getUses()) {
@@ -1615,7 +1628,8 @@ processPartialApplyInst(SILOptFunctionBuilder &funcBuilder,
 }
 
 static void constructMapFromPartialApplyToPromotableIndices(
-    SILFunction *f, PartialApplyIndicesMap &partialApplyIndicesAccumulator) {
+    SILFunction *f, PartialApplyIndicesMap &partialApplyIndicesAccumulator,
+    SILClosureGroupTransform &transform) {
   ReachabilityInfo reachabilityInfo(f);
 
   // This is a map from each partial apply to a single index which is a
@@ -1627,7 +1641,8 @@ static void constructMapFromPartialApplyToPromotableIndices(
     for (auto &inst : block) {
       if (auto *abi = dyn_cast<AllocBoxInst>(&inst)) {
         incrementalIndexMap.clear();
-        if (examineAllocBoxInst(abi, reachabilityInfo, incrementalIndexMap)) {
+        if (examineAllocBoxInst(abi, reachabilityInfo, incrementalIndexMap,
+                                transform)) {
           // If we are able to promote at least one capture of the alloc_box,
           // then add the promotable index to the main map.
           for (auto &indexPair : incrementalIndexMap)
@@ -1646,15 +1661,20 @@ static void constructMapFromPartialApplyToPromotableIndices(
 
 namespace {
 
-class CapturePromotionPass : public SILModuleTransform {
+/// Runs per closure group. Promotion reads, clones, and rewrites only the
+/// closures that capture a function's boxes. The partial_apply that passes
+/// such a closure a box is a capture edge (ClosureScope.h), so the closure is
+/// in that function's group (ClosureGroupSchedule.h); the pass checks that in
+/// every build. Clones join the group when SILOptFunctionBuilder creates them.
+class CapturePromotionPass : public SILClosureGroupTransform {
   /// The entry point to the transformation.
   void run() override {
     SmallVector<SILFunction *, 8> worklist;
-    for (auto &f : *getModule()) {
-      if (f.wasDeserializedCanonical() || !f.hasOwnership())
+    for (SILFunction *f : getGroup()) {
+      if (f->wasDeserializedCanonical() || !f->hasOwnership())
         continue;
 
-      processFunction(&f, worklist);
+      processFunction(f, worklist);
     }
 
     while (!worklist.empty()) {
@@ -1681,7 +1701,7 @@ void CapturePromotionPass::processFunction(
   // This is a map from each partial apply to a set of indices of promotable
   // box variables.
   PartialApplyIndicesMap indicesMap;
-  constructMapFromPartialApplyToPromotableIndices(func, indicesMap);
+  constructMapFromPartialApplyToPromotableIndices(func, indicesMap, *this);
 
   // Do the actual promotions; all promotions on a single partial_apply are
   // handled together.
