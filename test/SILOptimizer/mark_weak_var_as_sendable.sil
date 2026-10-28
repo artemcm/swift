@@ -1,4 +1,12 @@
 // RUN: %target-sil-opt -swift-version 6 -enable-sil-verify-all %s -mark-never-written-mutable-closure-boxes-as-immutable | %FileCheck %s
+// RUN: %target-sil-opt -swift-version 6 -enable-sil-verify-all %s -mark-never-written-mutable-closure-boxes-as-immutable -sil-print-closure-groups -o /dev/null 2>&1 | %FileCheck %s --check-prefix=GROUPS
+
+// The pass runs per closure group. A box's function shares a group with each
+// closure that the pass follows the box into, including closures that those
+// closures form, and with every other scope of a shared closure.
+// GROUPS-DAG: Closure group for mark-never-written-mutable-closure-boxes-as-immutable: simple_callee simple_caller closure_escapes_caller chained_callee simple_chained_caller simple_caller_write_twice simple_caller_write_three_times simple_caller_conditional_write simple_caller_write_in_loop{{$}}
+// GROUPS-DAG: Closure group for mark-never-written-mutable-closure-boxes-as-immutable: simple_callee_two simple_caller_two_same caller_two_boxes_one_multiple_writes{{$}}
+// GROUPS-DAG: Closure group for mark-never-written-mutable-closure-boxes-as-immutable: chained_callee_2_read_all_with_intermediate_write chained_callee_1_read_all_with_intermediate_write chained_caller_read_all_with_intermediate_write{{$}}
 
 import Swift
 import SwiftShims
