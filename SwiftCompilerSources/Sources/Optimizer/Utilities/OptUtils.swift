@@ -1293,7 +1293,7 @@ extension StoreInst: CopyLikeInstruction {
   private var load: LoadInst { source as! LoadInst }
 }
 
-func eraseIfDead(functions: [Function], _ context: ModulePassContext) {
+func eraseIfDead(functions: [Function], _ context: ClosureGroupPassContext) {
   var toDelete = functions
   while true {
     var remaining = [Function]()

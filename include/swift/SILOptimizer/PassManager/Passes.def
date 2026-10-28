@@ -193,7 +193,7 @@ PASS(ClosureSpecialization, "closure-specialization",
 PASS(AutodiffClosureSpecialization, "autodiff-closure-specialization",
      "Autodiff specific closure-specialization pass")
 
-MODULE_PASS(MandatoryAllocBoxToStack, "mandatory-allocbox-to-stack",
+CLOSURE_GROUP_PASS(MandatoryAllocBoxToStack, "mandatory-allocbox-to-stack",
      "Mandatory stack promotion of box objects")
 MODULE_PASS(AsyncDemotion, "async-demotion",
      "Convert async functions to be synchronous")

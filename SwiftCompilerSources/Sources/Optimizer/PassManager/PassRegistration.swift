@@ -70,8 +70,10 @@ private func registerForSILCombine<InstType: SILCombineSimplifiable>(
 }
 
 private func registerSwiftPasses() {
-  // Module passes
+  // Closure group passes
   registerPass(mandatoryAllocBoxToStack, { mandatoryAllocBoxToStack.run($0) })
+
+  // Module passes
   registerPass(mandatoryPerformanceOptimizations, { mandatoryPerformanceOptimizations.run($0) })
   registerPass(conformanceCheckOptimization, { conformanceCheckOptimization.run($0) })
   registerPass(diagnoseUnknownConstValues, { diagnoseUnknownConstValues.run($0)})

@@ -62,20 +62,22 @@ let allocBoxToStack = FunctionPass(name: "allocbox-to-stack") {
 }
 
 /// The "mandatory" version of the pass, which runs in the mandatory pipeline.
-/// In contrast to the regular version, it is a module pass because it deletes the originals
-/// of specialized closures, so that successive diagnostic passes don't report errors for
-/// the unspecialized closures.
+/// In contrast to the regular version, it deletes the originals of specialized closures, so that
+/// successive diagnostic passes don't report errors for the unspecialized closures.
+/// It runs per closure group. Every function that passes an original a box is in the original's
+/// group, and the pass changes no other reference to it, so once the pass has run on the group, the
+/// original's references are final.
 ///
-let mandatoryAllocBoxToStack = ModulePass(name: "mandatory-allocbox-to-stack") {
-  (moduleContext: ModulePassContext) in
+let mandatoryAllocBoxToStack = ClosureGroupPass(name: "mandatory-allocbox-to-stack") {
+  (groupContext: ClosureGroupPassContext) in
 
   var worklist = FunctionWorklist()
-  worklist.pushIfNotVisited(contentsOf: moduleContext.functions)
+  worklist.pushIfNotVisited(contentsOf: groupContext.group)
 
   var originalsOfSpecializedFunctions = FunctionWorklist()
 
   while let function = worklist.pop() {
-    moduleContext.transform(function: function) { context in
+    groupContext.transform(function: function) { context in
       let specFns = tryConvertBoxesToStack(in: function, isMandatory: true, context)
       worklist.pushIfNotVisited(contentsOf: specFns.specializedFunctions)
       originalsOfSpecializedFunctions.pushIfNotVisited(contentsOf: specFns.originalFunctions)
@@ -84,7 +86,7 @@ let mandatoryAllocBoxToStack = ModulePass(name: "mandatory-allocbox-to-stack") {
 
   /// This is needed because box-promotion is mandatory for non-copyable types. Without removing the
   /// original, un-specialized versions of closures we risk getting false errors in diagnostic passes.
-  eraseIfDead(functions: originalsOfSpecializedFunctions.functions, moduleContext)
+  eraseIfDead(functions: originalsOfSpecializedFunctions.functions, groupContext)
 }
 
 /// Converts all non-escaping `alloc_box` to `alloc_stack` and specializes called functions if a
@@ -180,6 +182,13 @@ private func canPromote(allocBox: AllocBoxInst) -> (promotableArguments: [Functi
         }
         let calleeArg = apply.calleeArgument(of: use, in: callee)!
         // Continue checking the box (or closure) value in the callee.
+        //
+        // The mandatory pass runs per closure group. A callee that this function passes the box to is
+        // at the end of a capture edge, so it is in the group. A callee that takes only a closure value
+        // can be outside the group: a full-apply callee, whose group ran first, or a reabstraction
+        // thunk, which is a group of its own. The pass only reads how such a callee uses the closure,
+        // and running the group's passes on the callee doesn't change that, so the read has the same
+        // result whether or not they have run yet.
         worklist.pushIfNotVisited(calleeArg)
 
         if value.type.isBox {
