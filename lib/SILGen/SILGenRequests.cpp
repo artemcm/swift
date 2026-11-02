@@ -198,6 +198,49 @@ CleanedSILFunctionRequest::evaluate(Evaluator &evaluator,
   return f;
 }
 
+/// A closure or local function: a member of its scope's closure component.
+/// On demand, the closure's body may not exist yet, so this reads the
+/// declaration, not the body's markers (ClosureGroupSchedule's closure links).
+static bool isClosureOrLocalFunction(SILDeclRef ref) {
+  if (ref.getAbstractClosureExpr())
+    return true;
+  return ref.isFunc() && ref.hasDecl() &&
+         ref.getDecl()->getDeclContext()->isLocalContext();
+}
+
+/// Spike: the closure component of \p root, as far as it can be found from
+/// \p root on demand: \p root, then each closure and local function that a
+/// member references, transitively. Each member's body is emitted and run
+/// through the SILGen pipeline. A closure that another root's run already
+/// canonicalized is not a member.
+static void collectClosureComponent(Evaluator &evaluator, SILFunction *root,
+                                    llvm::SmallSetVector<SILFunction *, 8> &members) {
+  members.insert(root);
+  for (unsigned i = 0; i < members.size(); ++i) {
+    SILFunction *member = members[i];
+    for (auto &block : *member) {
+      for (auto &inst : block) {
+        auto *ref = dyn_cast<FunctionRefBaseInst>(&inst);
+        if (!ref)
+          continue;
+        SILFunction *callee = ref->getInitiallyReferencedFunction();
+        if (members.count(callee) || callee->isAlreadyCanonical())
+          continue;
+        SILDeclRef calleeRef = callee->getDeclRef();
+        if (!calleeRef || !isClosureOrLocalFunction(calleeRef))
+          continue;
+        auto *closure =
+            evaluateOrFatal(evaluator, CleanedSILFunctionRequest{calleeRef});
+        if (closure->isDefinition() && !closure->isAlreadyCanonical())
+          members.insert(closure);
+      }
+    }
+  }
+  // A capture edge from a member to a definition outside the component
+  // would make a group pass read or write outside its group; the passes'
+  // membership checks report it.
+}
+
 SILFunction *
 DiagnosedSILFunctionRequest::evaluate(Evaluator &evaluator,
                                       SILDeclRef constant) const {
@@ -210,11 +253,33 @@ DiagnosedSILFunctionRequest::evaluate(Evaluator &evaluator,
     return f;
 
   auto &silMod = f->getModule();
-  SILPassManager PM(&silMod, /*isMandatory=*/true, /*IRMod=*/nullptr);
-  PM.executePassPipelinePlan(
-      SILPassPipelinePlan::getFunctionOnlyDiagnosticPassPipeline(
-          silMod.getOptions()),
-      f);
+  auto plan = SILPassPipelinePlan::getFunctionOnlyDiagnosticPassPipeline(
+      silMod.getOptions());
+  if (!isSILOnDemandClosureGroupsEnabled()) {
+    SILPassManager PM(&silMod, /*isMandatory=*/true, /*IRMod=*/nullptr);
+    PM.executePassPipelinePlan(plan, f);
+    return f;
+  }
+
+  // Spike: run the diagnostic pipeline once over f's closure component, so
+  // that the closure group passes see each closure with its scope.
+  llvm::SmallSetVector<SILFunction *, 8> members;
+  collectClosureComponent(evaluator, f, members);
+  DEBUG_WITH_TYPE("silgen-requests", {
+    llvm::dbgs() << "[component] " << f->getName() << ":";
+    for (SILFunction *member : members)
+      llvm::dbgs() << " " << member->getName();
+    llvm::dbgs() << "\n";
+  });
+  {
+    SILPassManager PM(&silMod, /*isMandatory=*/true, /*IRMod=*/nullptr);
+    PM.executePassPipelinePlan(plan, members.getArrayRef());
+  }
+  // The other members are diagnosed now. Mark them canonical, so that their
+  // own requests skip the pipelines; CanonicalSILFunctionRequest marks f.
+  for (SILFunction *member : members)
+    if (member != f && member->isDefinition())
+      member->setFunctionStage(SILStage::Canonical);
   return f;
 }
 

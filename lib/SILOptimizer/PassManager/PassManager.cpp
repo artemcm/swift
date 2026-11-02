@@ -1121,23 +1121,38 @@ void SILPassManager::executePassPipelinePlan(const SILPassPipelinePlan &Plan) {
 
 void SILPassManager::executePassPipelinePlan(const SILPassPipelinePlan &Plan,
                                              SILFunction *targetFn) {
+  executePassPipelinePlan(Plan, llvm::ArrayRef<SILFunction *>(targetFn));
+}
+
+void SILPassManager::executePassPipelinePlan(
+    const SILPassPipelinePlan &Plan, llvm::ArrayRef<SILFunction *> members) {
   for (const SILPassPipeline &Pipeline : Plan.getPipelines()) {
     setStageName(Pipeline.Name);
     resetAndRemoveTransformations();
     for (PassKind Kind : Plan.getPipelinePasses(Pipeline)) {
       addPass(Kind);
-      assert(!Pipeline.isFunctionPassPipeline
-             || isa<SILFunctionTransform>(Transformations.back()));
+      assert((!Pipeline.isFunctionPassPipeline ||
+              isa<SILFunctionTransform>(Transformations.back()) ||
+              isa<SILClosureGroupTransform>(Transformations.back())) &&
+             "a function pass pipeline holds function and closure group "
+             "passes");
     }
-    executeScopedForFunction(targetFn);
+    executeScoped(members);
   }
 }
 
-void SILPassManager::executeScopedForFunction(SILFunction *targetFn) {
+void SILPassManager::executeScoped(llvm::ArrayRef<SILFunction *> members) {
   // Recursive request evaluation during the pipeline may add new functions
   // to the module that this PM's verifier analysis never saw at
   // construction. Opt out of its module-wide check.
   isScopedForFunction = true;
+
+  // The functions the run covers. notifyOfNewFunction adds the ones its
+  // passes create, so that later passes cover them too.
+  llvm::SmallSetVector<SILFunction *, 8> covered(members.begin(),
+                                                 members.end());
+  scopedMembers = &covered;
+  SWIFT_DEFER { scopedMembers = nullptr; };
 
   unsigned Idx = 0, NumTransforms = Transformations.size();
 
@@ -1147,13 +1162,36 @@ void SILPassManager::executeScopedForFunction(SILFunction *targetFn) {
            isa<SILFunctionTransform>(Transformations[Idx]))
       ++Idx;
 
-    runFunctionPassesOnFunction(FirstFuncTrans, Idx, targetFn);
+    // Copy the list: a member's run may add functions, which the run covers
+    // through the worklist instead.
+    if (Idx > FirstFuncTrans) {
+      llvm::SmallVector<SILFunction *, 8> current(covered.begin(),
+                                                  covered.end());
+      for (SILFunction *F : current)
+        if (F->isDefinition())
+          runFunctionPassesOnFunction(FirstFuncTrans, Idx, F);
+    }
 
-    // Only function passes are supported in scoped execution. A module or
-    // closure group pass must be converted to a function pass before it can
-    // participate in per-function execution.
-    ASSERT(Idx >= NumTransforms &&
-           "scoped execution runs only function passes");
+    unsigned FirstGroupTrans = Idx;
+    while (Idx < NumTransforms &&
+           isa<SILClosureGroupTransform>(Transformations[Idx]))
+      ++Idx;
+
+    // The members form one closure group: the caller passes a closure
+    // component, so every [closure] link between definitions stays inside it.
+    if (Idx > FirstGroupTrans) {
+      llvm::SmallVector<SILFunction *, 4> group;
+      for (SILFunction *F : covered)
+        if (F->isDefinition())
+          group.push_back(F);
+      runClosureGroupBlock(FirstGroupTrans, Idx, {group});
+    }
+
+    // Module passes are not supported in scoped execution. Each must be
+    // converted to a function or closure group pass first.
+    ASSERT((Idx >= NumTransforms ||
+            isa<SILFunctionTransform>(Transformations[Idx])) &&
+           "scoped execution runs only function and closure group passes");
   }
 }
 
@@ -1428,6 +1466,14 @@ void SILPassManager::notifyOfNewFunction(SILFunction *F, SILTransform *T) {
     dumpPassInfo("*** New SIL function in ", T, F);
     F->dump(getOptions().EmitVerboseSIL);
   }
+  if (scopedMembers) {
+    // A scoped run covers its members and the functions its passes create,
+    // which have no body when reported. A looked-up definition outside the
+    // run belongs to another run, so it joins neither the run nor a group.
+    if (F->isDefinition() && !scopedMembers->count(F))
+      return;
+    scopedMembers->insert(F);
+  }
   if (!closureGroupBlock)
     return;
 
@@ -1469,9 +1515,14 @@ void SILPassManager::runClosureGroupPasses(unsigned FromTransIdx,
   if (ToTransIdx <= FromTransIdx || !continueTransforming())
     return;
 
-  assert(!closureGroupBlock && "closure group blocks don't nest");
   ClosureGroupSchedule schedule(*Mod, getAnalysis<BasicCalleeAnalysis>());
-  ArrayRef<ClosureGroupSchedule::Group> groups = schedule.getGroups();
+  runClosureGroupBlock(FromTransIdx, ToTransIdx, schedule.getGroups());
+}
+
+void SILPassManager::runClosureGroupBlock(
+    unsigned FromTransIdx, unsigned ToTransIdx,
+    ArrayRef<ClosureGroupSchedule::Group> groups) {
+  assert(!closureGroupBlock && "closure group blocks don't nest");
   ClosureGroupBlock block(groups);
   llvm::SaveAndRestore runningBlock(closureGroupBlock, &block);
   if (SILPrintPassName)
@@ -1488,7 +1539,9 @@ void SILPassManager::runClosureGroupPasses(unsigned FromTransIdx,
 
   // A group pass verifies only its members, so verify the module once before
   // the block for verify-before options, as a module pass would.
-  if (anyGroupPassMatches(verifyBefore))
+  // A scoped run covers part of a module whose other functions may be at
+  // any stage, so it verifies only its members.
+  if (anyGroupPassMatches(verifyBefore) && !scopedMembers)
     verifyModule();
 
   for (unsigned index = 0, e = groups.size(); index != e; ++index) {
@@ -1502,14 +1555,15 @@ void SILPassManager::runClosureGroupPasses(unsigned FromTransIdx,
   // Per-member verification never checks module-level state, so verify the
   // module after the block, as runModulePass does after a module pass.
   if ((getOptions().VerifyAll || anyGroupPassMatches(verifyAfter)) &&
-      continueTransforming())
+      continueTransforming() && !scopedMembers)
     verifyModule();
 
   // A definition that appeared during the block without notifyOfNewFunction
   // belongs to no group and missed the block's passes. A body that is already
   // canonical, deserialized or advanced ahead of the stage floor, needs no
   // mandatory passes.
-  if (CONDITIONAL_ASSERT_enabled() && continueTransforming()) {
+  if (CONDITIONAL_ASSERT_enabled() && continueTransforming() &&
+      !scopedMembers) {
     for (SILFunction &F : *Mod)
       ASSERT((!F.isDefinition() || F.isAlreadyCanonical() ||
               block.hasGroup(&F)) &&

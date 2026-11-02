@@ -369,21 +369,40 @@ SILPassPipelinePlan::getDiagnosticPassPipeline(const SILOptions &Options) {
   return P;
 }
 
+/// Spike: run the closure group passes in the function-only pipeline, over
+/// the closure component that DiagnosedSILFunctionRequest passes.
+static llvm::cl::opt<bool> SILOnDemandClosureGroups(
+    "sil-on-demand-closure-groups", llvm::cl::init(false),
+    llvm::cl::desc("On demand, run the closure group passes per closure "
+                   "component"));
+
+bool swift::isSILOnDemandClosureGroupsEnabled() {
+  return SILOnDemandClosureGroups;
+}
+
 /// Mirrors addMandatoryDiagnosticOptPipeline with all module passes removed.
 /// Used by the per-function request pipeline for on-demand SIL generation.
+/// With -sil-on-demand-closure-groups, it keeps the closure group passes,
+/// which the scoped executor runs with the component as one group.
 static void
 addFunctionOnlyMandatoryDiagnosticOptPipeline(SILPassPipelinePlan &P) {
   P.startPipeline("Function-Only Mandatory Diagnostic Passes",
                    /*isFunctionPassPipeline=*/true);
 
-  // MarkNeverWrittenMutableClosureBoxesAsImmutable: module pass, omitted.
+  bool groups = SILOnDemandClosureGroups;
+  if (groups)
+    P.addMarkNeverWrittenMutableClosureBoxesAsImmutable();
   P.addDiagnoseInvalidEscapingCaptures();
   P.addReferenceBindingTransform();
   P.addNestedSemanticFunctionCheck();
-  // CapturePromotion: module pass, omitted.
-  // AccessEnforcementSelection: module pass, omitted.
+  if (groups) {
+    P.addCapturePromotion();
+    P.addAccessEnforcementSelection();
+  }
+  // MandatoryAllocBoxToStack: module pass, replaced by the function pass.
   P.addAllocBoxToStack();
-  // DiagnoseStaticExclusivity: module pass, omitted.
+  if (groups)
+    P.addDiagnoseStaticExclusivity();
 
   P.addNoReturnFolding();
   P.addBooleanLiteralFolding();

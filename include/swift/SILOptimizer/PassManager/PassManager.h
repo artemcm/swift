@@ -19,6 +19,7 @@
 #include "swift/SILOptimizer/PassManager/PassPipeline.h"
 #include "swift/SILOptimizer/PassManager/Passes.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Chrono.h"
@@ -231,6 +232,10 @@ class SILPassManager {
   /// module during the scoped pipeline.
   bool isScopedForFunction = false;
 
+  /// While a scoped run covers several functions, the functions it covers.
+  /// Functions its passes create are added, so later passes cover them too.
+  llvm::SmallSetVector<SILFunction *, 8> *scopedMembers = nullptr;
+
   /// The notification handler for this specific SILPassManager.
   ///
   /// This is not owned by the pass manager, it is owned by the SILModule which
@@ -423,9 +428,15 @@ public:
   void executePassPipelinePlan(const SILPassPipelinePlan &Plan,
                                SILFunction *targetFn);
 
-  /// Run the loaded pipeline scoped to a single function.
-  /// Only function passes are supported; asserts on module passes.
-  void executeScopedForFunction(SILFunction *targetFn);
+  /// Load a pipeline plan and run it scoped to \p members, a closure component:
+  /// function passes on each member, and closure group passes with the members
+  /// as one group. The members must all be at the pipeline's start.
+  void executePassPipelinePlan(const SILPassPipelinePlan &Plan,
+                               llvm::ArrayRef<SILFunction *> members);
+
+  /// Run the loaded pipeline scoped to \p members. Function and closure group
+  /// passes are supported; asserts on module passes.
+  void executeScoped(llvm::ArrayRef<SILFunction *> members);
 
   using Transformee = llvm::PointerUnion<SILValue, SILInstruction *>;
   bool continueWithNextSubpassRun(std::optional<Transformee> forTransformee,
@@ -511,6 +522,12 @@ private:
   /// definitions: the schedule's members, then functions that joined the
   /// group.
   void runClosureGroupPass(unsigned TransIdx);
+
+  /// Run the closure group transforms from \p FromTransIdx to \p ToTransIdx as
+  /// one block over \p groups, in order.
+  void runClosureGroupBlock(unsigned FromTransIdx, unsigned ToTransIdx,
+                            llvm::ArrayRef<llvm::SmallVector<SILFunction *, 4>>
+                                groups);
 
   /// Asserts that \p F, deleted by the running closure group transform, is in
   /// its group, then removes \p F from the group.
