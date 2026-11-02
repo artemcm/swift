@@ -1347,6 +1347,16 @@ class OnDemandMandatoryInlining : public SILFunctionTransform {
 
     if (changed)
       invalidateAnalysis(SILAnalysis::InvalidationKind::FunctionBody);
+
+    // As the module pass does after inlining into a function: removing
+    // unreachable blocks and inlining can leave loops to break and lifetimes
+    // to complete, which the pass manager requires before the next pass.
+    if (F->isDefinition()) {
+      if (F->needBreakInfiniteLoops())
+        breakInfiniteLoops(getPassManager(), F);
+      if (F->needCompleteLifetimes())
+        completeAllLifetimes(getPassManager(), F);
+    }
   }
 
 public:
