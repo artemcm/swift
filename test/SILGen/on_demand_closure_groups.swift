@@ -1,15 +1,15 @@
-// RUN: %target-swift-frontend -emit-sil %s -o /dev/null -verify -D CONFLICT -Xllvm -sil-on-demand-emission -Xllvm -sil-on-demand-closure-groups
-// RUN: %target-swift-frontend -emit-sil %s -module-name T -o /dev/null -Xllvm -sil-on-demand-emission -Xllvm -sil-on-demand-closure-groups -Xllvm -debug-only=silgen-requests 2>&1 | %FileCheck %s --check-prefix=COMPONENT
-// RUN: %target-swift-frontend -emit-sil %s -module-name T -Xllvm -sil-on-demand-emission -Xllvm -sil-on-demand-closure-groups -o - 2>/dev/null | %FileCheck %s
+// RUN: %target-swift-frontend -emit-sil %s -o /dev/null -verify -D CONFLICT -Xllvm -sil-on-demand-emission
+// RUN: %target-swift-frontend -emit-sil %s -module-name T -o /dev/null -Xllvm -sil-on-demand-emission -Xllvm -debug-only=silgen-requests 2>&1 | %FileCheck %s --check-prefix=COMPONENT
+// RUN: %target-swift-frontend -emit-sil %s -module-name T -Xllvm -sil-on-demand-emission -o - 2>/dev/null | %FileCheck %s
 
 // REQUIRES: asserts
 
-// On demand, -sil-on-demand-closure-groups runs the closure group passes
+// On demand, the function-only pipeline runs the closure group passes
 // (MarkNeverWritten, CapturePromotion, AccessEnforcementSelection, and
 // DiagnoseStaticExclusivity) once per closure component: the root, and the
-// closures and local functions it references, transitively. Without it, the
-// function-only pipeline omits them, and a function with an access marker
-// aborts the verifier (D2).
+// closures and local functions it references, transitively. Before they ran
+// by default, the function-only pipeline omitted them, and a function with an
+// access marker aborted the verifier (D2).
 
 // A local var captured by a closure: AccessEnforcementSelection selects its
 // enforcement, for the parent and the closure together.

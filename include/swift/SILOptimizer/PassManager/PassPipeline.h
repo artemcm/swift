@@ -34,11 +34,6 @@ namespace swift {
 
 class SILPassPipelinePlan;
 
-/// Spike: whether -sil-on-demand-closure-groups is set. On demand, the
-/// function-only diagnostic pipeline then runs the closure group passes over
-/// each closure component.
-bool isSILOnDemandClosureGroupsEnabled();
-
 struct SILPassPipeline final {
   unsigned ID;
   StringRef Name;

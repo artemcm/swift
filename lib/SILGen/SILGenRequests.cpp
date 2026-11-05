@@ -208,11 +208,11 @@ static bool isClosureOrLocalFunction(SILDeclRef ref) {
          ref.getDecl()->getDeclContext()->isLocalContext();
 }
 
-/// Spike: the closure component of \p root, as far as it can be found from
-/// \p root on demand: \p root, then each closure and local function that a
-/// member references, transitively. Each member's body is emitted and run
-/// through the SILGen pipeline. A closure that another root's run already
-/// canonicalized is not a member.
+/// The closure component of \p root, as far as it can be found from \p root
+/// on demand: \p root, then each closure and local function that a member
+/// references, transitively. Each member's body is emitted and run through the
+/// SILGen pipeline. A closure that another root's run already canonicalized is
+/// not a member.
 static void collectClosureComponent(Evaluator &evaluator, SILFunction *root,
                                     llvm::SmallSetVector<SILFunction *, 8> &members) {
   members.insert(root);
@@ -255,14 +255,9 @@ DiagnosedSILFunctionRequest::evaluate(Evaluator &evaluator,
   auto &silMod = f->getModule();
   auto plan = SILPassPipelinePlan::getFunctionOnlyDiagnosticPassPipeline(
       silMod.getOptions());
-  if (!isSILOnDemandClosureGroupsEnabled()) {
-    SILPassManager PM(&silMod, /*isMandatory=*/true, /*IRMod=*/nullptr);
-    PM.executePassPipelinePlan(plan, f);
-    return f;
-  }
 
-  // Spike: run the diagnostic pipeline once over f's closure component, so
-  // that the closure group passes see each closure with its scope.
+  // Run the diagnostic pipeline once over f's closure component, so that the
+  // closure group passes see each closure with its scope.
   llvm::SmallSetVector<SILFunction *, 8> members;
   collectClosureComponent(evaluator, f, members);
   DEBUG_WITH_TYPE("silgen-requests", {
