@@ -431,7 +431,7 @@ addFunctionOnlyMandatoryDiagnosticOptPipeline(SILPassPipelinePlan &P) {
     }
   }
   P.addOnDemandMandatoryInlining();
-  // MandatorySILLinker: module pass, omitted.
+  P.addOnDemandSILLinker();
 
   P.addMandatoryRedundantLoadElimination();
   P.addOSLogOptimization();

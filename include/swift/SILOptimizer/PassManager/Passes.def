@@ -416,6 +416,8 @@ LEGACY_PASS(LateReleaseHoisting, "late-release-hoisting",
      "Late SIL release Hoisting Preserving Epilogues")
 LEGACY_PASS(MandatorySILLinker, "mandatory-linker",
      "Deserialize all referenced SIL functions that are shared or transparent")
+LEGACY_PASS(OnDemandSILLinker, "on-demand-linker",
+     "Deserialize the shared or transparent SIL functions one function references")
 LEGACY_PASS(PerformanceSILLinker, "performance-linker",
      "Deserialize all referenced SIL functions")
 LEGACY_PASS(RawSILInstLowering, "raw-sil-inst-lowering",
