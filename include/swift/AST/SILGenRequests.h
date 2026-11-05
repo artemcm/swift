@@ -111,6 +111,12 @@ public:
 
 void simple_display(llvm::raw_ostream &out, const ASTLoweringDescriptor &d);
 
+/// Whether this compilation lowers a single root on demand
+/// (-sil-on-demand-emission with -sil-on-demand-root). Its SIL output then
+/// leaves out the module's Swift declarations: printing them would compute
+/// every declaration's signature, which the single root never needs.
+bool isSILOnDemandRootSelected();
+
 SourceLoc extractNearestSourceLoc(const ASTLoweringDescriptor &desc);
 
 /// Lowers a file or module to SIL. In most cases this involves transforming

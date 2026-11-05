@@ -36,6 +36,7 @@
 #include "swift/AST/IRGenOptions.h"
 #include "swift/AST/IRGenRequests.h"
 #include "swift/AST/NameLookup.h"
+#include "swift/AST/SILGenRequests.h"
 #include "swift/AST/TBDGenRequests.h"
 #include "swift/Basic/Assertions.h"
 #include "swift/Basic/BasicBridging.h"
@@ -158,7 +159,9 @@ static bool writeSIL(SILModule &SM, ModuleDecl *M, const SILOptions &Opts,
                      llvm::vfs::OutputBackend &Backend) {
   return withOutputPath(M->getDiags(), Backend, OutputFilename,
                         [&](raw_ostream &out) -> bool {
-                          SM.print(out, M, Opts);
+                          SM.print(out, M, Opts,
+                                   /*PrintASTDecls=*/
+                                   !isSILOnDemandRootSelected());
                           return M->getASTContext().hadError();
                         });
 }

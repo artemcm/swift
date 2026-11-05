@@ -60,6 +60,17 @@ static llvm::cl::opt<bool> SILGenOnDemandEmission(
     llvm::cl::desc("Use request-based on-demand emission instead of "
                    "emitSourceFile (for testing the on-demand SILGen path)"));
 
+static llvm::cl::opt<std::string> SILGenOnDemandRoot(
+    "sil-on-demand-root", llvm::cl::init(""),
+    llvm::cl::value_desc("line[:col] or name"),
+    llvm::cl::desc("With -sil-on-demand-emission, lower only the function "
+                   "at this position of the file, or the top-level function "
+                   "with this name, with its closures and local functions"));
+
+bool swift::isSILOnDemandRootSelected() {
+  return SILGenOnDemandEmission && !SILGenOnDemandRoot.empty();
+}
+
 //===----------------------------------------------------------------------===//
 // SILGenModule Class implementation
 //===----------------------------------------------------------------------===//
@@ -2514,13 +2525,90 @@ static bool isEmittedHere(SILFunction *callee, SILDeclRef calleeRef,
   return llvm::is_contained(filesToEmit, sf);
 }
 
+/// The function among \p members whose source range \p contains accepts: a
+/// method, or a method of a nested type. Accessors aren't roots.
+static FuncDecl *
+findOnDemandRootMember(IterableDeclContext *members,
+                       llvm::function_ref<bool(Decl *)> contains) {
+  for (auto *member : members->getMembers()) {
+    if (!contains(member))
+      continue;
+    if (auto *fd = dyn_cast<FuncDecl>(member))
+      return isa<AccessorDecl>(fd) ? nullptr : fd;
+    if (auto *ntd = dyn_cast<NominalTypeDecl>(member))
+      return findOnDemandRootMember(ntd, contains);
+    return nullptr;
+  }
+  return nullptr;
+}
+
+/// The function that -sil-on-demand-root names in \p sf, or null. A SPEC of
+/// LINE or LINE:COL selects the outermost function whose source range
+/// contains that position: a top-level function, or a method of a top-level
+/// type or extension. Any other SPEC is a top-level function's base name.
+static FuncDecl *findOnDemandRoot(SourceFile &sf, StringRef spec) {
+  auto &SM = sf.getASTContext().SourceMgr;
+  auto [lineStr, colStr] = spec.split(':');
+  unsigned line = 0, col = 0;
+  bool byPosition = !lineStr.getAsInteger(10, line) && line > 0 &&
+                    (colStr.empty() || !colStr.getAsInteger(10, col));
+
+  // Whether the decl's range, attributes included, contains the position.
+  auto contains = [&](Decl *D) {
+    auto range = D->getSourceRangeIncludingAttrs();
+    if (range.isInvalid())
+      return false;
+    auto start = SM.getPresumedLineAndColumnForLoc(range.Start);
+    auto end = SM.getPresumedLineAndColumnForLoc(range.End);
+    if (line < start.first || line > end.first)
+      return false;
+    if (col && line == start.first && col < start.second)
+      return false;
+    if (col && line == end.first && col > end.second)
+      return false;
+    return true;
+  };
+
+  for (auto *D : sf.getTopLevelDecls()) {
+    if (!byPosition) {
+      auto *fd = dyn_cast<FuncDecl>(D);
+      if (fd && fd->getBaseIdentifier().str() == spec)
+        return fd;
+      continue;
+    }
+    if (!contains(D))
+      continue;
+    if (auto *fd = dyn_cast<FuncDecl>(D))
+      return fd;
+    if (auto *ntd = dyn_cast<NominalTypeDecl>(D))
+      return findOnDemandRootMember(ntd, contains);
+    if (auto *ed = dyn_cast<ExtensionDecl>(D))
+      return findOnDemandRootMember(ed, contains);
+    return nullptr;
+  }
+  return nullptr;
+}
+
+/// Whether \p ref is one of the -sil-on-demand-root \p roots, or is nested in
+/// one: a closure or a local function, or their auxiliaries.
+static bool isInRootScope(SILDeclRef ref, ArrayRef<const FuncDecl *> roots) {
+  for (auto *dc = ref.getInnermostDeclContext(); dc; dc = dc->getParent())
+    for (auto *root : roots)
+      if (dc == static_cast<const DeclContext *>(root))
+        return true;
+  return false;
+}
+
 /// Scan a function body for function_ref instructions and add discovered
 /// callees to the worklist if they need SILGen body emission and haven't
-/// been resolved yet.
+/// been resolved yet. With -sil-on-demand-root, only the \p roots' own
+/// closures and local functions, and shared functions, which are emitted
+/// wherever they're referenced; the root's other callees stay declarations.
 static void discoverCallees(SILFunction *f,
                             std::deque<SILDeclRef> &worklist,
                             llvm::DenseSet<SILDeclRef> &resolved,
-                            ArrayRef<FileUnit *> filesToEmit) {
+                            ArrayRef<FileUnit *> filesToEmit,
+                            ArrayRef<const FuncDecl *> roots) {
   SmallVector<SILFunction *, 8> allRefs;
   SmallVector<SILDeclRef, 4> queued;
 
@@ -2543,6 +2631,9 @@ static void discoverCallees(SILFunction *f,
       // Functions from other modules (no parent source file) or from
       // non-primary files in the same module are skipped.
       if (!isEmittedHere(callee, calleeRef, filesToEmit))
+        continue;
+      if (!roots.empty() && !isInRootScope(calleeRef, roots) &&
+          !hasSharedVisibility(calleeRef.getLinkage(ForDefinition)))
         continue;
 
       if (!resolved.count(calleeRef)) {
@@ -2603,6 +2694,13 @@ public:
       seedNominal(ntd);
     else if (auto *ed = dyn_cast<ExtensionDecl>(D))
       seedExtension(ed);
+  }
+
+  /// -sil-on-demand-root: seed only \p root, a top-level function or a
+  /// method, as visitTopLevel or seedMember would.
+  void seedRoot(FuncDecl *root) {
+    if (!SGM.shouldSkipDecl(root))
+      seedFunc(root);
   }
 
 private:
@@ -2808,13 +2906,18 @@ private:
 static void queueForcedFunctions(Lowering::SILGenModule &SGM,
                                  std::deque<SILDeclRef> &worklist,
                                  llvm::DenseSet<SILDeclRef> &resolved,
-                                 ArrayRef<FileUnit *> filesToEmit) {
+                                 ArrayRef<FileUnit *> filesToEmit,
+                                 ArrayRef<const FuncDecl *> roots) {
   while (!SGM.pendingForcedFunctions.empty()) {
     auto ref = SGM.pendingForcedFunctions.front();
     SGM.pendingForcedFunctions.pop_front();
     auto *f = SGM.emittedFunctions.lookup(ref);
-    if (f && !resolved.count(ref) && isEmittedHere(f, ref, filesToEmit))
-      worklist.push_back(ref);
+    if (!f || resolved.count(ref) || !isEmittedHere(f, ref, filesToEmit))
+      continue;
+    if (!roots.empty() && !isInRootScope(ref, roots) &&
+        !hasSharedVisibility(ref.getLinkage(ForDefinition)))
+      continue;
+    worklist.push_back(ref);
   }
 }
 
@@ -2837,13 +2940,31 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
   // @derivative witnesses, etc.) through the request system, then the raw
   // body is emitted and its SILDeclRef queued. Nominal types and extensions
   // seed their members the same way.
+  //
+  // With -sil-on-demand-root, seed only the function it names. Under
+  // -experimental-lazy-typecheck, performTypeChecking does nothing, and
+  // seeding a function type-checks its body, so only the root's body is
+  // type-checked, and only what it uses besides.
   OnDemandSeeder seeder(evaluator, SGM, worklist);
+  StringRef rootSpec = SILGenOnDemandRoot;
+  llvm::SmallVector<const FuncDecl *, 2> roots;
   for (auto file : desc.getFilesToEmit()) {
     if (auto *sf = dyn_cast<SourceFile>(file)) {
       performTypeChecking(*sf);
-      for (auto *D : sf->getTopLevelDecls())
-        seeder.visitTopLevel(D);
+      if (rootSpec.empty()) {
+        for (auto *D : sf->getTopLevelDecls())
+          seeder.visitTopLevel(D);
+      } else if (auto *root = findOnDemandRoot(*sf, rootSpec)) {
+        roots.push_back(root);
+        seeder.seedRoot(root);
+      }
     }
+  }
+  if (!rootSpec.empty() && roots.empty()) {
+    SGM.getASTContext().Diags.diagnose(
+        SourceLoc(), diag::error_invalid_arg_value, "-sil-on-demand-root",
+        rootSpec);
+    return;
   }
 
   // Drain conformances accumulated during aux emission, in case the
@@ -2854,7 +2975,7 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
     (void)SGM.getWitnessTable(SGM.pendingConformances.front());
     SGM.pendingConformances.pop_front();
   }
-  queueForcedFunctions(SGM, worklist, resolved, desc.getFilesToEmit());
+  queueForcedFunctions(SGM, worklist, resolved, desc.getFilesToEmit(), roots);
 
   // Process the worklist. The body scan finds only functions that a
   // function_ref names. A function that a body emits but nothing references,
@@ -2879,7 +3000,7 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
       auto *f = evaluateOrFatal(evaluator, SILFunctionBodyRequest{ref});
 
       // Step B: Discover callees by scanning the raw body.
-      discoverCallees(f, worklist, resolved, filesToEmit);
+      discoverCallees(f, worklist, resolved, filesToEmit, roots);
 
       // Step C: Canonicalize (body request cache-hits; pipelines run).
       // evaluateOrDefault a cyclic @_transparent / @inline(__always) chain at
@@ -2894,7 +3015,7 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
         (void)SGM.getWitnessTable(SGM.pendingConformances.front());
         SGM.pendingConformances.pop_front();
       }
-      queueForcedFunctions(SGM, worklist, resolved, filesToEmit);
+      queueForcedFunctions(SGM, worklist, resolved, filesToEmit, roots);
     }
     for (auto &f : SGM.M) {
       auto ref = f.getDeclRef();
@@ -2912,6 +3033,27 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
       }
     }
   } while (!worklist.empty());
+
+  // A root leaves the other functions of its files that it references
+  // unemitted. Each is a declaration, and the verifier requires a declaration
+  // to be available externally: their definitions belong to compilations
+  // that lower them.
+  if (!roots.empty()) {
+    for (auto &f : SGM.M) {
+      auto linkage = f.getLinkage();
+      if (!f.empty() || isAvailableExternally(linkage) ||
+          hasSharedVisibility(linkage))
+        continue;
+      auto ref = f.getDeclRef();
+      auto *dc = ref ? ref.getInnermostDeclContext() : nullptr;
+      auto *sf = dc ? dc->getParentSourceFile() : nullptr;
+      if (!sf || !llvm::is_contained(filesToEmit, sf))
+        continue;
+      f.setLinkage(linkage == SILLinkage::Private
+                       ? SILLinkage::HiddenExternal
+                       : addExternalToLinkage(linkage));
+    }
+  }
 
   // Strip bodies from cross-primary functions that were SILGen'd on demand
   // for @_transparent inlining. These functions have definition linkage
