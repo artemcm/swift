@@ -314,6 +314,18 @@ public:
 #undef SWIFT_TYPEID_ZONE
   }
 
+  /// Clear the cached results of every request in \p zone.
+  void clearZone(Zone zone) {
+    switch (zone) {
+#define SWIFT_TYPEID_ZONE(Name, Id)                                            \
+    case Zone::Name:                                                           \
+      Name##ZoneCache.clear();                                                 \
+      return;
+#include "swift/Basic/TypeIDZones.def"
+#undef SWIFT_TYPEID_ZONE
+    }
+  }
+
   void dump(llvm::raw_ostream &out) {
 #define SWIFT_TYPEID_ZONE(Name, Id)                                            \
     for (auto &entry : Name##ZoneCache) {                                      \
@@ -442,6 +454,18 @@ public:
 #define SWIFT_TYPEID_ZONE(Name, Id) Name##ZoneRefs.clear();
 #include "swift/Basic/TypeIDZones.def"
 #undef SWIFT_TYPEID_ZONE
+  }
+
+  /// Clear the recorded references of every request in \p zone.
+  void clearZone(Zone zone) {
+    switch (zone) {
+#define SWIFT_TYPEID_ZONE(Name, Id)                                            \
+    case Zone::Name:                                                           \
+      Name##ZoneRefs.clear();                                                  \
+      return;
+#include "swift/Basic/TypeIDZones.def"
+#undef SWIFT_TYPEID_ZONE
+    }
   }
 };
 

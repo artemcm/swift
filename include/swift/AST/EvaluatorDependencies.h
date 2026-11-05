@@ -122,6 +122,9 @@ public:
   template<typename Request>
   void clearRequest(const Request &req);
 
+  /// Clear the recorded dependencies of every request in \p zone.
+  void clearZone(Zone zone) { requestReferences.clearZone(zone); }
+
 private:
   /// Add an entry to the innermost set on the activeRequestReferences stack.
   /// Called from the DependencyCollector.

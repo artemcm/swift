@@ -2668,6 +2668,14 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
 std::unique_ptr<SILModule>
 ASTLoweringRequest::evaluate(Evaluator &evaluator,
                              ASTLoweringDescriptor desc) const {
+  // The SILGen zone's cached results are valid for one lowering only: they
+  // point into the SILModule built below, or stand for emission into it.
+  // In batch mode, each primary file gets its own ASTLoweringRequest and
+  // SILModule, but all share one evaluator, and the previous primary's module
+  // is destroyed by now. Start from an empty zone. Clearing on entry, not on
+  // exit, keeps the last lowering's entries for -analyze-request-evaluator.
+  evaluator.clearCachedOutputs(Zone::SILGen);
+
   // If we have a .sil file to parse, defer to the parsing request.
   if (desc.getSourceFileToParse()) {
     return evaluateOrFatal(evaluator, ParseSILModuleRequest{desc});
