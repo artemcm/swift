@@ -2726,6 +2726,28 @@ private:
                     ref.print(llvm::dbgs()); llvm::dbgs() << "\n");
   }
 
+  /// Phase 6.2 doesn't emit Objective-C entry points (Phase 6.5). If \p D is
+  /// a class that uses the Objective-C allocator, or a member that legacy
+  /// gives an @objc thunk, diagnose it and return true, so that the caller
+  /// skips it instead of emitting an incomplete class.
+  bool diagnoseObjCEntryPoint(Decl *D) {
+    bool needsObjC = false;
+    if (auto *cd = dyn_cast<ClassDecl>(D))
+      needsObjC = usesObjCAllocator(cd);
+    else if (auto *fd = dyn_cast<FuncDecl>(D))
+      needsObjC = SGM.requiresObjCMethodEntryPoint(fd);
+    else if (auto *ctor = dyn_cast<ConstructorDecl>(D))
+      needsObjC = SGM.requiresObjCMethodEntryPoint(ctor);
+    else if (auto *asd = dyn_cast<AbstractStorageDecl>(D))
+      needsObjC = asd->isObjC();
+    if (!needsObjC)
+      return false;
+    SGM.getASTContext().Diags.diagnose(
+        D->getLoc(), diag::not_implemented,
+        "on-demand SIL emission of Objective-C entry points");
+    return true;
+  }
+
   void seedAuxiliaries(ValueDecl *decl) {
     DEBUG_WITH_TYPE("silgen-requests",
                     llvm::dbgs() << "[emit auxiliary declarations] ";
@@ -2848,6 +2870,8 @@ private:
   void seedMember(Decl *member, bool isClass, bool inExtension) {
     if (SGM.shouldSkipDecl(member))
       return;
+    if (isClass && diagnoseObjCEntryPoint(member))
+      return;
     if (auto *ntd = dyn_cast<NominalTypeDecl>(member)) {
       seedNominal(ntd);
       return;
@@ -2885,6 +2909,8 @@ private:
     if (isa<ProtocolDecl>(ntd))
       return;
     bool isClass = isa<ClassDecl>(ntd);
+    if (isClass && diagnoseObjCEntryPoint(ntd))
+      return;
     SGM.emitLazyConformancesForType(ntd);
     for (Decl *member : ntd->getABIMembers())
       seedMember(member, isClass, /*inExtension=*/false);
