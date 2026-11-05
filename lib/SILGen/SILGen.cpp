@@ -18,6 +18,7 @@
 #include "SILGenFunctionBuilder.h"
 #include "swift/AST/ConformanceLookup.h"
 #include "swift/AST/Decl.h"
+#include "swift/AST/DiagnosticsFrontend.h"
 #include "swift/AST/DiagnosticsSIL.h"
 #include "swift/AST/Evaluator.h"
 #include "swift/AST/GenericEnvironment.h"
@@ -2687,6 +2688,16 @@ ASTLoweringRequest::evaluate(Evaluator &evaluator,
   if (ctx.hadError() &&
       ctx.LangOpts.AllowModuleWithCompilerErrors)
     return silMod;
+
+  // Under -enable-lifetime-resolution, the SILGen pipeline runs a module pass,
+  // MandatoryAllocBoxToStack, which CleanedSILFunctionRequest can't run on one
+  // function and which has no per-function equivalent yet (D3).
+  if (SILGenOnDemandEmission && desc.opts.EnableLifetimeResolution) {
+    ctx.Diags.diagnose(SourceLoc(), diag::error_invalid_arg_combination,
+                       "-sil-on-demand-emission",
+                       "-enable-lifetime-resolution");
+    return silMod;
+  }
 
   SILGenModule SGM(*silMod, silMod->getSwiftModule());
   ActiveSILGenModuleScope activeScope(ctx, SGM);
