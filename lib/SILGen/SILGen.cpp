@@ -82,8 +82,20 @@ bool SILGenModule::isEmittingOnDemand() const {
 void SILGenModule::canonicalizeSynthesizedOnDemand(SILFunction *thunk) {
   if (!isEmittingOnDemand())
     return;
+  if (deferSynthesizedCanonicalization) {
+    deferredSynthesizedFunctions.push_back(thunk);
+    return;
+  }
   (void)evaluateOrDefault(getASTContext().evaluator,
                           CanonicalSynthesizedFunctionRequest{thunk}, nullptr);
+}
+
+void SILGenModule::canonicalizeDeferredSynthesizedFunctions() {
+  deferSynthesizedCanonicalization = false;
+  auto deferred = std::move(deferredSynthesizedFunctions);
+  deferredSynthesizedFunctions.clear();
+  for (auto *thunk : deferred)
+    canonicalizeSynthesizedOnDemand(thunk);
 }
 
 SILGenModule::SILGenModule(SILModule &M, ModuleDecl *SM)
@@ -2678,10 +2690,9 @@ namespace {
 /// SILFunctionBodyRequest at once, so that functions are created in legacy's
 /// order. The worklist then scans and canonicalizes each body.
 ///
-/// Not covered (Phase 6.1): vtables, witness tables, `@objc` thunks, class
-/// initializers, destructors, and stored properties, static stored
-/// properties (globals), and protocols and their extensions. Of a class it
-/// emits only the methods.
+/// Not covered: witness tables, `@objc` thunks and classes that use the
+/// Objective-C allocator (rejected; Phase 6.5), static stored properties
+/// (globals), and protocols and their extensions.
 class OnDemandSeeder {
   Evaluator &evaluator;
   Lowering::SILGenModule &SGM;
@@ -2769,13 +2780,41 @@ private:
     seedBody(SILDeclRef(fd, fd->hasOnlyCEntryPoint()));
   }
 
-  /// SILGenModule::emitConstructor, for a struct or an enum.
+  /// SILGenModule::emitConstructor. A class's designated or @objc initializer
+  /// has two entry points: the allocating one, emitted even without a body,
+  /// and, with a body, the initializing one.
   void seedConstructor(ConstructorDecl *cd) {
     if (SpecializedAttr::isSpecializationDeclaration(cd))
       return;
     seedAuxiliaries(cd);
+    if (cd->getDeclContext()->getSelfClassDecl() &&
+        (cd->isDesignatedInit() || cd->isObjC())) {
+      seedBody(SILDeclRef(cd, SILDeclRef::Kind::Allocator));
+      if (shouldEmitFunctionBody(cd))
+        seedBody(SILDeclRef(cd, SILDeclRef::Kind::Initializer));
+      return;
+    }
     if (shouldEmitFunctionBody(cd))
       seedBody(SILDeclRef(cd));
+  }
+
+  /// SILGenModule::emitDestructor, without the destructors of the
+  /// Objective-C allocator, which diagnoseObjCEntryPoint rejects. A class's
+  /// destructors are part of its metadata, so none is delayed.
+  void seedClassDestructor(ClassDecl *cd, DestructorDecl *dd) {
+    assert(!usesObjCAllocator(cd));
+    seedAuxiliaries(dd);
+    if (SGM.requiresIVarDestroyer(cd))
+      seedBody(SILDeclRef(cd, SILDeclRef::Kind::IVarDestroyer),
+               /*mayDelay=*/false);
+    if (shouldEmitFunctionBody(dd))
+      seedBody(SILDeclRef(dd, SILDeclRef::Kind::Destroyer),
+               /*mayDelay=*/false);
+    if (needsIsolatingDestructor(dd))
+      seedBody(SILDeclRef(dd, SILDeclRef::Kind::IsolatedDeallocator),
+               /*mayDelay=*/false);
+    seedBody(SILDeclRef(dd, SILDeclRef::Kind::Deallocator),
+             /*mayDelay=*/false);
   }
 
   /// SILGenModule::emitMoveOnlyDestructor.
@@ -2876,18 +2915,14 @@ private:
       seedNominal(ntd);
       return;
     }
-    // Of a class, only the methods (Phase 6.2 adds the rest).
-    if (isClass) {
-      if (auto *fd = dyn_cast<FuncDecl>(member))
-        seedFunc(fd);
-      return;
-    }
     if (auto *fd = dyn_cast<FuncDecl>(member)) {
       seedFunc(fd);
     } else if (auto *cd = dyn_cast<ConstructorDecl>(member)) {
       seedConstructor(cd);
     } else if (auto *dd = dyn_cast<DestructorDecl>(member)) {
-      if (!dd->getDeclContext()->getSelfNominalTypeDecl()->canBeCopyable())
+      if (auto *classDecl = dd->getDeclContext()->getSelfClassDecl())
+        seedClassDestructor(classDecl, dd);
+      else if (!dd->getDeclContext()->getSelfNominalTypeDecl()->canBeCopyable())
         seedMoveOnlyDestructor(dd);
     } else if (auto *vd = dyn_cast<VarDecl>(member)) {
       seedVar(vd, inExtension);
@@ -2904,7 +2939,7 @@ private:
     }
   }
 
-  /// SILGenType::emitType, without vtables and witness tables.
+  /// SILGenType::emitType, without the witness tables.
   void seedNominal(NominalTypeDecl *ntd) {
     if (isa<ProtocolDecl>(ntd))
       return;
@@ -2914,6 +2949,16 @@ private:
     SGM.emitLazyConformancesForType(ntd);
     for (Decl *member : ntd->getABIMembers())
       seedMember(member, isClass, /*inExtension=*/false);
+    // After a class's members, its vtable, and a resilient class's default
+    // override table.
+    if (auto *cd = dyn_cast<ClassDecl>(ntd); cd && !cd->hasClangNode()) {
+      (void)evaluateOrFatal(evaluator, SILVTableRequest{cd});
+      if (cd->isResilient()) {
+        auto *sf = cd->getParentSourceFile();
+        if (!sf || sf->Kind != SourceFileKind::Interface)
+          SGM.emitDefaultOverrideTable(cd);
+      }
+    }
     if (!isClass && !ntd->canBeCopyable()) {
       SGM.emitNonCopyableTypeDeinitTable(ntd);
       SGM.recordNonCopyableTypeWithEmittedMetadata(ntd);
@@ -2982,6 +3027,12 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
   OnDemandSeeder seeder(evaluator, SGM, worklist);
   StringRef rootSpec = SILGenOnDemandRoot;
   llvm::SmallVector<const FuncDecl *, 2> roots;
+  // The seeder emits a class's members before its vtable, and a thunk that
+  // one of them creates (a key path accessor of a property descriptor, say)
+  // may call a method that the mandatory inliner devirtualizes against that
+  // vtable. Legacy runs every pipeline after all of SILGen, so canonicalize
+  // the thunks created while seeding once seeding ends.
+  SGM.deferSynthesizedCanonicalization = true;
   for (auto file : desc.getFilesToEmit()) {
     if (auto *sf = dyn_cast<SourceFile>(file)) {
       performTypeChecking(*sf);
@@ -2995,11 +3046,13 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
     }
   }
   if (!rootSpec.empty() && roots.empty()) {
+    SGM.deferSynthesizedCanonicalization = false;
     SGM.getASTContext().Diags.diagnose(
         SourceLoc(), diag::error_invalid_arg_value, "-sil-on-demand-root",
         rootSpec);
     return;
   }
+  SGM.canonicalizeDeferredSynthesizedFunctions();
 
   // Drain conformances accumulated during aux emission, in case the
   // worklist iteration below never runs (e.g. no FuncDecl has

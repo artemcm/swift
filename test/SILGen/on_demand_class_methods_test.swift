@@ -1,19 +1,17 @@
-// Phase 6.1 emits the bodies of class methods on demand, like those of struct
-// and enum members. It doesn't emit a class's vtable, destructors, accessors,
-// or @objc thunks: those come with vtables in Phase 6.2. Without the SIL
-// vtable, the mandatory inliner can't devirtualize a call to a non-final
-// stored property's accessor, so on demand the call stays dynamic where legacy
-// inlines the accessor. A final stored property is accessed directly on both
-// paths.
+// Phase 6.1 emitted the bodies of class methods on demand without the class's
+// vtable, so the mandatory inliner couldn't devirtualize a call to a
+// non-final stored property's accessor: the call stayed dynamic where legacy
+// inlines the accessor. Phase 6.2 emits the vtable and the accessors, and the
+// output equals legacy's. A final stored property is accessed directly on
+// both paths.
 
 // RUN: %empty-directory(%t)
 // RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M %s \
 // RUN:   -o %t/legacy.sil
 // RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M %s \
 // RUN:   -o %t/ondemand.sil -sil-verify-all -Xllvm -sil-on-demand-emission
-// RUN: %FileCheck --check-prefixes=CHECK,LEGACY %s < %t/legacy.sil
-// RUN: %FileCheck --check-prefixes=CHECK,ONDEMAND \
-// RUN:   --implicit-check-not=sil_vtable %s < %t/ondemand.sil
+// RUN: diff %t/legacy.sil %t/ondemand.sil
+// RUN: %FileCheck %s < %t/ondemand.sil
 
 final class Account {
   final var balance: Int = 0
@@ -42,8 +40,7 @@ final class Account {
 class Base {
   var tag = 0
   // CHECK-LABEL: sil hidden @$s1M4BaseC4bumpyyF :
-  // LEGACY: ref_element_addr %0, #Base.tag
-  // ONDEMAND: class_method %0, #Base.tag!modify
+  // CHECK: ref_element_addr %0, #Base.tag
   // CHECK: } // end sil function '$s1M4BaseC4bumpyyF'
   func bump() { tag &+= 1 }
 }
@@ -53,5 +50,5 @@ extension Base {
   func twice() { bump(); bump() }
 }
 
-// LEGACY: sil_vtable Account {
-// LEGACY: sil_vtable Base {
+// CHECK: sil_vtable Account {
+// CHECK: sil_vtable Base {

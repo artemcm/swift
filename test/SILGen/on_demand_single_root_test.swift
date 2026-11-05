@@ -69,6 +69,17 @@
 // UNKNOWN: error: invalid value 'nope' in '-sil-on-demand-root'
 // NOLINE: error: invalid value '200' in '-sil-on-demand-root'
 
+// A method of a class, by a line in its body: only it is lowered, and the
+// class gets no vtable (single-root lowering emits none).
+// RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
+// RUN:   -sil-verify-all -Xllvm -sil-on-demand-emission \
+// RUN:   -Xllvm -sil-on-demand-root=4 %t/Klass.swift -o %t/klass.sil
+// RUN: %FileCheck --check-prefix=KLASS --implicit-check-not=sil_vtable %s \
+// RUN:   < %t/klass.sil
+// RUN: %FileCheck --check-prefix=KLASSNOT %s < %t/klass.sil
+// KLASS: sil hidden {{.*}}@$s1M6LedgerC4postyyF : {{.*}} {
+// KLASSNOT-NOT: @$s1M6LedgerC6reviewSiyF : {{.*}} {
+
 //--- Root.swift
 func helper(_ x: Int) -> Int { return x + 1 }
 @_transparent func inlined(_ x: Int) -> Int { return x * 2 }
@@ -83,4 +94,13 @@ struct S {
   func method() -> Int {
     return other() + v
   }
+}
+
+//--- Klass.swift
+class Ledger {
+  var total = 0
+  func post() {
+    total &+= 1
+  }
+  func review() -> Int { return total }
 }

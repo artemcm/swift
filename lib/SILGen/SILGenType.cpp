@@ -220,6 +220,7 @@ SILGenModule::emitVTableMethod(ClassDecl *theClass, SILDeclRef derived,
                      derivedInfo.LoweredType,
                      baseLessVisibleThanDerived);
   emitLazyConformancesForFunction(thunk);
+  canonicalizeSynthesizedOnDemand(thunk);
 
   return SILVTable::Entry(base, thunk, implKind, false);
 }
@@ -1462,6 +1463,7 @@ SILFunction *SILGenModule::emitDefaultOverride(SILDeclRef replacement,
   SGF.B.setInsertionPoint(errorBlock);
   SGF.B.createAbortApply(loc, token);
   SGF.B.createUnwind(loc);
+  canonicalizeSynthesizedOnDemand(function);
   return function;
 }
 

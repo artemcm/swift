@@ -174,8 +174,18 @@ public:
   bool isEmittingOnDemand() const;
 
   /// Canonicalize a synthesized thunk (no SILDeclRef) via
-  /// CanonicalSynthesizedFunctionRequest. No-op on the legacy path.
+  /// CanonicalSynthesizedFunctionRequest. No-op on the legacy path. While the
+  /// on-demand seeder runs, queue the thunk instead:
+  /// canonicalizeDeferredSynthesizedFunctions runs it once seeding ends, when
+  /// every vtable the inliner may devirtualize against exists.
   void canonicalizeSynthesizedOnDemand(SILFunction *thunk);
+
+  /// Stop deferring, and canonicalize the thunks queued while seeding.
+  void canonicalizeDeferredSynthesizedFunctions();
+
+  /// Set while the on-demand seeder runs; see canonicalizeSynthesizedOnDemand.
+  bool deferSynthesizedCanonicalization = false;
+  std::vector<SILFunction *> deferredSynthesizedFunctions;
 
   /// Get or create the declaration of a reabstraction thunk with the
   /// given signature.
