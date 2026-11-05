@@ -3039,6 +3039,14 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
       if (rootSpec.empty()) {
         for (auto *D : sf->getTopLevelDecls())
           seeder.visitTopLevel(D);
+        // SILGenModule::emitSourceFile's local types, after the top-level
+        // declarations. Legacy visits the hoisted declarations in between;
+        // the seeder doesn't.
+        for (TypeDecl *TD : sf->getLocalTypeDecls()) {
+          if (TD->getDeclContext()->getInnermostSkippedFunctionContext())
+            continue;
+          seeder.visitTopLevel(TD);
+        }
       } else if (auto *root = findOnDemandRoot(*sf, rootSpec)) {
         roots.push_back(root);
         seeder.seedRoot(root);
