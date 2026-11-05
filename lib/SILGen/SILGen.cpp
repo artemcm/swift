@@ -1375,6 +1375,16 @@ void SILGenModule::emitFunctionDefinition(SILDeclRef constant, SILFunction *f) {
   }
 }
 
+/// Whether emitOrDelayFunction may delay \p constant until something
+/// references it: an implicit declaration that can't be used externally.
+static bool mayDelayEmission(SILModule &M, SILDeclRef constant) {
+  auto linkage = constant.getLinkage(ForDefinition);
+  return !constant.shouldBeEmittedForDebugger() &&
+         !constant.hasUserWrittenCode() &&
+         !constant.isDynamicallyReplaceable() &&
+         !isPossiblyUsedExternally(linkage, M.isWholeModule());
+}
+
 void SILGenModule::emitOrDelayFunction(SILDeclRef constant) {
   assert(!constant.isThunk());
   assert(!constant.isClangImported());
@@ -1382,11 +1392,7 @@ void SILGenModule::emitOrDelayFunction(SILDeclRef constant) {
   auto emitAfter = lastEmittedFunction;
 
   // Implicit decls may be delayed if they can't be used externally.
-  auto linkage = constant.getLinkage(ForDefinition);;
-  bool mayDelay = !constant.shouldBeEmittedForDebugger() &&
-                  !constant.hasUserWrittenCode() &&
-                  !constant.isDynamicallyReplaceable() &&
-                  !isPossiblyUsedExternally(linkage, M.isWholeModule());
+  bool mayDelay = mayDelayEmission(M, constant);
 
   if (!mayDelay) {
     // We may visit the same function multiple times in some cases. For
