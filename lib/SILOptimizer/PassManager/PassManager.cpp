@@ -1141,6 +1141,38 @@ void SILPassManager::executePassPipelinePlan(
   }
 }
 
+/// \p members in bottom-up order, as runFunctionPasses orders the module:
+/// each after the members it references. A depth-first post-order over the
+/// function_ref edges between members; a cycle is broken where it closes.
+static llvm::SmallVector<SILFunction *, 8>
+getBottomUpOrder(llvm::ArrayRef<SILFunction *> members) {
+  llvm::SmallPtrSet<SILFunction *, 8> isMember(members.begin(), members.end());
+  llvm::SmallPtrSet<SILFunction *, 8> visited;
+  llvm::SmallVector<SILFunction *, 8> order;
+  // Each entry: a function, and whether its callees have been pushed.
+  llvm::SmallVector<std::pair<SILFunction *, bool>, 8> stack;
+  for (SILFunction *member : members) {
+    stack.push_back({member, false});
+    while (!stack.empty()) {
+      auto [F, expanded] = stack.pop_back_val();
+      if (expanded) {
+        order.push_back(F);
+        continue;
+      }
+      if (!visited.insert(F).second)
+        continue;
+      stack.push_back({F, true});
+      for (auto &BB : *F)
+        for (auto &I : BB)
+          if (auto *FRI = dyn_cast<FunctionRefBaseInst>(&I))
+            if (auto *callee = FRI->getReferencedFunctionOrNull())
+              if (isMember.count(callee) && !visited.count(callee))
+                stack.push_back({callee, false});
+    }
+  }
+  return order;
+}
+
 void SILPassManager::executeScoped(llvm::ArrayRef<SILFunction *> members) {
   // Recursive request evaluation during the pipeline may add new functions
   // to the module that this PM's verifier analysis never saw at
@@ -1162,11 +1194,15 @@ void SILPassManager::executeScoped(llvm::ArrayRef<SILFunction *> members) {
            isa<SILFunctionTransform>(Transformations[Idx]))
       ++Idx;
 
-    // Copy the list: a member's run may add functions, which the run covers
-    // through the worklist instead.
+    // Run the span over the members bottom-up, callees before callers, as
+    // runFunctionPasses orders the module: a pass may read a callee that the
+    // span has processed already. FlowIsolation analyzes the defer body that
+    // a function calls, and needs NoReturnFolding to have run on it. Copy the
+    // list: a member's run may add functions, which the run covers through
+    // the worklist instead.
     if (Idx > FirstFuncTrans) {
-      llvm::SmallVector<SILFunction *, 8> current(covered.begin(),
-                                                  covered.end());
+      llvm::SmallVector<SILFunction *, 8> current =
+          getBottomUpOrder(covered.getArrayRef());
       for (SILFunction *F : current)
         if (F->isDefinition())
           runFunctionPassesOnFunction(FirstFuncTrans, Idx, F);
