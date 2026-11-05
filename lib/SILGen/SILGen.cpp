@@ -2856,39 +2856,62 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
   }
   queueForcedFunctions(SGM, worklist, resolved, desc.getFilesToEmit());
 
-  // Process the worklist.
+  // Process the worklist. The body scan finds only functions that a
+  // function_ref names. A function that a body emits but nothing references,
+  // such as a local function that is never called, is left out, and the
+  // terminal commitStage would advance its raw body unchecked. Legacy runs
+  // the mandatory pipeline on every function, so each time the worklist
+  // drains, queue every definition from the files being emitted that hasn't
+  // advanced, until none is left.
   auto filesToEmit = desc.getFilesToEmit();
-  while (!worklist.empty()) {
-    auto ref = worklist.front();
-    worklist.pop_front();
-    if (!resolved.insert(ref).second)
-      continue;
+  do {
+    while (!worklist.empty()) {
+      auto ref = worklist.front();
+      worklist.pop_front();
+      if (!resolved.insert(ref).second)
+        continue;
 
-    DEBUG_WITH_TYPE("silgen-requests",
-                    llvm::dbgs() << "\n[worklist] processing: ";
-                    ref.print(llvm::dbgs()); llvm::dbgs() << "\n");
+      DEBUG_WITH_TYPE("silgen-requests",
+                      llvm::dbgs() << "\n[worklist] processing: ";
+                      ref.print(llvm::dbgs()); llvm::dbgs() << "\n");
 
-    // Step A: Emit the raw body.
-    auto *f = evaluateOrFatal(evaluator, SILFunctionBodyRequest{ref});
+      // Step A: Emit the raw body.
+      auto *f = evaluateOrFatal(evaluator, SILFunctionBodyRequest{ref});
 
-    // Step B: Discover callees by scanning the raw body.
-    discoverCallees(f, worklist, resolved, filesToEmit);
+      // Step B: Discover callees by scanning the raw body.
+      discoverCallees(f, worklist, resolved, filesToEmit);
 
-    // Step C: Canonicalize (body request cache-hits; pipelines run).
-    // evaluateOrDefault a cyclic @_transparent / @inline(__always) chain at the
-    // top level is diagnosed by the evaluator via
-    // CanonicalSILFunctionRequest::diagnoseCycle and the outer request returns
-    // its default.
-    (void)evaluateOrDefault(evaluator,
-                            CanonicalSILFunctionRequest{ref}, nullptr);
+      // Step C: Canonicalize (body request cache-hits; pipelines run).
+      // evaluateOrDefault a cyclic @_transparent / @inline(__always) chain at
+      // the top level is diagnosed by the evaluator via
+      // CanonicalSILFunctionRequest::diagnoseCycle and the outer request
+      // returns its default.
+      (void)evaluateOrDefault(evaluator,
+                              CanonicalSILFunctionRequest{ref}, nullptr);
 
-    // Drain conformances discovered during body emission.
-    while (!SGM.pendingConformances.empty()) {
-      (void)SGM.getWitnessTable(SGM.pendingConformances.front());
-      SGM.pendingConformances.pop_front();
+      // Drain conformances discovered during body emission.
+      while (!SGM.pendingConformances.empty()) {
+        (void)SGM.getWitnessTable(SGM.pendingConformances.front());
+        SGM.pendingConformances.pop_front();
+      }
+      queueForcedFunctions(SGM, worklist, resolved, filesToEmit);
     }
-    queueForcedFunctions(SGM, worklist, resolved, filesToEmit);
-  }
+    for (auto &f : SGM.M) {
+      auto ref = f.getDeclRef();
+      if (!ref || f.empty() || f.isAlreadyCanonical() || resolved.count(ref))
+        continue;
+      // Ask the SILDeclRef, not the function: a function's DeclContext comes
+      // from its debug scope, which for a default argument generator is an
+      // expression with no DeclContext.
+      auto *dc = ref.getInnermostDeclContext();
+      auto *sf = dc ? dc->getParentSourceFile() : nullptr;
+      if (sf && llvm::is_contained(filesToEmit, sf)) {
+        DEBUG_WITH_TYPE("silgen-requests", llvm::dbgs() << "[sweep] ";
+                        ref.print(llvm::dbgs()); llvm::dbgs() << "\n");
+        worklist.push_back(ref);
+      }
+    }
+  } while (!worklist.empty());
 
   // Strip bodies from cross-primary functions that were SILGen'd on demand
   // for @_transparent inlining. These functions have definition linkage
