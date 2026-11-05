@@ -20,6 +20,7 @@
 #include "ManagedValue.h"
 #include "SILGenFunction.h"
 #include "SILGenFunctionBuilder.h"
+#include "SILGenRequestTrace.h"
 #include "swift/AST/ASTMangler.h"
 #include "swift/AST/ConformanceLookup.h"
 #include "swift/AST/GenericEnvironment.h"
@@ -27,6 +28,7 @@
 #include "swift/AST/PropertyWrappers.h"
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/AST/RequirementEnvironment.h"
+#include "swift/AST/SILGenRequests.h"
 #include "swift/AST/SourceFile.h"
 #include "swift/AST/SubstitutionMap.h"
 #include "swift/AST/TypeMemberVisitor.h"
@@ -327,7 +329,7 @@ public:
   SILGenVTable(SILGenModule &SGM, ClassDecl *theClass)
       : SILGenVTableBase(SGM, theClass) {}
 
-  void emitVTable() {
+  SILVTable *emitVTable() {
     PrettyStackTraceDecl("silgen emitVTable", theClass);
 
     collectMethods();
@@ -376,10 +378,26 @@ public:
       serialized = IsSerialized;
 
     // Finally, create the vtable.
-    SILVTable::create(SGM.M, theClass, serialized, vtableEntries);
+    return SILVTable::create(SGM.M, theClass, serialized, vtableEntries);
   }
 };
 } // end anonymous namespace
+
+SILVTable *SILGenModule::emitVTable(ClassDecl *theClass) {
+  return SILGenVTable(*this, theClass).emitVTable();
+}
+
+SILVTable *SILVTableRequest::evaluate(Evaluator &evaluator,
+                                      ClassDecl *theClass) const {
+  DEBUG_WITH_TYPE("silgen-requests",
+                  silgen_trace::traceIndent() << "-> SILVTableRequest: "
+                                              << theClass->getName() << "\n");
+  silgen_trace::TraceScope _ts;
+  auto *SGM = theClass->getASTContext().getActiveSILGenModule();
+  ASSERT(SGM && "SILVTableRequest evaluated outside SILGen scope");
+  ASSERT(!theClass->hasClangNode() && "an imported class has no SIL vtable");
+  return SGM->emitVTable(theClass);
+}
 
 static void emitTypeMemberGlobalVariable(SILGenModule &SGM,
                                          VarDecl *var) {
@@ -1513,10 +1531,8 @@ public:
 
     // Build a vtable if this is a class.
     if (auto theClass = dyn_cast<ClassDecl>(theType)) {
-      if (!theClass->hasClangNode()) {
-        SILGenVTable genVTable(SGM, theClass);
-        genVTable.emitVTable();
-      }
+      if (!theClass->hasClangNode())
+        SGM.emitVTable(theClass);
       if (!theClass->hasClangNode() && theClass->isResilient()) {
         auto *sourceFile = theClass->getParentSourceFile();
         if (!sourceFile || sourceFile->Kind != SourceFileKind::Interface)

@@ -39,6 +39,7 @@ class SILDifferentiabilityWitness;
 class SILFunction;
 class SILModule;
 class SILOptions;
+class SILVTable;
 class IRGenOptions;
 
 namespace Lowering {
@@ -377,6 +378,23 @@ private:
   SILDifferentiabilityWitness *
   evaluate(Evaluator &evaluator, AbstractFunctionDecl *afd,
            DerivativeAttr *derivAttr) const;
+};
+
+/// The SIL vtable of a class in a file being emitted on demand. Evaluating it
+/// creates the vtable, the declarations of its entries, and the bodies of its
+/// vtable thunks; the entries' own bodies come from the on-demand seeder.
+class SILVTableRequest
+    : public SimpleRequest<SILVTableRequest, SILVTable *(ClassDecl *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  SILVTable *evaluate(Evaluator &evaluator, ClassDecl *theClass) const;
 };
 
 /// Canonicalizes a synthesized SILFunction with no SILDeclRef (reabstraction /

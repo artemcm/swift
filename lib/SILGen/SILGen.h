@@ -163,6 +163,9 @@ public:
   std::optional<SILVTable::Entry>
   emitVTableMethod(ClassDecl *theClass, SILDeclRef derived, SILDeclRef base);
 
+  /// Build the vtable of \p theClass, as SILGenType::emitType does.
+  SILVTable *emitVTable(ClassDecl *theClass);
+
   /// True if a function has been emitted for a given SILDeclRef.
   bool hasFunction(SILDeclRef constant);
 
