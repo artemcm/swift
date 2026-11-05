@@ -252,14 +252,16 @@ private:
 };
 
 /// Orchestrates the emission of all auxiliary SIL functions and
-/// SIL-module side effects associated with an AbstractFunctionDecl.
-/// Mirrors the structure of legacy `SILGenModule::emitAbstractFuncDecl`
-/// but routes each auxiliary kind through a per-feature sub-request,
-/// which in turn fires `CanonicalSILFunctionRequest` for each
-/// auxiliary SILDeclRef.
+/// SIL-module side effects associated with a declaration that has a
+/// parameter list: an AbstractFunctionDecl, a SubscriptDecl, or an
+/// EnumElementDecl. For a function, mirrors the structure of legacy
+/// `SILGenModule::emitAbstractFuncDecl` but routes each auxiliary kind
+/// through a per-feature sub-request, which in turn fires
+/// `CanonicalSILFunctionRequest` for each auxiliary SILDeclRef. A subscript or
+/// an enum element has only argument generators.
 class AuxiliaryDeclEmissionRequest
     : public SimpleRequest<AuxiliaryDeclEmissionRequest,
-                           evaluator::SideEffect(AbstractFunctionDecl *),
+                           evaluator::SideEffect(ValueDecl *),
                            RequestFlags::Cached> {
 public:
   using SimpleRequest::SimpleRequest;
@@ -269,16 +271,16 @@ public:
 private:
   friend SimpleRequest;
 
-  evaluator::SideEffect
-  evaluate(Evaluator &evaluator, AbstractFunctionDecl *afd) const;
+  evaluator::SideEffect evaluate(Evaluator &evaluator, ValueDecl *decl) const;
 };
 
 /// Emits default-argument generators and property-wrapper backing
-/// initializers for an AbstractFunctionDecl, by walking the parameter
-/// list in order and firing CanonicalSILFunctionRequest for each.
+/// initializers for a declaration's parameter list, by walking it in order
+/// and firing CanonicalSILFunctionRequest for each, unless legacy
+/// `emitOrDelayFunction` would delay it until something references it.
 class ArgumentGeneratorsRequest
     : public SimpleRequest<ArgumentGeneratorsRequest,
-                           evaluator::SideEffect(AbstractFunctionDecl *),
+                           evaluator::SideEffect(ValueDecl *),
                            RequestFlags::Cached> {
 public:
   using SimpleRequest::SimpleRequest;
@@ -288,8 +290,7 @@ public:
 private:
   friend SimpleRequest;
 
-  evaluator::SideEffect
-  evaluate(Evaluator &evaluator, AbstractFunctionDecl *afd) const;
+  evaluator::SideEffect evaluate(Evaluator &evaluator, ValueDecl *decl) const;
 };
 
 /// Emits the native-to-foreign thunk for a `@_cdecl` (Underscored)

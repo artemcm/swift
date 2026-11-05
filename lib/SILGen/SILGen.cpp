@@ -1432,6 +1432,25 @@ void SILGenModule::emitOrDelayFunction(SILDeclRef constant) {
   lastEmittedFunction = constant;
 }
 
+bool SILGenModule::delayFunctionOnDemand(SILDeclRef constant) {
+  assert(isEmittingOnDemand());
+  assert(!constant.isThunk());
+  assert(!constant.isClangImported());
+
+  // As emitOrDelayFunction does, but leave the emission to the caller and
+  // the forced function to the coordinator's body scan.
+  auto emitAfter = lastEmittedFunction;
+  if (!mayDelayEmission(M, constant))
+    return false;
+  if (forcedFunctions.contains(constant))
+    return true;
+  if (hasFunction(constant))
+    return false;
+  delayedFunctions.insert({constant, emitAfter});
+  lastEmittedFunction = constant;
+  return true;
+}
+
 void SILGenModule::preEmitFunction(SILDeclRef constant, SILFunction *F,
                                    SILLocation Loc) {
   assert(F->empty() && "already emitted function?!");
@@ -2473,6 +2492,28 @@ void SILGenModule::emitSymbolSource(SymbolSource Source) {
   }
 }
 
+/// Whether a function referenced from an emitted body, or forced, is defined in
+/// this unit: a function from one of the files being compiled, or a locally
+/// synthesized thunk for an imported declaration.
+static bool isEmittedHere(SILFunction *callee, SILDeclRef calleeRef,
+                          ArrayRef<FileUnit *> filesToEmit) {
+  // Global variables aren't emitted on demand yet: legacy emits a global's
+  // accessor from emitGlobalInitialization, whose bookkeeping (delayedGlobals)
+  // the coordinator doesn't build. The accessor stays a declaration.
+  if (calleeRef.kind == SILDeclRef::Kind::GlobalAccessor)
+    return false;
+  if (!calleeRef.hasDecl())
+    return true;
+  auto *sf = calleeRef.getDecl()->getDeclContext()->getParentSourceFile();
+  if (!sf) {
+    // No source file: skip cross-module/imported externals (no local body);
+    // locally-synthesized thunks have a body, so fall through.
+    return !callee->isExternalDeclaration() &&
+           !callee->isAvailableExternally() && !callee->isAlreadyCanonical();
+  }
+  return llvm::is_contained(filesToEmit, sf);
+}
+
 /// Scan a function body for function_ref instructions and add discovered
 /// callees to the worklist if they need SILGen body emission and haven't
 /// been resolved yet.
@@ -2501,24 +2542,8 @@ static void discoverCallees(SILFunction *f,
       // Only emit functions from the files being compiled (primary files).
       // Functions from other modules (no parent source file) or from
       // non-primary files in the same module are skipped.
-      if (calleeRef.hasDecl()) {
-        auto *dc = calleeRef.getDecl()->getDeclContext();
-        auto *sf = dc->getParentSourceFile();
-        if (!sf) {
-          // No source file: skip cross-module/imported externals (no local
-          // body); locally-synthesized thunks have a body, so fall through.
-          if (callee->isExternalDeclaration() ||
-              callee->isAvailableExternally() || callee->isAlreadyCanonical())
-            continue;
-        } else {
-          bool inPrimaryFiles = false;
-          for (auto *file : filesToEmit) {
-            if (file == sf) { inPrimaryFiles = true; break; }
-          }
-          if (!inPrimaryFiles)
-            continue;  // Non-primary file in same module.
-        }
-      }
+      if (!isEmittedHere(callee, calleeRef, filesToEmit))
+        continue;
 
       if (!resolved.count(calleeRef)) {
         worklist.push_back(calleeRef);
@@ -2546,6 +2571,253 @@ static void discoverCallees(SILFunction *f,
   });
 }
 
+namespace {
+/// The on-demand counterpart of SILGenModule::visit, SILGenType, and
+/// SILGenExtension. It visits declarations and their members in the same
+/// order, and for each function that legacy emission would emit, it routes the
+/// auxiliaries through AuxiliaryDeclEmissionRequest and emits the body through
+/// SILFunctionBodyRequest at once, so that functions are created in legacy's
+/// order. The worklist then scans and canonicalizes each body.
+///
+/// Not covered (Phase 6.1): vtables, witness tables, `@objc` thunks, class
+/// initializers, destructors, and stored properties, static stored
+/// properties (globals), and protocols and their extensions. Of a class it
+/// emits only the methods.
+class OnDemandSeeder {
+  Evaluator &evaluator;
+  Lowering::SILGenModule &SGM;
+  std::deque<SILDeclRef> &worklist;
+
+public:
+  OnDemandSeeder(Evaluator &evaluator, Lowering::SILGenModule &SGM,
+                 std::deque<SILDeclRef> &worklist)
+      : evaluator(evaluator), SGM(SGM), worklist(worklist) {}
+
+  /// SILGenModule::visit, for a top-level declaration.
+  void visitTopLevel(Decl *D) {
+    if (SGM.shouldSkipDecl(D))
+      return;
+    if (auto *fd = dyn_cast<FuncDecl>(D))
+      seedFunc(fd);
+    else if (auto *ntd = dyn_cast<NominalTypeDecl>(D))
+      seedNominal(ntd);
+    else if (auto *ed = dyn_cast<ExtensionDecl>(D))
+      seedExtension(ed);
+  }
+
+private:
+  /// emitOrDelayFunction: emit the body now, in legacy's order, unless legacy
+  /// would delay it until something references it.
+  void seedBody(SILDeclRef ref, bool mayDelay = true) {
+    if (mayDelay && SGM.delayFunctionOnDemand(ref)) {
+      DEBUG_WITH_TYPE("silgen-requests", llvm::dbgs() << "[delayed] ";
+                      ref.print(llvm::dbgs()); llvm::dbgs() << "\n");
+      return;
+    }
+    (void)evaluateOrFatal(evaluator, SILFunctionBodyRequest{ref});
+    worklist.push_back(ref);
+    DEBUG_WITH_TYPE("silgen-requests", llvm::dbgs() << "[worklist] seed: ";
+                    ref.print(llvm::dbgs()); llvm::dbgs() << "\n");
+  }
+
+  void seedAuxiliaries(ValueDecl *decl) {
+    DEBUG_WITH_TYPE("silgen-requests",
+                    llvm::dbgs() << "[emit auxiliary declarations] ";
+                    decl->getName().print(llvm::dbgs()); llvm::dbgs() << "\n");
+    (void)evaluateOrDefault(evaluator, AuxiliaryDeclEmissionRequest{decl}, {});
+  }
+
+  /// SILGenModule::emitFunction.
+  void seedFunc(FuncDecl *fd) {
+    // A body-less '@specialized' declaration has no body to emit; legacy
+    // prepares the imported bodies it names, which on demand doesn't do.
+    if (SpecializedAttr::isSpecializationDeclaration(fd))
+      return;
+    seedAuxiliaries(fd);
+    if (!shouldEmitFunctionBody(fd))
+      return;
+    // Match the legacy emitFunction prologue.
+    SGM.M.Types.setCaptureTypeExpansionContext(SILDeclRef(fd), SGM.M);
+    seedBody(SILDeclRef(fd, fd->hasOnlyCEntryPoint()));
+  }
+
+  /// SILGenModule::emitConstructor, for a struct or an enum.
+  void seedConstructor(ConstructorDecl *cd) {
+    if (SpecializedAttr::isSpecializationDeclaration(cd))
+      return;
+    seedAuxiliaries(cd);
+    if (shouldEmitFunctionBody(cd))
+      seedBody(SILDeclRef(cd));
+  }
+
+  /// SILGenModule::emitMoveOnlyDestructor.
+  void seedMoveOnlyDestructor(DestructorDecl *dd) {
+    seedAuxiliaries(dd);
+    if (!shouldEmitFunctionBody(dd))
+      return;
+    // Legacy emits the deallocator without the delay heuristic.
+    SILDeclRef deallocator(dd, SILDeclRef::Kind::Deallocator);
+    seedBody(deallocator, /*mayDelay=*/false);
+    if (dd->isBackDeployed())
+      seedBody(deallocator.asBackDeploymentKind(
+                   SILDeclRef::BackDeploymentKind::Fallback),
+               /*mayDelay=*/false);
+  }
+
+  /// SILGenType::visitAbstractStorageDecl, without the `@objc` thunks.
+  void seedStorage(AbstractStorageDecl *asd, bool inExtension) {
+    SGM.tryEmitPropertyDescriptor(asd);
+    SGM.visitEmittedAccessors(asd, [&](AccessorDecl *accessor) {
+      if (inExtension && skipDynamicReplacementAccessor(accessor))
+        return;
+      seedFunc(accessor);
+    });
+  }
+
+  /// SILGenExtension::visitFuncDecl: in an extension, a dynamic replacement
+  /// of didSet or willSet emits only those accessors; there is no storage.
+  static bool skipDynamicReplacementAccessor(AccessorDecl *accessor) {
+    auto *storage = accessor->getStorage();
+    return storage->hasDidSetOrWillSetDynamicReplacement() &&
+           isa<ExtensionDecl>(storage->getDeclContext()) &&
+           accessor != storage->getParsedAccessor(AccessorKind::WillSet) &&
+           accessor != storage->getParsedAccessor(AccessorKind::DidSet);
+  }
+
+  /// SILGenType::visitVarDecl and SILGenExtension::visitVarDecl.
+  void seedVar(VarDecl *vd, bool inExtension) {
+    if (inExtension) {
+      // A stored property of an extension is static, so a global variable
+      // (SILGlobalVariableRequest in Plans/Roadmap.md), unless it is a
+      // dynamic replacement of didSet or willSet.
+      if (vd->hasStorage() && !vd->hasDidSetOrWillSetDynamicReplacement())
+        return;
+      seedStorage(vd, inExtension);
+      return;
+    }
+    // A static stored property is a global variable.
+    if (vd->isStatic() && vd->hasStorage())
+      return;
+    auto initInfo = vd->getPropertyWrapperInitializerInfo();
+    if (initInfo.hasInitFromWrappedValue() && !vd->isStatic()) {
+      // SILGenModule::emitPropertyWrapperBackingInitializer and
+      // emitPropertyWrappedFieldInitAccessor.
+      if (!SGM.M.getOptions().SkipNonExportableDecls) {
+        seedBody(SILDeclRef(
+            vd, SILDeclRef::Kind::PropertyWrapperBackingInitializer));
+        if (initInfo.hasInitFromProjectedValue())
+          seedBody(SILDeclRef(
+              vd, SILDeclRef::Kind::PropertyWrapperInitFromProjectedValue));
+      }
+      seedBody(
+          SILDeclRef(vd, SILDeclRef::Kind::PropertyWrappedFieldInitAccessor));
+    }
+    seedStorage(vd, inExtension);
+  }
+
+  /// SILGenType::visitSubscriptDecl.
+  void seedSubscript(SubscriptDecl *sd, bool inExtension) {
+    seedAuxiliaries(sd);
+    seedStorage(sd, inExtension);
+  }
+
+  /// SILGenType::visitPatternBindingDecl, for a struct or an enum.
+  void seedPatternBinding(PatternBindingDecl *pbd) {
+    for (auto i : range(pbd->getNumPatternEntries())) {
+      // A static property's initializer belongs to a global variable.
+      if (!pbd->getExecutableInit(i) || pbd->isStatic())
+        continue;
+      // SILGenModule::emitStoredPropertyInitialization.
+      if (SGM.M.getOptions().SkipNonExportableDecls &&
+          !pbd->getAnchoringVarDecl(i)->isInitExposedToClients())
+        continue;
+      if (!pbd->getCheckedAndContextualizedExecutableInit(i))
+        continue;
+      seedBody(SILDeclRef(pbd->getAnchoringVarDecl(i),
+                          SILDeclRef::Kind::StoredPropertyInitializer));
+    }
+  }
+
+  /// A member of a struct, an enum, or a class, or of an extension of one.
+  void seedMember(Decl *member, bool isClass, bool inExtension) {
+    if (SGM.shouldSkipDecl(member))
+      return;
+    if (auto *ntd = dyn_cast<NominalTypeDecl>(member)) {
+      seedNominal(ntd);
+      return;
+    }
+    // Of a class, only the methods (Phase 6.2 adds the rest).
+    if (isClass) {
+      if (auto *fd = dyn_cast<FuncDecl>(member))
+        seedFunc(fd);
+      return;
+    }
+    if (auto *fd = dyn_cast<FuncDecl>(member)) {
+      seedFunc(fd);
+    } else if (auto *cd = dyn_cast<ConstructorDecl>(member)) {
+      seedConstructor(cd);
+    } else if (auto *dd = dyn_cast<DestructorDecl>(member)) {
+      if (!dd->getDeclContext()->getSelfNominalTypeDecl()->canBeCopyable())
+        seedMoveOnlyDestructor(dd);
+    } else if (auto *vd = dyn_cast<VarDecl>(member)) {
+      seedVar(vd, inExtension);
+    } else if (auto *sd = dyn_cast<SubscriptDecl>(member)) {
+      seedSubscript(sd, inExtension);
+    } else if (auto *pbd = dyn_cast<PatternBindingDecl>(member)) {
+      if (!inExtension)
+        seedPatternBinding(pbd);
+    } else if (auto *eed = dyn_cast<EnumElementDecl>(member)) {
+      // SILGenType::visitEnumElementDecl: the payload's argument generators.
+      // The constructor function itself is emitted where it is referenced.
+      if (eed->hasAssociatedValues())
+        seedAuxiliaries(eed);
+    }
+  }
+
+  /// SILGenType::emitType, without vtables and witness tables.
+  void seedNominal(NominalTypeDecl *ntd) {
+    if (isa<ProtocolDecl>(ntd))
+      return;
+    bool isClass = isa<ClassDecl>(ntd);
+    SGM.emitLazyConformancesForType(ntd);
+    for (Decl *member : ntd->getABIMembers())
+      seedMember(member, isClass, /*inExtension=*/false);
+    if (!isClass && !ntd->canBeCopyable()) {
+      SGM.emitNonCopyableTypeDeinitTable(ntd);
+      SGM.recordNonCopyableTypeWithEmittedMetadata(ntd);
+    }
+  }
+
+  /// SILGenExtension::emitExtension, without witness tables.
+  void seedExtension(ExtensionDecl *ed) {
+    auto *nominal = ed->getExtendedNominal();
+    if (!nominal || isa<ProtocolDecl>(nominal) || ed->isObjCImplementation())
+      return;
+    bool isClass = isa<ClassDecl>(nominal);
+    for (Decl *member : ed->getABIMembers())
+      seedMember(member, isClass, /*inExtension=*/true);
+  }
+};
+} // end anonymous namespace
+
+/// Queue the functions that a reference forced since the last call: delayed
+/// functions (SILGenModule::delayFunctionOnDemand) and enum case
+/// constructors of this unit. Most are also found by the body scan; this
+/// catches those referenced from a body that isn't scanned, such as a witness
+/// thunk.
+static void queueForcedFunctions(Lowering::SILGenModule &SGM,
+                                 std::deque<SILDeclRef> &worklist,
+                                 llvm::DenseSet<SILDeclRef> &resolved,
+                                 ArrayRef<FileUnit *> filesToEmit) {
+  while (!SGM.pendingForcedFunctions.empty()) {
+    auto ref = SGM.pendingForcedFunctions.front();
+    SGM.pendingForcedFunctions.pop_front();
+    auto *f = SGM.emittedFunctions.lookup(ref);
+    if (f && !resolved.count(ref) && isEmittedHere(f, ref, filesToEmit))
+      worklist.push_back(ref);
+  }
+}
+
 /// Request-based emission path for demand-driven SIL generation.
 /// Type-checks each source file, then processes functions via a body-scan
 /// worklist: for each function, fire SILFunctionBodyRequest (to get the
@@ -2559,51 +2831,33 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
   std::deque<SILDeclRef> worklist;
   llvm::DenseSet<SILDeclRef> resolved;
 
-  // Seed the worklist with top-level declarations. For each FuncDecl,
-  // first fire AuxiliaryDeclEmissionRequest to route the auxiliary
+  // Seed the worklist from the top-level declarations, in legacy order: for
+  // each function, AuxiliaryDeclEmissionRequest routes the auxiliary
   // emissions (default args, @_cdecl thunks, @backDeployed variants,
-  // @derivative witnesses, etc.) through the request system, then queue
-  // the body's SILDeclRef for the worklist.
+  // @derivative witnesses, etc.) through the request system, then the raw
+  // body is emitted and its SILDeclRef queued. Nominal types and extensions
+  // seed their members the same way.
+  OnDemandSeeder seeder(evaluator, SGM, worklist);
   for (auto file : desc.getFilesToEmit()) {
     if (auto *sf = dyn_cast<SourceFile>(file)) {
       performTypeChecking(*sf);
-      for (auto *D : sf->getTopLevelDecls()) {
-        // Match legacy SILGenModule::visit: skip non-API decls and
-        // SkipNonExportableDecls candidates before doing any emission.
-        if (SGM.shouldSkipDecl(D))
-          continue;
-        if (auto *fd = dyn_cast<FuncDecl>(D)) {
-          DEBUG_WITH_TYPE("silgen-requests",
-                          llvm::dbgs() << "[emit auxiliary declarations] ";
-                          llvm::dbgs() << fd->getNameStr();
-                          llvm::dbgs() << "\n");
-
-          (void)evaluateOrDefault(evaluator,
-                                  AuxiliaryDeclEmissionRequest{fd}, {});
-          if (shouldEmitFunctionBody(fd)) {
-            // Match the legacy emitFunction prologue.
-            SGM.M.Types.setCaptureTypeExpansionContext(SILDeclRef(fd), SGM.M);
-            auto bodyRef = SILDeclRef(fd, fd->hasOnlyCEntryPoint());
-            worklist.push_back(bodyRef);
-            DEBUG_WITH_TYPE("silgen-requests",
-                            llvm::dbgs() << "[worklist] seed: ";
-                            bodyRef.print(llvm::dbgs());
-                            llvm::dbgs() << "\n");
-          }
-        }
-      }
+      for (auto *D : sf->getTopLevelDecls())
+        seeder.visitTopLevel(D);
     }
   }
 
   // Drain conformances accumulated during aux emission, in case the
   // worklist iteration below never runs (e.g. no FuncDecl has
-  // shouldEmitFunctionBody true).
+  // shouldEmitFunctionBody true). Then queue what the seeds and the witness
+  // thunks forced.
   while (!SGM.pendingConformances.empty()) {
     (void)SGM.getWitnessTable(SGM.pendingConformances.front());
     SGM.pendingConformances.pop_front();
   }
+  queueForcedFunctions(SGM, worklist, resolved, desc.getFilesToEmit());
 
   // Process the worklist.
+  auto filesToEmit = desc.getFilesToEmit();
   while (!worklist.empty()) {
     auto ref = worklist.front();
     worklist.pop_front();
@@ -2618,7 +2872,7 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
     auto *f = evaluateOrFatal(evaluator, SILFunctionBodyRequest{ref});
 
     // Step B: Discover callees by scanning the raw body.
-    discoverCallees(f, worklist, resolved, desc.getFilesToEmit());
+    discoverCallees(f, worklist, resolved, filesToEmit);
 
     // Step C: Canonicalize (body request cache-hits; pipelines run).
     // evaluateOrDefault a cyclic @_transparent / @inline(__always) chain at the
@@ -2633,6 +2887,7 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
       (void)SGM.getWitnessTable(SGM.pendingConformances.front());
       SGM.pendingConformances.pop_front();
     }
+    queueForcedFunctions(SGM, worklist, resolved, filesToEmit);
   }
 
   // Strip bodies from cross-primary functions that were SILGen'd on demand
@@ -2645,7 +2900,6 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
   // membership in `desc.getFilesToEmit()`. `SourceFile::isPrimary()` does
   // not work here because it returns false under whole-module compilation,
   // which would strip every body.
-  auto filesToEmit = desc.getFilesToEmit();
   for (auto &f : SGM.M) {
     if (f.empty() || isAvailableExternally(f.getLinkage()))
       continue;

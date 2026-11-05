@@ -350,19 +350,25 @@ CanonicalSynthesizedFunctionRequest::evaluate(Evaluator &evaluator,
 
 evaluator::SideEffect
 AuxiliaryDeclEmissionRequest::evaluate(Evaluator &evaluator,
-                                       AbstractFunctionDecl *afd) const {
+                                       ValueDecl *decl) const {
   LLVM_DEBUG(traceIndent() << "-> AuxiliaryDeclEmissionRequest: "
-                           << afd->getName() << "\n");
+                           << decl->getName() << "\n");
   TraceScope _ts;
-  auto *SGM = afd->getASTContext().getActiveSILGenModule();
+  auto *SGM = decl->getASTContext().getActiveSILGenModule();
   ASSERT(SGM &&
          "AuxiliaryDeclEmissionRequest evaluated outside SILGen scope");
 
   // Mirror legacy emitAbstractFuncDecl preconditions.
-  ASSERT(ABIRoleInfo(afd).providesAPI() &&
+  ASSERT(ABIRoleInfo(decl).providesAPI() &&
          "AuxiliaryDeclEmissionRequest evaluated on ABI-only decl");
 
-  (void)evaluateOrDefault(evaluator, ArgumentGeneratorsRequest{afd}, {});
+  (void)evaluateOrDefault(evaluator, ArgumentGeneratorsRequest{decl}, {});
+
+  // A subscript or an enum element has only argument generators
+  // (SILGenType::visitSubscriptDecl, visitEnumElementDecl).
+  auto *afd = dyn_cast<AbstractFunctionDecl>(decl);
+  if (!afd)
+    return {};
 
   if (afd->getAttrs().getAttribute<CDeclAttr>())
     (void)evaluateOrDefault(evaluator, CDeclThunkRequest{afd}, {});
@@ -380,40 +386,41 @@ AuxiliaryDeclEmissionRequest::evaluate(Evaluator &evaluator,
 
 evaluator::SideEffect
 ArgumentGeneratorsRequest::evaluate(Evaluator &evaluator,
-                                    AbstractFunctionDecl *afd) const {
+                                    ValueDecl *decl) const {
   LLVM_DEBUG(traceIndent() << "-> ArgumentGeneratorsRequest: "
-                           << afd->getName() << "\n");
+                           << decl->getName() << "\n");
   TraceScope _ts;
-  auto *SGM = afd->getASTContext().getActiveSILGenModule();
+  auto *SGM = decl->getASTContext().getActiveSILGenModule();
   ASSERT(SGM);
 
+  // Mirror SILGenModule::emitArgumentGenerators, emitDefaultArgGenerator, and
+  // emitPropertyWrapperBackingInitializer, with emitOrDelayFunction's delay
+  // heuristic: a function legacy would delay is left for a reference.
+  auto emitOrDelay = [&](SILDeclRef ref) {
+    if (!SGM->delayFunctionOnDemand(ref))
+      (void)evaluateOrDefault(evaluator, CanonicalSILFunctionRequest{ref},
+                              nullptr);
+  };
+  auto *params = decl->getParameterList();
+  if (!params)
+    return {};
   unsigned i = 0;
-  for (auto *param : *afd->getParameters()) {
+  for (auto *param : *params) {
     if (param->isDefaultArgument()) {
       auto kind = param->getDefaultArgumentKind();
       if (kind == DefaultArgumentKind::Normal ||
-          kind == DefaultArgumentKind::StoredProperty) {
-        auto ref = SILDeclRef::getDefaultArgGenerator(afd, i);
-        (void)evaluateOrDefault(evaluator,
-                                CanonicalSILFunctionRequest{ref}, nullptr);
-      }
+          kind == DefaultArgumentKind::StoredProperty)
+        emitOrDelay(SILDeclRef::getDefaultArgGenerator(decl, i));
     }
-    if (param->hasExternalPropertyWrapper()) {
+    if (param->hasExternalPropertyWrapper() &&
+        !SGM->M.getOptions().SkipNonExportableDecls) {
       auto initInfo = param->getPropertyWrapperInitializerInfo();
-      if (initInfo.hasInitFromWrappedValue()) {
-        auto ref =
-            SILDeclRef(param,
-                       SILDeclRef::Kind::PropertyWrapperBackingInitializer);
-        (void)evaluateOrDefault(evaluator,
-                                CanonicalSILFunctionRequest{ref}, nullptr);
-      }
-      if (initInfo.hasInitFromProjectedValue()) {
-        auto ref = SILDeclRef(
-            param,
-            SILDeclRef::Kind::PropertyWrapperInitFromProjectedValue);
-        (void)evaluateOrDefault(evaluator,
-                                CanonicalSILFunctionRequest{ref}, nullptr);
-      }
+      if (initInfo.hasInitFromWrappedValue())
+        emitOrDelay(SILDeclRef(
+            param, SILDeclRef::Kind::PropertyWrapperBackingInitializer));
+      if (initInfo.hasInitFromProjectedValue())
+        emitOrDelay(SILDeclRef(
+            param, SILDeclRef::Kind::PropertyWrapperInitFromProjectedValue));
     }
     ++i;
   }
@@ -456,7 +463,16 @@ BackDeploymentRequest::evaluate(Evaluator &evaluator,
   LLVM_DEBUG(traceIndent() << "-> BackDeploymentRequest: "
                            << afd->getName() << "\n");
   TraceScope _ts;
-  if (!afd->isBackDeployed())
+  // Legacy emitAbstractFuncDecl's condition. A destructor's fallback comes
+  // from emitMoveOnlyDestructor, and a member without a body of its own has
+  // nothing to use as one.
+  if (!afd->isBackDeployed() || isa<DestructorDecl>(afd))
+    return {};
+  if (!afd->hasBody() && !afd->getAttrs().hasAttribute<BackDeployedAttr>() &&
+      !(isa<AccessorDecl>(afd) && cast<AccessorDecl>(afd)
+                                      ->getStorage()
+                                      ->getAttrs()
+                                      .hasAttribute<BackDeployedAttr>()))
     return {};
   auto fallback = SILDeclRef(afd).asBackDeploymentKind(
       SILDeclRef::BackDeploymentKind::Fallback);

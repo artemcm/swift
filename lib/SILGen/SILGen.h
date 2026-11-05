@@ -342,6 +342,13 @@ public:
   /// the current TU, or remember how to emit it later if not.
   void emitOrDelayFunction(SILDeclRef constant);
 
+  /// The bookkeeping half of emitOrDelayFunction, for the on-demand
+  /// coordinator. Returns true if \p constant is left until a reference
+  /// forces it: either it is recorded as delayed, so that getFunction moves it
+  /// into its source-order place when something references it, or it is
+  /// already forced. Returns false if the caller should emit it now.
+  bool delayFunctionOnDemand(SILDeclRef constant);
+
   /// Generates code for the given closure expression and adds the
   /// SILFunction to the current SILModule under the name SILDeclRef(ce).
   SILFunction *emitClosure(AbstractClosureExpr *ce,
