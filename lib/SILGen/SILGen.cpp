@@ -2515,6 +2515,14 @@ static bool isEmittedHere(SILFunction *callee, SILDeclRef calleeRef,
     return false;
   if (!calleeRef.hasDecl())
     return true;
+  // A function declared without a body, such as an @_silgen_name declaration
+  // of a C function, has nothing to emit (D10). Ask hasBody(), not
+  // shouldEmitFunctionBody: under lazy type checking that one type-checks the
+  // body, and every callee of a single root comes through here.
+  if (calleeRef.kind == SILDeclRef::Kind::Func)
+    if (auto *afd = dyn_cast<AbstractFunctionDecl>(calleeRef.getDecl()))
+      if (!afd->hasBody())
+        return false;
   auto *sf = calleeRef.getDecl()->getDeclContext()->getParentSourceFile();
   if (!sf) {
     // No source file: skip cross-module/imported externals (no local body);
