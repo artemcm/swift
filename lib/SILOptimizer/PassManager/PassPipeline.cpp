@@ -413,6 +413,7 @@ addFunctionOnlyMandatoryDiagnosticOptPipeline(SILPassPipelinePlan &P) {
   P.addClosureLifetimeFixup();
 
   P.addMoveOnlyChecker();
+  P.addImplicitDestroyChecker();
   P.addConsumeOperatorCopyableAddressesChecker();
   P.addConsumeOperatorCopyableValuesChecker();
 
