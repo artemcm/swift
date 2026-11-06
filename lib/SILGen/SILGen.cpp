@@ -2515,6 +2515,44 @@ void SILGenModule::emitSymbolSource(SymbolSource Source) {
   }
 }
 
+/// Whether legacy leaves \p ref a declaration because the body it would emit
+/// is missing: the declaration has none, like an @_silgen_name declaration of
+/// a C function (D10), or its body was skipped
+/// (-experimental-skip-non-inlinable-function-bodies). These are the entry
+/// points that SILGenModule emits only if shouldEmitFunctionBody; it
+/// synthesizes the others. Ask hasBody() and isBodySkipped(), not
+/// shouldEmitFunctionBody: under lazy type checking that one type-checks the
+/// body, and every callee of a single root comes through here.
+static bool lacksBodyToEmit(SILDeclRef ref) {
+  auto *afd = dyn_cast<AbstractFunctionDecl>(ref.getDecl());
+  if (!afd)
+    return false;
+  bool inClass = afd->getDeclContext()->getSelfClassDecl() != nullptr;
+  switch (ref.kind) {
+  case SILDeclRef::Kind::Func:
+  case SILDeclRef::Kind::Initializer:
+  case SILDeclRef::Kind::Destroyer:
+    break;
+  case SILDeclRef::Kind::Allocator: {
+    // emitConstructor: a class's designated or @objc initializer gets an
+    // allocating entry point even without a body.
+    auto *ctor = cast<ConstructorDecl>(afd);
+    if (inClass && (ctor->isDesignatedInit() || ctor->isObjC()))
+      return false;
+    break;
+  }
+  case SILDeclRef::Kind::Deallocator:
+    // emitMoveOnlyDestructor: a noncopyable type's deinit is its deallocator.
+    // A class's deallocator is synthesized.
+    if (inClass)
+      return false;
+    break;
+  default:
+    return false;
+  }
+  return !afd->hasBody() || afd->isBodySkipped();
+}
+
 /// Whether a function referenced from an emitted body, or forced, is defined in
 /// this unit: a function from one of the files being compiled, or a locally
 /// synthesized thunk for an imported declaration.
@@ -2527,14 +2565,6 @@ static bool isEmittedHere(SILFunction *callee, SILDeclRef calleeRef,
     return false;
   if (!calleeRef.hasDecl())
     return true;
-  // A function declared without a body, such as an @_silgen_name declaration
-  // of a C function, has nothing to emit (D10). Ask hasBody(), not
-  // shouldEmitFunctionBody: under lazy type checking that one type-checks the
-  // body, and every callee of a single root comes through here.
-  if (calleeRef.kind == SILDeclRef::Kind::Func)
-    if (auto *afd = dyn_cast<AbstractFunctionDecl>(calleeRef.getDecl()))
-      if (!afd->hasBody())
-        return false;
   auto *sf = calleeRef.getDecl()->getDeclContext()->getParentSourceFile();
   if (!sf) {
     // No source file: skip cross-module/imported externals (no local body);
@@ -2542,7 +2572,7 @@ static bool isEmittedHere(SILFunction *callee, SILDeclRef calleeRef,
     return !callee->isExternalDeclaration() &&
            !callee->isAvailableExternally() && !callee->isAlreadyCanonical();
   }
-  return llvm::is_contained(filesToEmit, sf);
+  return llvm::is_contained(filesToEmit, sf) && !lacksBodyToEmit(calleeRef);
 }
 
 /// The function among \p members whose source range \p contains accepts: a
