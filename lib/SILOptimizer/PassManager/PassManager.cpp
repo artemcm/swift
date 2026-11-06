@@ -1162,6 +1162,16 @@ void SILPassManager::executePassPipelinePlan(
 /// only be the component's root, and the walk visits that first. Following
 /// them would also build the CalleeCache, which walks every vtable and
 /// witness table, for each request.
+///
+/// Two orders still differ from legacy's. The functions of a cycle of more than
+/// two: legacy pops a strongly connected component off its DFS stack, and this
+/// post-order lists them as they finish. And the functions that no member
+/// calls, such as sibling closures that the root passes: they keep the
+/// component's discovery order, which is breadth-first, where legacy's is the
+/// order in which SILGen created them, a nested closure before the next
+/// sibling. A pass that reads another function of a cycle can see the
+/// difference. Between the unrelated functions, only the order of their
+/// diagnostics differs.
 static llvm::SmallVector<SILFunction *, 8>
 getBottomUpOrder(llvm::ArrayRef<SILFunction *> members) {
   llvm::SmallPtrSet<SILFunction *, 8> isMember(members.begin(), members.end());
@@ -1217,14 +1227,15 @@ void SILPassManager::executeScoped(llvm::ArrayRef<SILFunction *> members) {
            isa<SILFunctionTransform>(Transformations[Idx]))
       ++Idx;
 
-    // Run the span over the members in legacy's order, callees before
-    // callers (see getBottomUpOrder), as runFunctionPasses orders the module.
-    // A pass may read a callee that the span has processed already:
-    // FlowIsolation analyzes the defer body that a function calls, and needs
-    // NoReturnFolding to have run on it. A pass may also read a closure that
-    // the span has not processed yet: SendNonSendable reads the closures that
-    // a function passes to a call. Copy the list: a member's run may add
-    // functions, which the run covers through the worklist instead.
+    // Run the span over the members in the order of legacy's
+    // runFunctionPasses, callees before callers (getBottomUpOrder says where
+    // it differs). A pass may read a callee that the span has processed
+    // already: FlowIsolation analyzes the defer body that a function calls,
+    // and needs NoReturnFolding to have run on it. A pass may also read a
+    // closure that the span has not processed yet: SendNonSendable reads the
+    // closures that a function passes to a call. Copy the list: a member's
+    // run may add functions, which the run covers through the worklist
+    // instead.
     if (Idx > FirstFuncTrans) {
       llvm::SmallVector<SILFunction *, 8> current =
           getBottomUpOrder(covered.getArrayRef());
