@@ -1142,8 +1142,26 @@ void SILPassManager::executePassPipelinePlan(
 }
 
 /// \p members in bottom-up order, as runFunctionPasses orders the module:
-/// each after the members it references. A depth-first post-order over the
-/// function_ref edges between members; a cycle is broken where it closes.
+/// each after its callees. A depth-first post-order over the calls between
+/// members, exploring a function's callees in instruction order; a cycle is
+/// broken where it closes.
+///
+/// The edges are legacy's: BottomUpFunctionOrder follows the callee of a full
+/// apply, which FullApplySite::getCalleeFunction resolves through a
+/// partial_apply and the conversions that getCalleeOrigin looks through. A
+/// closure that a function only passes to a call, or that a let binding holds,
+/// is not its callee, and runs after it. Passes that read a closure's body
+/// from the function that passes it depend on that: SendNonSendable looks for
+/// an ignored_use that a later pass of the span erases, and the move-only
+/// checker skips a value that a partial_apply passes to a closure it has
+/// diagnosed.
+///
+/// BottomUpFunctionOrder::visitCallees also follows the destructors that a
+/// release may run, dynamic dispatch, and the initializer of a builtin "once".
+/// Those reach a function that is not a closure or local function, which can
+/// only be the component's root, and the walk visits that first. Following
+/// them would also build the CalleeCache, which walks every vtable and
+/// witness table, for each request.
 static llvm::SmallVector<SILFunction *, 8>
 getBottomUpOrder(llvm::ArrayRef<SILFunction *> members) {
   llvm::SmallPtrSet<SILFunction *, 8> isMember(members.begin(), members.end());
@@ -1162,12 +1180,17 @@ getBottomUpOrder(llvm::ArrayRef<SILFunction *> members) {
       if (!visited.insert(F).second)
         continue;
       stack.push_back({F, true});
+      llvm::SmallVector<SILFunction *, 4> callees;
       for (auto &BB : *F)
         for (auto &I : BB)
-          if (auto *FRI = dyn_cast<FunctionRefBaseInst>(&I))
-            if (auto *callee = FRI->getReferencedFunctionOrNull())
+          if (auto FAS = FullApplySite::isa(&I))
+            if (auto *callee = FAS.getCalleeFunction())
               if (isMember.count(callee) && !visited.count(callee))
-                stack.push_back({callee, false});
+                callees.push_back(callee);
+      // The stack pops the last push first: reverse, to explore the callees in
+      // instruction order.
+      for (SILFunction *callee : llvm::reverse(callees))
+        stack.push_back({callee, false});
     }
   }
   return order;
@@ -1194,12 +1217,14 @@ void SILPassManager::executeScoped(llvm::ArrayRef<SILFunction *> members) {
            isa<SILFunctionTransform>(Transformations[Idx]))
       ++Idx;
 
-    // Run the span over the members bottom-up, callees before callers, as
-    // runFunctionPasses orders the module: a pass may read a callee that the
-    // span has processed already. FlowIsolation analyzes the defer body that
-    // a function calls, and needs NoReturnFolding to have run on it. Copy the
-    // list: a member's run may add functions, which the run covers through
-    // the worklist instead.
+    // Run the span over the members in legacy's order, callees before
+    // callers (see getBottomUpOrder), as runFunctionPasses orders the module.
+    // A pass may read a callee that the span has processed already:
+    // FlowIsolation analyzes the defer body that a function calls, and needs
+    // NoReturnFolding to have run on it. A pass may also read a closure that
+    // the span has not processed yet: SendNonSendable reads the closures that
+    // a function passes to a call. Copy the list: a member's run may add
+    // functions, which the run covers through the worklist instead.
     if (Idx > FirstFuncTrans) {
       llvm::SmallVector<SILFunction *, 8> current =
           getBottomUpOrder(covered.getArrayRef());
