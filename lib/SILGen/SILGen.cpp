@@ -76,7 +76,7 @@ bool swift::isSILOnDemandRootSelected() {
 //===----------------------------------------------------------------------===//
 
 bool SILGenModule::isEmittingOnDemand() const {
-  return SILGenOnDemandEmission;
+  return emittingOnDemand;
 }
 
 void SILGenModule::canonicalizeSynthesizedOnDemand(SILFunction *thunk) {
@@ -3215,6 +3215,15 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
   SGM.M.commitStage(SILStage::Canonical);
 }
 
+/// Whether \p desc lowers a module interface: an implicit module build, or
+/// -compile-module-from-interface.
+static bool lowersModuleInterface(const ASTLoweringDescriptor &desc) {
+  return llvm::any_of(desc.getFilesToEmit(), [](const FileUnit *file) {
+    auto *sf = dyn_cast<SourceFile>(file);
+    return sf && sf->Kind == SourceFileKind::Interface;
+  });
+}
+
 std::unique_ptr<SILModule>
 ASTLoweringRequest::evaluate(Evaluator &evaluator,
                              ASTLoweringDescriptor desc) const {
@@ -3247,10 +3256,17 @@ ASTLoweringRequest::evaluate(Evaluator &evaluator,
       ctx.LangOpts.AllowModuleWithCompilerErrors)
     return silMod;
 
+  // -Xllvm options are process-wide, so a module that this process builds
+  // from its interface (an implicit module build) sees
+  // -sil-on-demand-emission too. Lower an interface the legacy way: the
+  // coordinator doesn't emit all of a module (witness tables, protocols,
+  // globals), and the module cache keeps the module for later compiles.
+  bool onDemand = SILGenOnDemandEmission && !lowersModuleInterface(desc);
+
   // Under -enable-lifetime-resolution, the SILGen pipeline runs a module pass,
   // MandatoryAllocBoxToStack, which CleanedSILFunctionRequest can't run on one
   // function and which has no per-function equivalent yet (D3).
-  if (SILGenOnDemandEmission && desc.opts.EnableLifetimeResolution) {
+  if (onDemand && desc.opts.EnableLifetimeResolution) {
     ctx.Diags.diagnose(SourceLoc(), diag::error_invalid_arg_combination,
                        "-sil-on-demand-emission",
                        "-enable-lifetime-resolution");
@@ -3258,6 +3274,7 @@ ASTLoweringRequest::evaluate(Evaluator &evaluator,
   }
 
   SILGenModule SGM(*silMod, silMod->getSwiftModule());
+  SGM.emittingOnDemand = onDemand;
   ActiveSILGenModuleScope activeScope(ctx, SGM);
 
   // Emit a specific set of SILDeclRefs if needed.
@@ -3266,7 +3283,7 @@ ASTLoweringRequest::evaluate(Evaluator &evaluator,
       SGM.emitSymbolSource(std::move(Source));
   }
 
-  if (SILGenOnDemandEmission) {
+  if (onDemand) {
     emitOnDemandViaRequests(evaluator, desc, SGM);
   } else {
     // Normal emission path.
@@ -3325,7 +3342,7 @@ ASTLoweringRequest::evaluate(Evaluator &evaluator,
   // sets (needBreakInfiniteLoops, needCompleteLifetimes), but it skips a module
   // whose floor is already Canonical. The on-demand path commits the floor, so
   // clear the flags here for every function the request chain did not clean.
-  if (SILGenOnDemandEmission) {
+  if (onDemand) {
     for (auto &F : *silMod) {
       F.setNeedBreakInfiniteLoops(false);
       F.setNeedCompleteLifetimes(false);

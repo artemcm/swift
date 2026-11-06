@@ -169,9 +169,13 @@ public:
   /// True if a function has been emitted for a given SILDeclRef.
   bool hasFunction(SILDeclRef constant);
 
-  /// True on the request-based on-demand path (-sil-on-demand-emission);
-  /// false on the legacy path.
+  /// True on the request-based on-demand path: -sil-on-demand-emission, and a
+  /// lowering that doesn't compile a module interface (ASTLoweringRequest).
+  /// False on the legacy path.
   bool isEmittingOnDemand() const;
+
+  /// Set by ASTLoweringRequest::evaluate; see isEmittingOnDemand.
+  bool emittingOnDemand = false;
 
   /// Canonicalize a synthesized thunk (no SILDeclRef) via
   /// CanonicalSynthesizedFunctionRequest. No-op on the legacy path. While the

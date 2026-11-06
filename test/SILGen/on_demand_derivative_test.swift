@@ -1,16 +1,11 @@
 // Test that the on-demand SILGen path registers the
 // SILDifferentiabilityWitness for a `@derivative(of:)` declaration
-// via the new SILDifferentiabilityWitnessRequest. 
+// via the new SILDifferentiabilityWitnessRequest.
 //
-// KNOWN LIMITATION: the lit harness rebuilds _Differentiation.swiftmodule
-// from its interface in a sub-compilation that inherits
-// -sil-on-demand-emission, and the on-demand path cannot yet handle
-// nominal-type emission (Phase 6 territory). Direct invocation against
-// a pre-built _Differentiation works correctly. Marking UNSUPPORTED
-// until the sub-compile flag-propagation issue or nominal-type support
-// is resolved.
-
-// UNSUPPORTED: true
+// The lit harness may rebuild _Differentiation.swiftmodule from its
+// interface in a sub-compilation that inherits -sil-on-demand-emission;
+// that lowering stays on the legacy path
+// (on_demand_module_interface_test.swift).
 
 // RUN: %target-swift-emit-sil -parse-as-library -Xllvm -sil-on-demand-emission %s | %FileCheck %s
 
