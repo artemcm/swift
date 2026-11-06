@@ -5,9 +5,11 @@
 // thunk of a requirement that the case satisfies calls (G-41), and a
 // Clang-synthesized accessor, such as an imported C enum's rawValue getter.
 // Before, OnDemandSILLinker asserted on the bodiless shared declaration
-// (D18). Every unit that references a case's constructor emits it, whichever
-// file declares the enum, and the cross-primary stripping keeps it and the
-// thunks, which belong to the conformance's file.
+// (D18). Every unit that references such a function emits it, whichever file
+// declares it, and the cross-primary stripping keeps it and the thunks, which
+// belong to the conformance's file: an enum case's constructor, and the
+// `_read` accessor that a `@_borrowed` requirement gives a stored property
+// (forced static dispatch), from a struct in another file.
 
 // RUN: %empty-directory(%t)
 // RUN: split-file %s %t
@@ -40,7 +42,7 @@
 // RUN:   -primary-file %t/Raw.swift \
 // RUN:   -o %t/Make.ondemand.sil -o %t/Remote.ondemand.sil \
 // RUN:   -o %t/Conform.ondemand.sil -o %t/C.ondemand.sil -o %t/Raw.ondemand.sil \
-// RUN:   -Xllvm -sil-on-demand-emission
+// RUN:   -sil-verify-all -Xllvm -sil-on-demand-emission
 // RUN: %{python} %S/Inputs/sil_sort_external_entities.py M \
 // RUN:   < %t/Conform.legacy.sil > %t/Conform.legacy.sorted.sil
 // RUN: %{python} %S/Inputs/sil_sort_external_entities.py M \
@@ -71,7 +73,7 @@
 // RUN:   -primary-file %t/Raw.swift \
 // RUN:   -o %t/Make.ondemand.o -o %t/Remote.ondemand.o \
 // RUN:   -o %t/Conform.ondemand.o -o %t/C.ondemand.o -o %t/Raw.ondemand.o \
-// RUN:   -Xllvm -sil-on-demand-emission
+// RUN:   -sil-verify-all -Xllvm -sil-on-demand-emission
 // RUN: %llvm-nm --defined-only -j %t/Conform.legacy.o | sort > %t/Conform.legacy.defined
 // RUN: %llvm-nm --defined-only -j %t/Conform.ondemand.o | sort > %t/Conform.ondemand.defined
 // RUN: diff %t/Conform.legacy.defined %t/Conform.ondemand.defined
@@ -81,6 +83,27 @@
 // RUN: %llvm-nm --defined-only -j %t/C.legacy.o | sort > %t/C.legacy.defined
 // RUN: %llvm-nm --defined-only -j %t/C.ondemand.o | sort > %t/C.ondemand.defined
 // RUN: diff %t/C.legacy.defined %t/C.ondemand.defined
+
+// The `_read` accessor of a struct in another primary, which Borrow.swift's
+// witness thunk calls: a shared definition in Borrow.swift's object.
+// RUN: %target-swift-frontend -c -parse-as-library -module-name M \
+// RUN:   -primary-file %t/Borrow.swift -primary-file %t/Holder.swift \
+// RUN:   -o %t/Borrow.legacy.o -o %t/Holder.legacy.o
+// RUN: %target-swift-frontend -c -parse-as-library -module-name M \
+// RUN:   -primary-file %t/Borrow.swift -primary-file %t/Holder.swift \
+// RUN:   -o %t/Borrow.ondemand.o -o %t/Holder.ondemand.o -sil-verify-all \
+// RUN:   -Xllvm -sil-on-demand-emission
+// RUN: %llvm-nm --defined-only -j %t/Borrow.legacy.o | sort > %t/Borrow.legacy.defined
+// RUN: %llvm-nm --defined-only -j %t/Borrow.ondemand.o | sort > %t/Borrow.ondemand.defined
+// RUN: diff %t/Borrow.legacy.defined %t/Borrow.ondemand.defined
+// RUN: %llvm-nm --undefined-only -j %t/Borrow.legacy.o | sort > %t/Borrow.legacy.undefined
+// RUN: %llvm-nm --undefined-only -j %t/Borrow.ondemand.o | sort > %t/Borrow.ondemand.undefined
+// RUN: diff %t/Borrow.legacy.undefined %t/Borrow.ondemand.undefined
+// RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
+// RUN:   -primary-file %t/Borrow.swift %t/Holder.swift \
+// RUN:   -o %t/Borrow.ondemand.sil -Xllvm -sil-on-demand-emission
+// RUN: %FileCheck --check-prefix=BORROW %s < %t/Borrow.ondemand.sil
+// BORROW: sil shared @$s1M6HolderV1xSivr : $@yield_once @convention(method) (Holder) -> @yields Int {
 
 // The constructors of the cases that witness requirements, and the thunks:
 // CHECK-DAG: sil shared [transparent] @$s1M5LocalO4zeroyA2CmF :
@@ -124,3 +147,11 @@ import CColors
 // No conformance of the module's references CShade's getter: only this
 // function's own pipeline can need its body.
 func isLight(_ s: CShade) -> Bool { s.rawValue == 0 }
+
+//--- Borrow.swift
+protocol Borrow { @_borrowed var x: Int { get } }
+extension Holder: Borrow {}
+func read(_ b: some Borrow) -> Int { b.x }
+
+//--- Holder.swift
+struct Holder { var x: Int = 0 }

@@ -23,7 +23,7 @@
 // RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
 // RUN:   -primary-file %t/Members.swift -primary-file %t/Uses.swift \
 // RUN:   -o %t/Members.ondemand.sil -o %t/Uses.ondemand.sil \
-// RUN:   -Xllvm -sil-on-demand-emission
+// RUN:   -sil-verify-all -Xllvm -sil-on-demand-emission
 // RUN: diff %t/Members.legacy.sil %t/Members.ondemand.sil
 
 // A resilient protocol's default witness table.
@@ -36,6 +36,20 @@
 // RUN: grep -A4 '^sil_default_witness_table' %t/res.ondemand.sil > %t/res.ondemand.tables
 // RUN: diff %t/res.legacy.tables %t/res.ondemand.tables
 // RUN: %FileCheck --check-prefix=DEFAULT %s < %t/res.ondemand.tables
+
+// A protocol's requirement signature can use a conformance that the Clang
+// importer synthesizes: legacy emits its tables with the protocol
+// (emitLazyConformancesForType), and so does on demand.
+// RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
+// RUN:   -I %t/inc %t/Imported.swift -o %t/imp.legacy.sil
+// RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
+// RUN:   -I %t/inc %t/Imported.swift -o %t/imp.ondemand.sil -sil-verify-all \
+// RUN:   -Xllvm -sil-on-demand-emission
+// RUN: grep -E '^sil_witness_table' %t/imp.legacy.sil | sort > %t/imp.legacy.tables
+// RUN: grep -E '^sil_witness_table' %t/imp.ondemand.sil | sort > %t/imp.ondemand.tables
+// RUN: diff %t/imp.legacy.tables %t/imp.ondemand.tables
+// RUN: %FileCheck --check-prefix=IMPORTED %s < %t/imp.ondemand.tables
+// IMPORTED: sil_witness_table shared CTone: Hashable module CTones {
 
 // The diagnostics of protocol extension members, on both paths.
 // RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
@@ -70,6 +84,16 @@ extension Shape where Self: Mutable {
 
 //--- Uses.swift
 func make<S: Shape>(_: S.Type) -> String { S.triangle().description }
+
+//--- inc/module.modulemap
+module CTones { header "tones.h" export * }
+
+//--- inc/tones.h
+typedef enum __attribute__((enum_extensibility(open))) CTone : int { CLow, CHigh } CTone;
+
+//--- Imported.swift
+import CTones
+protocol Toned { associatedtype A where A == Set<CTone> }
 
 //--- Resilient.swift
 public protocol Res { func req() -> Int; func withDefault() -> Int }

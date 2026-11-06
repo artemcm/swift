@@ -2648,10 +2648,12 @@ static bool isEmittedHere(SILFunction *callee, SILDeclRef calleeRef,
     return false;
   if (!calleeRef.hasDecl())
     return true;
-  // Every unit that references an enum case's constructor emits it
-  // (isEmittedOnDemand), whichever file declares the enum: a witness thunk of
-  // a conformance in another file references it (G-41).
-  if (calleeRef.isEnumElement())
+  // Every unit that references a function that is emitted on demand
+  // (isEmittedOnDemand) emits it, whichever file declares it: a witness thunk
+  // of a conformance in another file references an enum case's constructor
+  // (G-41), or the `_read` accessor that a `@_borrowed` requirement gives a
+  // stored property.
+  if (isEmittedOnDemand(callee->getModule(), calleeRef))
     return true;
   auto *sf = calleeRef.getDecl()->getDeclContext()->getParentSourceFile();
   if (!sf) {
@@ -3061,6 +3063,10 @@ private:
 
   /// SILGenType::emitType.
   void seedNominal(NominalTypeDecl *ntd) {
+    // First, as legacy does for every nominal type: the conformances that the
+    // type (for a protocol, its requirement signature) uses and that are
+    // synthesized lazily, such as the Clang importer's.
+    SGM.emitLazyConformancesForType(ntd);
     // A protocol's tables: a resilient protocol's default witness table, and
     // the self-conformance table of a protocol that needs one.
     if (auto *proto = dyn_cast<ProtocolDecl>(ntd)) {
@@ -3077,7 +3083,6 @@ private:
     bool isClass = isa<ClassDecl>(ntd);
     if (isClass && diagnoseObjCEntryPoint(ntd))
       return;
-    SGM.emitLazyConformancesForType(ntd);
     for (Decl *member : ntd->getABIMembers())
       seedMember(member, isClass, /*inExtension=*/false);
     // After a class's members, its vtable, and a resilient class's default
@@ -3305,11 +3310,11 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
     // Only a function with a SILDeclRef is emitted for another primary. A
     // synthesized function, such as a witness thunk, belongs to the unit
     // that made it, although its DeclContext, which comes from its debug
-    // scope, can be its witness's, in another file. And an enum case's
-    // constructor is emitted into every unit that references it, as legacy's
-    // isEmittedOnDemand does.
+    // scope, can be its witness's, in another file. And a function that is
+    // emitted on demand (isEmittedOnDemand) is emitted into every unit that
+    // references it, as on the legacy path.
     auto ref = f.getDeclRef();
-    if (!ref || ref.isEnumElement())
+    if (!ref || isEmittedOnDemand(SGM.M, ref))
       continue;
     auto *dc = f.getDeclContext();
     if (!dc) continue;

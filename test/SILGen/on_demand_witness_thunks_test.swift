@@ -24,7 +24,7 @@
 // RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
 // RUN:   -primary-file %t/Thunks.swift -primary-file %t/Uses.swift \
 // RUN:   -o %t/Thunks.ondemand.sil -o %t/Uses.ondemand.sil \
-// RUN:   -Xllvm -sil-on-demand-emission
+// RUN:   -sil-verify-all -Xllvm -sil-on-demand-emission
 // RUN: diff %t/Thunks.legacy.sil %t/Thunks.ondemand.sil
 // RUN: diff %t/Uses.legacy.sil %t/Uses.ondemand.sil
 

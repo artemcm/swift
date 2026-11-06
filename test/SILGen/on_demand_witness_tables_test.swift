@@ -36,7 +36,7 @@
 // RUN:   -primary-file %t/Types.swift -primary-file %t/Extensions.swift \
 // RUN:   -primary-file %t/Uses.swift -o %t/Types.ondemand.sil \
 // RUN:   -o %t/Extensions.ondemand.sil -o %t/Uses.ondemand.sil \
-// RUN:   -Xllvm -sil-on-demand-emission
+// RUN:   -sil-verify-all -Xllvm -sil-on-demand-emission
 // RUN: grep -E '^sil_witness_table' %t/Types.legacy.sil | sort > %t/Types.legacy.tables
 // RUN: grep -E '^sil_witness_table' %t/Types.ondemand.sil | sort > %t/Types.ondemand.tables
 // RUN: diff %t/Types.legacy.tables %t/Types.ondemand.tables
@@ -53,7 +53,7 @@
 // RUN:   -primary-file %t/Types.swift -primary-file %t/Extensions.swift \
 // RUN:   -primary-file %t/Uses.swift -o %t/Types.ondemand.o \
 // RUN:   -o %t/Extensions.ondemand.o -o %t/Uses.ondemand.o \
-// RUN:   -Xllvm -sil-on-demand-emission
+// RUN:   -sil-verify-all -Xllvm -sil-on-demand-emission
 // RUN: %llvm-nm --defined-only -j %t/Types.legacy.o | sort > %t/Types.legacy.defined
 // RUN: %llvm-nm --defined-only -j %t/Types.ondemand.o | sort > %t/Types.ondemand.defined
 // RUN: diff %t/Types.legacy.defined %t/Types.ondemand.defined

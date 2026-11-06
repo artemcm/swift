@@ -11,7 +11,7 @@
 // RUN: split-file %s %t
 // RUN: %target-swift-frontend -c -module-name M -primary-file %t/Lib.swift \
 // RUN:   -primary-file %t/Ext.swift %t/main.swift -o %t/Lib.ondemand.o \
-// RUN:   -o %t/Ext.ondemand.o -Xllvm -sil-on-demand-emission
+// RUN:   -o %t/Ext.ondemand.o -sil-verify-all -Xllvm -sil-on-demand-emission
 // RUN: %target-swift-frontend -c -module-name M -primary-file %t/Lib.swift \
 // RUN:   -primary-file %t/Ext.swift %t/main.swift -o %t/Lib.legacy.o \
 // RUN:   -o %t/Ext.legacy.o
