@@ -2515,42 +2515,62 @@ void SILGenModule::emitSymbolSource(SymbolSource Source) {
   }
 }
 
-/// Whether legacy leaves \p ref a declaration because the body it would emit
-/// is missing: the declaration has none, like an @_silgen_name declaration of
-/// a C function (D10), or its body was skipped
-/// (-experimental-skip-non-inlinable-function-bodies). These are the entry
-/// points that SILGenModule emits only if shouldEmitFunctionBody; it
-/// synthesizes the others. Ask hasBody() and isBodySkipped(), not
-/// shouldEmitFunctionBody: under lazy type checking that one type-checks the
-/// body, and every callee of a single root comes through here.
-static bool lacksBodyToEmit(SILDeclRef ref) {
+/// The declaration whose body \p ref emits, for the entry points that
+/// SILGenModule emits only if shouldEmitFunctionBody; null for the entry
+/// points it synthesizes, such as a class's allocator, and for a reference
+/// without a declaration.
+static AbstractFunctionDecl *getGatedBodyDecl(SILDeclRef ref) {
+  if (!ref.hasDecl())
+    return nullptr;
   auto *afd = dyn_cast<AbstractFunctionDecl>(ref.getDecl());
   if (!afd)
-    return false;
+    return nullptr;
   bool inClass = afd->getDeclContext()->getSelfClassDecl() != nullptr;
   switch (ref.kind) {
   case SILDeclRef::Kind::Func:
   case SILDeclRef::Kind::Initializer:
   case SILDeclRef::Kind::Destroyer:
-    break;
+    return afd;
   case SILDeclRef::Kind::Allocator: {
     // emitConstructor: a class's designated or @objc initializer gets an
     // allocating entry point even without a body.
     auto *ctor = cast<ConstructorDecl>(afd);
     if (inClass && (ctor->isDesignatedInit() || ctor->isObjC()))
-      return false;
-    break;
+      return nullptr;
+    return afd;
   }
   case SILDeclRef::Kind::Deallocator:
     // emitMoveOnlyDestructor: a noncopyable type's deinit is its deallocator.
     // A class's deallocator is synthesized.
-    if (inClass)
-      return false;
-    break;
+    return inClass ? nullptr : afd;
   default:
-    return false;
+    return nullptr;
   }
-  return !afd->hasBody() || afd->isBodySkipped();
+}
+
+/// Whether legacy leaves \p ref a declaration because the body it would emit
+/// is missing: the declaration has none, like an @_silgen_name declaration of
+/// a C function (D10), or its body was skipped
+/// (-experimental-skip-non-inlinable-function-bodies). Ask hasBody() and
+/// isBodySkipped(), not shouldEmitFunctionBody: under lazy type checking that
+/// one type-checks the body, and every callee of a single root comes through
+/// here.
+static bool lacksBodyToEmit(SILDeclRef ref) {
+  auto *afd = getGatedBodyDecl(ref);
+  return afd && (!afd->hasBody() || afd->isBodySkipped());
+}
+
+bool SILGenModule::shouldEmitBodyOnDemand(SILDeclRef constant) {
+  if (forcedFunctions.contains(constant))
+    return true;
+  auto *afd = getGatedBodyDecl(constant);
+  bool emit = !afd || shouldEmitFunctionBody(afd);
+  DEBUG_WITH_TYPE("silgen-requests", if (!emit) {
+    llvm::dbgs() << "[declined] ";
+    constant.print(llvm::dbgs());
+    llvm::dbgs() << "\n";
+  });
+  return emit;
 }
 
 /// Whether a function referenced from an emitted body, or forced, is defined in

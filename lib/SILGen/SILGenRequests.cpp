@@ -156,6 +156,11 @@ SILFunctionBodyRequest::evaluate(Evaluator &evaluator,
   if (!f->empty())
     return f;
 
+  // A body that legacy's gate declines stays a declaration (D15), with the
+  // external linkage that the interface request gave it.
+  if (!SGM->shouldEmitBodyOnDemand(constant))
+    return f;
+
   // The interface request uses NotForDefinition linkage. Upgrade to
   // definition linkage before emitting the body.
   if (isAvailableExternally(f->getLinkage()))
@@ -181,7 +186,8 @@ CleanedSILFunctionRequest::evaluate(Evaluator &evaluator,
   TraceScope _ts3;
   auto *f = evaluateOrFatal(evaluator,
                             SILFunctionBodyRequest{constant});
-  if (f->isAlreadyCanonical())
+  // A declaration has no body to clean.
+  if (f->empty() || f->isAlreadyCanonical())
     return f;
 
   // Clear pass-notification flags set during SIL construction.
@@ -249,7 +255,8 @@ DiagnosedSILFunctionRequest::evaluate(Evaluator &evaluator,
   TraceScope _ts4;
   auto *f = evaluateOrFatal(evaluator,
                             CleanedSILFunctionRequest{constant});
-  if (f->isAlreadyCanonical())
+  // A declaration has no body to diagnose.
+  if (f->empty() || f->isAlreadyCanonical())
     return f;
 
   auto &silMod = f->getModule();
@@ -286,7 +293,8 @@ CanonicalSILFunctionRequest::evaluate(Evaluator &evaluator,
   TraceScope _ts5;
   auto *f = evaluateOrFatal(evaluator,
                             DiagnosedSILFunctionRequest{constant});
-  if (!f->isAlreadyCanonical())
+  // Only a function with a body reaches the Canonical stage.
+  if (!f->empty() && !f->isAlreadyCanonical())
     f->setFunctionStage(SILStage::Canonical);
   return f;
 }

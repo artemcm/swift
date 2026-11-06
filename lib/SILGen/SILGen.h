@@ -177,6 +177,16 @@ public:
   /// Set by ASTLoweringRequest::evaluate; see isEmittingOnDemand.
   bool emittingOnDemand = false;
 
+  /// Whether SILFunctionBodyRequest emits the body of \p constant. Legacy asks
+  /// shouldEmitFunctionBody where it visits a declaration, and under
+  /// -experimental-lazy-typecheck that declines every body once an error has
+  /// been diagnosed. On demand, a body that nothing visited is requested too,
+  /// by the coordinator's scan of an emitted body and by the mandatory
+  /// inliner. This asks the same gate for the entry points that legacy gates.
+  /// A forced function passed the gate when it was delayed, and legacy emits
+  /// it whatever the error state.
+  bool shouldEmitBodyOnDemand(SILDeclRef constant);
+
   /// Canonicalize a synthesized thunk (no SILDeclRef) via
   /// CanonicalSynthesizedFunctionRequest. No-op on the legacy path. While the
   /// on-demand seeder runs, queue the thunk instead:
