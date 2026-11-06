@@ -57,6 +57,9 @@ SWIFT_REQUEST(SILGen, SILDifferentiabilityWitnessRequest,
 SWIFT_REQUEST(SILGen, SILVTableRequest,
               SILVTable *(ClassDecl *),
               Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, SILWitnessTableRequest,
+              SILWitnessTable *(RootProtocolConformance *),
+              Cached, NoLocationInfo)
 SWIFT_REQUEST(SILGen, CanonicalSynthesizedFunctionRequest,
               SILFunction *(SILFunction *),
               Cached, NoLocationInfo)

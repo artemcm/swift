@@ -2752,9 +2752,12 @@ namespace {
 /// SILFunctionBodyRequest at once, so that functions are created in legacy's
 /// order. The worklist then scans and canonicalizes each body.
 ///
-/// Not covered: witness tables, `@objc` thunks and classes that use the
-/// Objective-C allocator (rejected; Phase 6.5), static stored properties
-/// (globals), and protocols and their extensions.
+/// After a type's members and an extension's, the witness tables of their
+/// conformances, through SILWitnessTableRequest.
+///
+/// Not covered: `@objc` thunks and classes that use the Objective-C allocator
+/// (rejected; Phase 6.5), static stored properties (globals), and protocols
+/// and their extensions.
 class OnDemandSeeder {
   Evaluator &evaluator;
   Lowering::SILGenModule &SGM;
@@ -3001,7 +3004,7 @@ private:
     }
   }
 
-  /// SILGenType::emitType, without the witness tables.
+  /// SILGenType::emitType.
   void seedNominal(NominalTypeDecl *ntd) {
     if (isa<ProtocolDecl>(ntd))
       return;
@@ -3025,9 +3028,20 @@ private:
       SGM.emitNonCopyableTypeDeinitTable(ntd);
       SGM.recordNonCopyableTypeWithEmittedMetadata(ntd);
     }
+    seedWitnessTables(
+        ntd->getLocalConformances(ConformanceLookupKind::NonInherited));
   }
 
-  /// SILGenExtension::emitExtension, without witness tables.
+  /// The witness tables of the conformances that a type or an extension
+  /// declares, as SILGenType::emitType and SILGenExtension::emitExtension
+  /// emit them.
+  void seedWitnessTables(ArrayRef<ProtocolConformance *> conformances) {
+    for (auto *conformance : conformances)
+      if (auto *normal = dyn_cast<NormalProtocolConformance>(conformance))
+        (void)evaluateOrFatal(evaluator, SILWitnessTableRequest{normal});
+  }
+
+  /// SILGenExtension::emitExtension.
   void seedExtension(ExtensionDecl *ed) {
     auto *nominal = ed->getExtendedNominal();
     if (!nominal || isa<ProtocolDecl>(nominal) || ed->isObjCImplementation())
@@ -3035,6 +3049,7 @@ private:
     bool isClass = isa<ClassDecl>(nominal);
     for (Decl *member : ed->getABIMembers())
       seedMember(member, isClass, /*inExtension=*/true);
+    seedWitnessTables(ed->getLocalConformances(ConformanceLookupKind::All));
   }
 };
 } // end anonymous namespace

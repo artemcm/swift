@@ -9,7 +9,7 @@
 // Nothing references Plain: in whole-module mode its implicit init() is
 // delayed, and only the vtable forces it. Derived overrides Base from another
 // file, and one of its overrides needs a vtable thunk. Actors.swift is
-// checked apart: its witness tables, Actor's included, wait for Phase 6.3.
+// checked apart, with its Actor witness table (Phase 6.3).
 
 // RUN: %empty-directory(%t)
 // RUN: split-file %s %t
@@ -81,13 +81,14 @@
 // RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
 // RUN:   %t/Actors.swift -o %t/actors.ondemand.sil -sil-verify-all \
 // RUN:   -Xllvm -sil-on-demand-emission
-// RUN: %FileCheck --check-prefix=ACTORS --implicit-check-not="Counter: Actor" \
-// RUN:   %s < %t/actors.ondemand.sil
+// RUN: %FileCheck --check-prefix=ACTORS %s < %t/actors.ondemand.sil
 // ACTORS-DAG: sil [exact_self_class] @$s1M7CounterCACycfC : $@convention(method) (@thick Counter.Type) -> @owned Counter {
 // ACTORS-DAG: sil @$s1M7CounterCACycfc : $@convention(method) (@owned Counter) -> @owned Counter {
 // ACTORS-DAG: sil @$s1M6ScreenCfZ : $@convention(thin) (@owned Screen) -> () {
 // ACTORS-DAG: sil_vtable Counter {
 // ACTORS-DAG: sil_vtable Screen {
+// ACTORS-DAG: sil_witness_table Counter: Actor module M {
+// ACTORS-DAG:   method #Actor.unownedExecutor!getter: {{.*}} : @$s1M7CounterCScAAAScA15unownedExecutorScevgTW
 
 // Where on demand differs from legacy, by design. Leaf, a final subclass in
 // another file than Base, modifies Base.tag: both paths devirtualize the call
