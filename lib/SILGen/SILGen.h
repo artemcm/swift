@@ -202,6 +202,12 @@ public:
   /// thunks, as legacy links nothing before every table is emitted.
   void emitPendingConformancesOnDemand();
 
+  /// On demand, emits the bodies of the functions that \p f references and
+  /// that every referencing unit emits for itself (isEmittedOnDemand), such
+  /// as an enum case's constructor that a witness thunk calls, or a
+  /// Clang-synthesized accessor.
+  void emitOnDemandBodiesReferencedBy(SILFunction *f);
+
   /// Set while the on-demand seeder runs; see canonicalizeSynthesizedOnDemand.
   bool deferSynthesizedCanonicalization = false;
   std::vector<SILFunction *> deferredSynthesizedFunctions;

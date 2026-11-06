@@ -273,6 +273,11 @@ DiagnosedSILFunctionRequest::evaluate(Evaluator &evaluator,
       llvm::dbgs() << " " << member->getName();
     llvm::dbgs() << "\n";
   });
+  // The bodies that the members' OnDemandSILLinker would otherwise meet
+  // missing (D18).
+  if (auto *SGM = silMod.getASTContext().getActiveSILGenModule())
+    for (SILFunction *member : members)
+      SGM->emitOnDemandBodiesReferencedBy(member);
   {
     SILPassManager PM(&silMod, /*isMandatory=*/true, /*IRMod=*/nullptr);
     PM.executePassPipelinePlan(plan, members.getArrayRef());
@@ -332,12 +337,15 @@ CanonicalSynthesizedFunctionRequest::evaluate(Evaluator &evaluator,
   if (f->empty())
     return f;
 
+  auto &silMod = f->getModule();
+  if (auto *SGM = silMod.getASTContext().getActiveSILGenModule())
+    SGM->emitOnDemandBodiesReferencedBy(f);
+
   // Clear pass-notification flags; the pass manager asserts they're false
   // (as in CleanedSILFunctionRequest::evaluate).
   f->setNeedBreakInfiniteLoops(false);
   f->setNeedCompleteLifetimes(false);
 
-  auto &silMod = f->getModule();
   {
     SILPassManager PM(&silMod, /*isMandatory=*/true, /*IRMod=*/nullptr);
     PM.executePassPipelinePlan(

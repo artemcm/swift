@@ -116,6 +116,39 @@ void SILGenModule::emitPendingConformancesOnDemand() {
   }
 }
 
+static bool isEmittedOnDemand(SILModule &M, SILDeclRef constant);
+
+// Legacy emits every body before any pass runs, so the SIL linker never meets
+// a function of this unit without its body. On demand, a function that each
+// referencing unit emits for itself gets its body from the worklist, which
+// can come after a function that references it runs OnDemandSILLinker, which
+// asserts on a shared declaration it can't deserialize (D18): a witness thunk
+// calls the constructor of an enum case that satisfies a requirement (G-41),
+// and a body reads an imported C enum's rawValue through a Clang-synthesized
+// getter. Callers: CanonicalSynthesizedFunctionRequest, and
+// DiagnosedSILFunctionRequest for each member of a component.
+void SILGenModule::emitOnDemandBodiesReferencedBy(SILFunction *f) {
+  if (!isEmittingOnDemand())
+    return;
+  for (auto &block : *f) {
+    for (auto &inst : block) {
+      auto *ref = dyn_cast<FunctionRefBaseInst>(&inst);
+      if (!ref)
+        continue;
+      auto *callee = ref->getInitiallyReferencedFunction();
+      auto calleeRef = callee->getDeclRef();
+      if (!calleeRef || !callee->empty() || !forcedFunctions.count(calleeRef) ||
+          !isEmittedOnDemand(M, calleeRef))
+        continue;
+      (void)evaluateOrFatal(getASTContext().evaluator,
+                            SILFunctionBodyRequest{calleeRef});
+      // queueForcedFunctions may have dropped it while it had no body; queue
+      // it again, so the worklist canonicalizes it.
+      pendingForcedFunctions.push_back(calleeRef);
+    }
+  }
+}
+
 SILGenModule::SILGenModule(SILModule &M, ModuleDecl *SM)
     : M(M), Types(M.Types), SwiftModule(SM),
       FileIDsByFilePath(SM->computeFileIDMap(/*shouldDiagnose=*/true)) {
@@ -2615,6 +2648,11 @@ static bool isEmittedHere(SILFunction *callee, SILDeclRef calleeRef,
     return false;
   if (!calleeRef.hasDecl())
     return true;
+  // Every unit that references an enum case's constructor emits it
+  // (isEmittedOnDemand), whichever file declares the enum: a witness thunk of
+  // a conformance in another file references it (G-41).
+  if (calleeRef.isEnumElement())
+    return true;
   auto *sf = calleeRef.getDecl()->getDeclContext()->getParentSourceFile();
   if (!sf) {
     // No source file: skip cross-module/imported externals (no local body);
@@ -3263,6 +3301,15 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
   // which would strip every body.
   for (auto &f : SGM.M) {
     if (f.empty() || isAvailableExternally(f.getLinkage()))
+      continue;
+    // Only a function with a SILDeclRef is emitted for another primary. A
+    // synthesized function, such as a witness thunk, belongs to the unit
+    // that made it, although its DeclContext, which comes from its debug
+    // scope, can be its witness's, in another file. And an enum case's
+    // constructor is emitted into every unit that references it, as legacy's
+    // isEmittedOnDemand does.
+    auto ref = f.getDeclRef();
+    if (!ref || ref.isEnumElement())
       continue;
     auto *dc = f.getDeclContext();
     if (!dc) continue;
