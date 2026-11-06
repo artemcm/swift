@@ -1275,8 +1275,10 @@ class OnDemandMandatoryInlining : public SILFunctionTransform {
             // A synthesized thunk that the coordinator hasn't canonicalized
             // yet, because it was created while seeding: canonicalize it
             // before inlining it.
-            (void)evaluateOrDefault(evaluator,
+            auto *result = evaluateOrDefault(evaluator,
                 CanonicalSynthesizedFunctionRequest{CalleeFunction}, nullptr);
+            if (!result || !result->isAlreadyCanonical())
+              continue;  // Cycle or failure: skip inlining.
           }
         } else {
           DEBUG_WITH_TYPE("silgen-requests",
