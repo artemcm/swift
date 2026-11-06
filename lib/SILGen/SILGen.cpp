@@ -2655,7 +2655,9 @@ static bool isEmittedHere(SILFunction *callee, SILDeclRef calleeRef,
   // stored property.
   if (isEmittedOnDemand(callee->getModule(), calleeRef))
     return true;
-  auto *sf = calleeRef.getDecl()->getDeclContext()->getParentSourceFile();
+  // The outermost file: a macro's expansion has a source file of its own.
+  auto *sf =
+      calleeRef.getDecl()->getDeclContext()->getOutermostParentSourceFile();
   if (!sf) {
     // No source file: skip cross-module/imported externals (no local body);
     // locally-synthesized thunks have a body, so fall through.
@@ -3187,7 +3189,12 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
     if (auto *sf = dyn_cast<SourceFile>(file)) {
       performTypeChecking(*sf);
       if (rootSpec.empty()) {
-        for (auto *D : sf->getTopLevelDecls())
+        // As SILGenModule::emitSourceFile: with their auxiliary declarations,
+        // such as the extension that a macro attached to a type adds, and
+        // its conformances.
+        SmallVector<Decl *, 64> decls;
+        sf->getTopLevelDeclsWithAuxiliaryDecls(decls);
+        for (auto *D : decls)
           seeder.visitTopLevel(D);
         // SILGenModule::emitSourceFile's local types, after the top-level
         // declarations. Legacy visits the hoisted declarations in between;
@@ -3210,6 +3217,11 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
         rootSpec);
     return;
   }
+  // The tables of the conformances that seeding used, and the thunks they
+  // create, before the deferred thunks are canonicalized: a thunk's linker
+  // needs the table of a synthesized conformance it uses. With deferral on,
+  // this only drains the queue.
+  SGM.emitPendingConformancesOnDemand();
   SGM.canonicalizeDeferredSynthesizedFunctions();
 
   // Drain conformances accumulated during aux emission, in case the
@@ -3264,7 +3276,7 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
       // from its debug scope, which for a default argument generator is an
       // expression with no DeclContext.
       auto *dc = ref.getInnermostDeclContext();
-      auto *sf = dc ? dc->getParentSourceFile() : nullptr;
+      auto *sf = dc ? dc->getOutermostParentSourceFile() : nullptr;
       if (sf && llvm::is_contained(filesToEmit, sf)) {
         DEBUG_WITH_TYPE("silgen-requests", llvm::dbgs() << "[sweep] ";
                         ref.print(llvm::dbgs()); llvm::dbgs() << "\n");
@@ -3285,7 +3297,7 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
         continue;
       auto ref = f.getDeclRef();
       auto *dc = ref ? ref.getInnermostDeclContext() : nullptr;
-      auto *sf = dc ? dc->getParentSourceFile() : nullptr;
+      auto *sf = dc ? dc->getOutermostParentSourceFile() : nullptr;
       if (!sf || !llvm::is_contained(filesToEmit, sf))
         continue;
       f.setLinkage(linkage == SILLinkage::Private
@@ -3318,7 +3330,7 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
       continue;
     auto *dc = f.getDeclContext();
     if (!dc) continue;
-    auto *sf = dc->getParentSourceFile();
+    auto *sf = dc->getOutermostParentSourceFile();
     if (!sf)
       continue;
     bool inFilesToEmit = false;

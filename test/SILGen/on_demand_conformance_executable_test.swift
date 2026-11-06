@@ -7,6 +7,9 @@
 // same.
 
 // REQUIRES: executable_test
+// REQUIRES: concurrency
+// REQUIRES: concurrency_runtime
+// UNSUPPORTED: back_deployment_runtime
 // RUN: %empty-directory(%t)
 // RUN: split-file %s %t
 // RUN: %target-swift-frontend -c -module-name M -primary-file %t/Lib.swift \
