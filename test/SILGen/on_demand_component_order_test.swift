@@ -11,11 +11,22 @@
 //   a function passes to a call, before the span rewrites it
 //   (PassedSending.swift and PassedConsume.swift).
 //
-// Legacy's callees are the targets of full applies, explored in instruction
-// order. A closure that a function only passes, or that a let binding holds,
-// is not its callee, and runs after it. The order checks pin that rule on both
-// paths: siblings, a closure applied in place, a closure that a let holds,
-// and recursion between local functions.
+// Legacy's order comes from BottomUpFunctionOrder: Tarjan's strongly connected
+// components algorithm over the targets of full applies, which CalleeCache
+// resolves to a function_ref. A component runs after the components it calls,
+// and the functions of a component in the order that they pop off the stack.
+// The walk starts from each function in turn, in the order of the module's
+// function list, which is the order that SILGen created the functions in.
+// That order decides between functions that no call connects. A closure that a
+// function only passes, or that a let binding holds, is not its callee, and
+// runs after it.
+//
+// The order checks pin that rule on both paths: siblings, a closure applied in
+// place or held by a let, a cycle of three, a cycle through the root, closures
+// that nest, and local functions that are declared in a different order than
+// they are used. Each also pins the order in which the closure group passes
+// are given a component's members, which legacy's ClosureGroupSchedule lists
+// bottom-up.
 
 // REQUIRES: concurrency
 // RUN: %empty-directory(%t)
@@ -40,44 +51,76 @@
 // RUN:   %t/PassedConsume.swift -o /dev/null -Xllvm -sil-on-demand-emission
 
 // RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
-// RUN:   %t/Siblings.swift -o /dev/null -Xllvm -sil-print-pass-name 2>&1 \
-// RUN:   | %FileCheck --check-prefix=SIBLINGS %s
+// RUN:   %t/Siblings.swift -o /dev/null -Xllvm -sil-print-pass-name \
+// RUN:   -Xllvm -sil-print-closure-groups > %t/siblings.legacy 2>&1
+// RUN: %FileCheck --check-prefix=SIBLINGS %s < %t/siblings.legacy \
+// RUN:   && %FileCheck --check-prefix=GROUPSIBLINGS %s < %t/siblings.legacy
 // RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
 // RUN:   %t/Siblings.swift -o /dev/null -Xllvm -sil-print-pass-name \
-// RUN:   -Xllvm -sil-on-demand-emission 2>&1 \
-// RUN:   | %FileCheck --check-prefix=SIBLINGS %s
+// RUN:   -Xllvm -sil-print-closure-groups -Xllvm -sil-on-demand-emission \
+// RUN:   > %t/siblings.ondemand 2>&1
+// RUN: %FileCheck --check-prefix=SIBLINGS %s < %t/siblings.ondemand \
+// RUN:   && %FileCheck --check-prefix=GROUPSIBLINGS %s < %t/siblings.ondemand
 
-// RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
-// RUN:   %t/Shapes.swift -o /dev/null -Xllvm -sil-print-pass-name 2>&1 \
-// RUN:   | %FileCheck --check-prefix=SHAPES %s
 // RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
 // RUN:   %t/Shapes.swift -o /dev/null -Xllvm -sil-print-pass-name \
-// RUN:   -Xllvm -sil-on-demand-emission 2>&1 \
-// RUN:   | %FileCheck --check-prefix=SHAPES %s
-
+// RUN:   -Xllvm -sil-print-closure-groups > %t/shapes.legacy 2>&1
+// RUN: %FileCheck --check-prefix=SHAPES %s < %t/shapes.legacy \
+// RUN:   && %FileCheck --check-prefix=GROUPSHAPES %s < %t/shapes.legacy
 // RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
-// RUN:   %t/Cycle.swift -o /dev/null -Xllvm -sil-print-pass-name 2>&1 \
-// RUN:   | %FileCheck --check-prefix=CYCLE %s
+// RUN:   %t/Shapes.swift -o /dev/null -Xllvm -sil-print-pass-name \
+// RUN:   -Xllvm -sil-print-closure-groups -Xllvm -sil-on-demand-emission \
+// RUN:   > %t/shapes.ondemand 2>&1
+// RUN: %FileCheck --check-prefix=SHAPES %s < %t/shapes.ondemand \
+// RUN:   && %FileCheck --check-prefix=GROUPSHAPES %s < %t/shapes.ondemand
+
 // RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
 // RUN:   %t/Cycle.swift -o /dev/null -Xllvm -sil-print-pass-name \
-// RUN:   -Xllvm -sil-on-demand-emission 2>&1 \
-// RUN:   | %FileCheck --check-prefix=CYCLE %s
-
+// RUN:   -Xllvm -sil-print-closure-groups > %t/cycle.legacy 2>&1
+// RUN: %FileCheck --check-prefix=CYCLE %s < %t/cycle.legacy \
+// RUN:   && %FileCheck --check-prefix=GROUPCYCLE %s < %t/cycle.legacy
 // RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
-// RUN:   %t/RootCycle.swift -o /dev/null -Xllvm -sil-print-pass-name 2>&1 \
-// RUN:   | %FileCheck --check-prefix=ROOTCYCLE %s
+// RUN:   %t/Cycle.swift -o /dev/null -Xllvm -sil-print-pass-name \
+// RUN:   -Xllvm -sil-print-closure-groups -Xllvm -sil-on-demand-emission \
+// RUN:   > %t/cycle.ondemand 2>&1
+// RUN: %FileCheck --check-prefix=CYCLE %s < %t/cycle.ondemand \
+// RUN:   && %FileCheck --check-prefix=GROUPCYCLE %s < %t/cycle.ondemand
+
 // RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
 // RUN:   %t/RootCycle.swift -o /dev/null -Xllvm -sil-print-pass-name \
-// RUN:   -Xllvm -sil-on-demand-emission 2>&1 \
-// RUN:   | %FileCheck --check-prefix=ROOTCYCLE %s
+// RUN:   -Xllvm -sil-print-closure-groups > %t/rootcycle.legacy 2>&1
+// RUN: %FileCheck --check-prefix=ROOTCYCLE %s < %t/rootcycle.legacy \
+// RUN:   && %FileCheck --check-prefix=GROUPROOTCYCLE %s < %t/rootcycle.legacy
+// RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
+// RUN:   %t/RootCycle.swift -o /dev/null -Xllvm -sil-print-pass-name \
+// RUN:   -Xllvm -sil-print-closure-groups -Xllvm -sil-on-demand-emission \
+// RUN:   > %t/rootcycle.ondemand 2>&1
+// RUN: %FileCheck --check-prefix=ROOTCYCLE %s < %t/rootcycle.ondemand \
+// RUN:   && %FileCheck --check-prefix=GROUPROOTCYCLE %s < %t/rootcycle.ondemand
 
 // RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
-// RUN:   %t/Roots.swift -o /dev/null -Xllvm -sil-print-pass-name 2>&1 \
-// RUN:   | %FileCheck --check-prefix=ROOTS %s
+// RUN:   %t/Roots.swift -o /dev/null -Xllvm -sil-print-pass-name \
+// RUN:   -Xllvm -sil-print-closure-groups > %t/roots.legacy 2>&1
+// RUN: %FileCheck --check-prefix=ROOTS %s < %t/roots.legacy \
+// RUN:   && %FileCheck --check-prefix=GROUPROOTS %s < %t/roots.legacy
 // RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
 // RUN:   %t/Roots.swift -o /dev/null -Xllvm -sil-print-pass-name \
-// RUN:   -Xllvm -sil-on-demand-emission 2>&1 \
-// RUN:   | %FileCheck --check-prefix=ROOTS %s
+// RUN:   -Xllvm -sil-print-closure-groups -Xllvm -sil-on-demand-emission \
+// RUN:   > %t/roots.ondemand 2>&1
+// RUN: %FileCheck --check-prefix=ROOTS %s < %t/roots.ondemand \
+// RUN:   && %FileCheck --check-prefix=GROUPROOTS %s < %t/roots.ondemand
+
+// RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
+// RUN:   %t/Declared.swift -o /dev/null -Xllvm -sil-print-pass-name \
+// RUN:   -Xllvm -sil-print-closure-groups > %t/declared.legacy 2>&1
+// RUN: %FileCheck --check-prefix=DECLARED %s < %t/declared.legacy \
+// RUN:   && %FileCheck --check-prefix=GROUPDECLARED %s < %t/declared.legacy
+// RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
+// RUN:   %t/Declared.swift -o /dev/null -Xllvm -sil-print-pass-name \
+// RUN:   -Xllvm -sil-print-closure-groups -Xllvm -sil-on-demand-emission \
+// RUN:   > %t/declared.ondemand 2>&1
+// RUN: %FileCheck --check-prefix=DECLARED %s < %t/declared.ondemand \
+// RUN:   && %FileCheck --check-prefix=GROUPDECLARED %s < %t/declared.ondemand
 
 // RUN: %target-swift-frontend -strict-concurrency=complete -swift-version 5 \
 // RUN:   -parse-as-library -emit-sil -module-name M %t/PassedSending.swift \
@@ -170,6 +213,8 @@ func parent() -> Int {
   return first() + second()
 }
 
+// GROUPSIBLINGS: Closure group for access-enforcement-selection: $s1M6parentSiyF5firstL_SiyF $s1M6parentSiyF6secondL_SiyF $s1M6parentSiyF{{$}}
+
 // SIBLINGS: NoReturnFolding (noreturn-folding), Function: $s1M6parentSiyF5firstL_SiyF{{$}}
 // SIBLINGS: NoReturnFolding (noreturn-folding), Function: $s1M6parentSiyF6secondL_SiyF{{$}}
 // SIBLINGS: NoReturnFolding (noreturn-folding), Function: $s1M6parentSiyF{{$}}
@@ -178,8 +223,8 @@ func parent() -> Int {
 
 // immediate is a callee of shapes, so it runs first. bound is held by a let
 // binding, which getCalleeOrigin doesn't look through, so it runs after
-// shapes. even and odd call each other, and legacy breaks the cycle where it
-// closes.
+// shapes. even and odd call each other, so they are one component, which runs
+// in the order that its functions pop off Tarjan's stack: odd, then even.
 
 func shapes() -> Int {
   let immediate = { () -> Int in 1 }()
@@ -188,6 +233,8 @@ func shapes() -> Int {
   func odd(_ n: Int) -> Bool { return n == 0 ? false : even(n - 1) }
   return immediate + bound() + (even(4) ? 1 : 0)
 }
+
+// GROUPSHAPES: Closure group for access-enforcement-selection: $s1M6shapesSiyFSiyXEfU_ $s1M6shapesSiyF3oddL_ySbSiF $s1M6shapesSiyF4evenL_ySbSiF $s1M6shapesSiyF $s1M6shapesSiyFSiycfU0_{{$}}
 
 // SHAPES: NoReturnFolding (noreturn-folding), Function: $s1M6shapesSiyFSiyXEfU_{{$}}
 // SHAPES: NoReturnFolding (noreturn-folding), Function: $s1M6shapesSiyF3oddL_ySbSiF{{$}}
@@ -198,8 +245,8 @@ func shapes() -> Int {
 //--- Cycle.swift
 
 // a calls b and c, which both call a. Legacy lists the members of the cycle as
-// it pops them off its DFS stack, after all the callees of the first function
-// that it visited: c, b, a.
+// it pops them off its DFS stack, after the callees of the first function that
+// it visited: c, b, a.
 
 func scc() -> Int {
   func a(_ n: Int) -> Int { return n == 0 ? 0 : b(n - 1) + c(n - 1) }
@@ -207,6 +254,8 @@ func scc() -> Int {
   func c(_ n: Int) -> Int { return a(n) }
   return a(3)
 }
+
+// GROUPCYCLE: Closure group for access-enforcement-selection: $s1M3sccSiyF1cL_yS2iF $s1M3sccSiyF1bL_yS2iF $s1M3sccSiyF1aL_yS2iF $s1M3sccSiyF{{$}}
 
 // CYCLE: NoReturnFolding (noreturn-folding), Function: $s1M3sccSiyF1cL_yS2iF{{$}}
 // CYCLE: NoReturnFolding (noreturn-folding), Function: $s1M3sccSiyF1bL_yS2iF{{$}}
@@ -224,15 +273,17 @@ func walk(_ n: Int) -> Int {
   return n == 0 ? 0 : helper() + other()
 }
 
+// GROUPROOTCYCLE: Closure group for access-enforcement-selection: $s1M4walkyS2iF5otherL_SiyF $s1M4walkyS2iF6helperL_SiyF $s1M4walkyS2iF{{$}}
+
 // ROOTCYCLE: NoReturnFolding (noreturn-folding), Function: $s1M4walkyS2iF5otherL_SiyF{{$}}
 // ROOTCYCLE: NoReturnFolding (noreturn-folding), Function: $s1M4walkyS2iF6helperL_SiyF{{$}}
 // ROOTCYCLE: NoReturnFolding (noreturn-folding), Function: $s1M4walkyS2iF{{$}}
 
 //--- Roots.swift
 
-// No closure calls another: roots passes them all. Legacy runs the ones that
-// no function calls in the order SILGen created them, a nested closure before
-// the next sibling.
+// Nothing calls these closures: roots passes two of them to use, and the first
+// passes the third. Legacy runs functions that no call connects in the order
+// that SILGen created them, a nested closure before the next sibling.
 
 func use(_ f: () -> ()) {}
 
@@ -241,7 +292,45 @@ func roots() {
   use { }
 }
 
+// GROUPROOTS: Closure group for access-enforcement-selection: $s1M5rootsyyF $s1M5rootsyyFyyXEfU_ $s1M5rootsyyFyyXEfU_yyXEfU_ $s1M5rootsyyFyyXEfU0_{{$}}
+
 // ROOTS: NoReturnFolding (noreturn-folding), Function: $s1M5rootsyyF{{$}}
 // ROOTS: NoReturnFolding (noreturn-folding), Function: $s1M5rootsyyFyyXEfU_{{$}}
 // ROOTS: NoReturnFolding (noreturn-folding), Function: $s1M5rootsyyFyyXEfU_yyXEfU_{{$}}
 // ROOTS: NoReturnFolding (noreturn-folding), Function: $s1M5rootsyyFyyXEfU0_{{$}}
+
+//--- Declared.swift
+
+// SILGen creates a local function where it is declared, and a closure where
+// the expression is, so legacy runs x before y although the calls are in the
+// other order, and p before the closure that passes it, although the closure
+// is the first to refer to p. No call connects any of them.
+
+func use(_ f: () -> ()) {}
+
+func order() {
+  func x() {}
+  func y() {}
+  use(y)
+  use(x)
+}
+
+func later() {
+  func p() {}
+  use { use(p) }
+  func q() {}
+  use(q)
+  use { }
+}
+
+// GROUPDECLARED: Closure group for access-enforcement-selection: $s1M5orderyyF $s1M5orderyyF1xL_yyF $s1M5orderyyF1yL_yyF{{$}}
+// GROUPDECLARED: Closure group for access-enforcement-selection: $s1M5lateryyF $s1M5lateryyF1pL_yyF $s1M5lateryyFyyXEfU_ $s1M5lateryyF1qL_yyF $s1M5lateryyFyyXEfU0_{{$}}
+
+// DECLARED: NoReturnFolding (noreturn-folding), Function: $s1M5orderyyF{{$}}
+// DECLARED: NoReturnFolding (noreturn-folding), Function: $s1M5orderyyF1xL_yyF{{$}}
+// DECLARED: NoReturnFolding (noreturn-folding), Function: $s1M5orderyyF1yL_yyF{{$}}
+// DECLARED: NoReturnFolding (noreturn-folding), Function: $s1M5lateryyF{{$}}
+// DECLARED: NoReturnFolding (noreturn-folding), Function: $s1M5lateryyF1pL_yyF{{$}}
+// DECLARED: NoReturnFolding (noreturn-folding), Function: $s1M5lateryyFyyXEfU_{{$}}
+// DECLARED: NoReturnFolding (noreturn-folding), Function: $s1M5lateryyF1qL_yyF{{$}}
+// DECLARED: NoReturnFolding (noreturn-folding), Function: $s1M5lateryyFyyXEfU0_{{$}}

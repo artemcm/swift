@@ -1214,6 +1214,17 @@ public:
 /// strongly connected components of the calls between members, each after the
 /// components it calls (see ComponentOrder).
 ///
+/// Legacy starts its walk from every function of the module in turn, in the
+/// order of the module's function list. SILGen keeps that list in creation
+/// order, apart from a delayed function, which it moves to where it would have
+/// been emitted. This starts the walk from each member in the order of
+/// SILFunction::getIndex, which counts creation. In a closure component the
+/// two orders agree (on_demand_component_order_test.swift pins that): the root
+/// comes first, then the closures and local functions that its body defines,
+/// in the order that SILGen emits them. That order decides between functions
+/// that no call connects, such as a local function that is declared before the
+/// closure that passes it.
+///
 /// The edges are the static ones, which CalleeCache resolves to a function_ref
 /// (see getStaticCallee). A closure that a function only passes to a call, or
 /// that a let binding holds, is not its callee, and runs after it. Passes that
@@ -1227,15 +1238,16 @@ public:
 /// and callees outside the component. Following them would build the
 /// CalleeCache, which walks every vtable and witness table, for each request.
 /// Where such an edge closes a cycle with members, legacy's components are
-/// larger than these, and the order can differ. The walk also starts from the
-/// members in the component's discovery order, where legacy's starts from the
-/// module's: SILGen's creation order. collectClosureComponent discovers the
-/// members depth first, which is that order for closures that nest.
+/// larger than these, and the order can differ.
 static llvm::SmallVector<SILFunction *, 8>
 getBottomUpOrder(llvm::ArrayRef<SILFunction *> members) {
   llvm::SmallPtrSet<SILFunction *, 8> isMember(members.begin(), members.end());
+  llvm::SmallVector<SILFunction *, 8> starts(members.begin(), members.end());
+  llvm::sort(starts, [](SILFunction *a, SILFunction *b) {
+    return a->getIndex() < b->getIndex();
+  });
   ComponentOrder walk(isMember);
-  for (SILFunction *member : members)
+  for (SILFunction *member : starts)
     walk.visit(member);
   return std::move(walk.order);
 }
@@ -1286,8 +1298,10 @@ void SILPassManager::executeScoped(llvm::ArrayRef<SILFunction *> members) {
     // The members form one closure group: the caller passes a closure
     // component, so every [closure] link between definitions stays inside it.
     if (Idx > FirstGroupTrans) {
+      // Legacy lists a group's members bottom-up (ClosureGroupSchedule), and
+      // the group passes see them in that order.
       llvm::SmallVector<SILFunction *, 4> group;
-      for (SILFunction *F : covered)
+      for (SILFunction *F : getBottomUpOrder(covered.getArrayRef()))
         if (F->isDefinition())
           group.push_back(F);
       runClosureGroupBlock(FirstGroupTrans, Idx, {group});
