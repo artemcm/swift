@@ -2756,8 +2756,7 @@ namespace {
 /// conformances, through SILWitnessTableRequest.
 ///
 /// Not covered: `@objc` thunks and classes that use the Objective-C allocator
-/// (rejected; Phase 6.5), static stored properties (globals), and protocols
-/// and their extensions.
+/// (rejected; Phase 6.5), and static stored properties (globals).
 class OnDemandSeeder {
   Evaluator &evaluator;
   Lowering::SILGenModule &SGM;
@@ -3006,8 +3005,19 @@ private:
 
   /// SILGenType::emitType.
   void seedNominal(NominalTypeDecl *ntd) {
-    if (isa<ProtocolDecl>(ntd))
+    // A protocol's tables: a resilient protocol's default witness table, and
+    // the self-conformance table of a protocol that needs one.
+    if (auto *proto = dyn_cast<ProtocolDecl>(ntd)) {
+      if (!proto->isObjC() && proto->isResilient()) {
+        auto *sf = proto->getParentSourceFile();
+        if (!sf || sf->Kind != SourceFileKind::Interface)
+          SGM.emitDefaultWitnessTable(proto);
+      }
+      if (proto->requiresSelfConformanceWitnessTable() &&
+          !SGM.getASTContext().LangOpts.hasFeature(Feature::Embedded))
+        SGM.emitSelfConformanceWitnessTable(proto);
       return;
+    }
     bool isClass = isa<ClassDecl>(ntd);
     if (isClass && diagnoseObjCEntryPoint(ntd))
       return;
@@ -3044,12 +3054,14 @@ private:
   /// SILGenExtension::emitExtension.
   void seedExtension(ExtensionDecl *ed) {
     auto *nominal = ed->getExtendedNominal();
-    if (!nominal || isa<ProtocolDecl>(nominal) || ed->isObjCImplementation())
+    if (!nominal || ed->isObjCImplementation())
       return;
     bool isClass = isa<ClassDecl>(nominal);
     for (Decl *member : ed->getABIMembers())
       seedMember(member, isClass, /*inExtension=*/true);
-    seedWitnessTables(ed->getLocalConformances(ConformanceLookupKind::All));
+    // A protocol extension declares no conformance with a table.
+    if (!isa<ProtocolDecl>(nominal))
+      seedWitnessTables(ed->getLocalConformances(ConformanceLookupKind::All));
   }
 };
 } // end anonymous namespace
