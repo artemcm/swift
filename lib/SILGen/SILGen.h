@@ -197,6 +197,11 @@ public:
   /// Stop deferring, and canonicalize the thunks queued while seeding.
   void canonicalizeDeferredSynthesizedFunctions();
 
+  /// On demand, emits the witness tables of the conformances that bodies
+  /// used (pendingConformances), and only then canonicalizes their witness
+  /// thunks, as legacy links nothing before every table is emitted.
+  void emitPendingConformancesOnDemand();
+
   /// Set while the on-demand seeder runs; see canonicalizeSynthesizedOnDemand.
   bool deferSynthesizedCanonicalization = false;
   std::vector<SILFunction *> deferredSynthesizedFunctions;

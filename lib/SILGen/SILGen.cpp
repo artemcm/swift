@@ -98,6 +98,24 @@ void SILGenModule::canonicalizeDeferredSynthesizedFunctions() {
     canonicalizeSynthesizedOnDemand(thunk);
 }
 
+// A table's entries use more conformances (useConformance), and the linker
+// requires a lazily synthesized conformance's table to exist before it links
+// code that references it. So drain the queue first, then canonicalize the
+// thunks the tables created. While the seeder runs, they wait for the seeder.
+void SILGenModule::emitPendingConformancesOnDemand() {
+  while (!pendingConformances.empty()) {
+    bool wasDeferring = deferSynthesizedCanonicalization;
+    deferSynthesizedCanonicalization = true;
+    while (!pendingConformances.empty()) {
+      (void)getWitnessTable(pendingConformances.front());
+      pendingConformances.pop_front();
+    }
+    if (wasDeferring)
+      return;
+    canonicalizeDeferredSynthesizedFunctions();
+  }
+}
+
 SILGenModule::SILGenModule(SILModule &M, ModuleDecl *SM)
     : M(M), Types(M.Types), SwiftModule(SM),
       FileIDsByFilePath(SM->computeFileIDMap(/*shouldDiagnose=*/true)) {
@@ -3155,10 +3173,7 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
   // worklist iteration below never runs (e.g. no FuncDecl has
   // shouldEmitFunctionBody true). Then queue what the seeds and the witness
   // thunks forced.
-  while (!SGM.pendingConformances.empty()) {
-    (void)SGM.getWitnessTable(SGM.pendingConformances.front());
-    SGM.pendingConformances.pop_front();
-  }
+  SGM.emitPendingConformancesOnDemand();
   queueForcedFunctions(SGM, worklist, resolved, desc.getFilesToEmit(), roots);
 
   // Process the worklist. The body scan finds only functions that a
@@ -3195,10 +3210,7 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
                               CanonicalSILFunctionRequest{ref}, nullptr);
 
       // Drain conformances discovered during body emission.
-      while (!SGM.pendingConformances.empty()) {
-        (void)SGM.getWitnessTable(SGM.pendingConformances.front());
-        SGM.pendingConformances.pop_front();
-      }
+      SGM.emitPendingConformancesOnDemand();
       queueForcedFunctions(SGM, worklist, resolved, filesToEmit, roots);
     }
     for (auto &f : SGM.M) {

@@ -993,6 +993,7 @@ SILFunction *SILGenModule::emitProtocolWitness(
                           witness.getEnterIsolation());
 
   emitLazyConformancesForFunction(f);
+  canonicalizeSynthesizedOnDemand(f);
 
   return f;
 }
@@ -1067,6 +1068,7 @@ static SILFunction *emitSelfConformanceWitness(SILGenModule &SGM,
                           /*isPreconcurrency*/ false, std::nullopt);
 
   SGM.emitLazyConformancesForFunction(f);
+  SGM.canonicalizeSynthesizedOnDemand(f);
 
   return f;
 }
