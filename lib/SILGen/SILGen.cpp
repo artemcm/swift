@@ -2517,12 +2517,17 @@ void SILGenModule::emitSymbolSource(SymbolSource Source) {
 
 /// The declaration whose body \p ref emits, for the entry points that
 /// SILGenModule emits only if shouldEmitFunctionBody: the declaration's own
-/// native entry points. Null for the entry points it synthesizes, such as a
-/// class's allocator; for the functions it makes from a declaration, which
-/// legacy's emitAbstractFuncDecl emits whatever the gate says (the thunks of
-/// @_cdecl, distributed, and back-deployed functions, the back-deployment
-/// fallback, and derivative functions); and for a reference without a
-/// declaration.
+/// native entry points. Null for
+///  - the entry points that SILGenModule synthesizes, such as a class's
+///    allocator, and a class's deallocator (legacy gates the deallocator of a
+///    class that uses the Objective-C allocator, which on demand is rejected);
+///  - the functions it makes from a declaration, which legacy's
+///    emitAbstractFuncDecl emits whatever the gate says: the thunks of
+///    @_cdecl, distributed, and back-deployed functions, and the
+///    back-deployment fallback (legacy gates the fallback of a noncopyable
+///    type's deinit, which the seeder gates itself);
+///  - a derivative function, which SILGen only declares; and
+///  - a reference without a declaration.
 static AbstractFunctionDecl *getGatedBodyDecl(SILDeclRef ref) {
   if (!ref.hasDecl())
     return nullptr;

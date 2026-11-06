@@ -35,4 +35,4 @@ func uses(_ v: Nonexistent) {} // expected-error {{cannot find type 'Nonexistent
 public func backDeployedF() -> Int { return 1 }
 
 // CHECK: SILFunctionBodyRequest: #myC!foreign
-// CHECK: SILFunctionBodyRequest: #backDeployedF
+// CHECK-COUNT-2: SILFunctionBodyRequest: #backDeployedF
