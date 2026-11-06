@@ -16,17 +16,22 @@
 // resolves to a function_ref. A component runs after the components it calls,
 // and the functions of a component in the order that they pop off the stack.
 // The walk starts from each function in turn, in the order of the module's
-// function list, which is the order that SILGen created the functions in.
-// That order decides between functions that no call connects. A closure that a
-// function only passes, or that a let binding holds, is not its callee, and
-// runs after it.
+// function list. SILGen builds the list in creation order, but it moves a
+// delayed function to where it would have been emitted, and a pass may insert
+// a function before another one: capture promotion puts a clone before the
+// closure it clones. That order decides between functions that no call
+// connects. A closure that a function only passes, or that a let binding
+// holds, is not its callee, and runs after it.
 //
 // The order checks pin that rule on both paths: siblings, a closure applied in
 // place or held by a let, a cycle of three, a cycle through the root, closures
-// that nest, and local functions that are declared in a different order than
-// they are used. Each also pins the order in which the closure group passes
-// are given a component's members, which legacy's ClosureGroupSchedule lists
-// bottom-up.
+// that nest, local functions that are declared in a different order than they
+// are used, accessors that are created between closures, and the clones that
+// capture promotion makes. Each also pins the order in which the closure group
+// passes are given a component's members, which legacy's ClosureGroupSchedule
+// lists bottom-up, except for the clones. Capture promotion creates those in
+// the order of a pointer-keyed DenseMap, so the order in which they join a
+// group varies from run to run, in legacy as well, and no check reads it.
 
 // REQUIRES: concurrency
 // RUN: %empty-directory(%t)
@@ -121,6 +126,26 @@
 // RUN:   > %t/declared.ondemand 2>&1
 // RUN: %FileCheck --check-prefix=DECLARED %s < %t/declared.ondemand \
 // RUN:   && %FileCheck --check-prefix=GROUPDECLARED %s < %t/declared.ondemand
+
+// RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
+// RUN:   %t/Accessors.swift -o /dev/null -Xllvm -sil-print-pass-name \
+// RUN:   -Xllvm -sil-print-closure-groups > %t/accessors.legacy 2>&1
+// RUN: %FileCheck --check-prefix=ACCESSORS %s < %t/accessors.legacy \
+// RUN:   && %FileCheck --check-prefix=GROUPACCESSORS %s < %t/accessors.legacy
+// RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
+// RUN:   %t/Accessors.swift -o /dev/null -Xllvm -sil-print-pass-name \
+// RUN:   -Xllvm -sil-print-closure-groups -Xllvm -sil-on-demand-emission \
+// RUN:   > %t/accessors.ondemand 2>&1
+// RUN: %FileCheck --check-prefix=ACCESSORS %s < %t/accessors.ondemand \
+// RUN:   && %FileCheck --check-prefix=GROUPACCESSORS %s < %t/accessors.ondemand
+
+// RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
+// RUN:   %t/Promoted.swift -o /dev/null -Xllvm -sil-print-pass-name 2>&1 \
+// RUN:   | %FileCheck --check-prefix=PROMOTED %s
+// RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
+// RUN:   %t/Promoted.swift -o /dev/null -Xllvm -sil-print-pass-name \
+// RUN:   -Xllvm -sil-on-demand-emission 2>&1 \
+// RUN:   | %FileCheck --check-prefix=PROMOTED %s
 
 // RUN: %target-swift-frontend -strict-concurrency=complete -swift-version 5 \
 // RUN:   -parse-as-library -emit-sil -module-name M %t/PassedSending.swift \
@@ -301,10 +326,13 @@ func roots() {
 
 //--- Declared.swift
 
-// SILGen creates a local function where it is declared, and a closure where
-// the expression is, so legacy runs x before y although the calls are in the
+// The module's function list is in creation order here. SILGen creates a
+// local function where its declaration is emitted, and a closure where the
+// expression is, so legacy runs x before y although the calls are in the
 // other order, and p before the closure that passes it, although the closure
-// is the first to refer to p. No call connects any of them.
+// is the first to refer to p. (A local function that another local function
+// refers to first is created there: see Cycle.swift.) No call connects any
+// of them.
 
 func use(_ f: () -> ()) {}
 
@@ -334,3 +362,72 @@ func later() {
 // DECLARED: NoReturnFolding (noreturn-folding), Function: $s1M5lateryyFyyXEfU_{{$}}
 // DECLARED: NoReturnFolding (noreturn-folding), Function: $s1M5lateryyF1qL_yyF{{$}}
 // DECLARED: NoReturnFolding (noreturn-folding), Function: $s1M5lateryyFyyXEfU0_{{$}}
+
+//--- Accessors.swift
+
+// The accessors of a local property-wrapper variable and of a lazy variable
+// are members of the component of the function that declares them. SILGen
+// emits an accessor without user-written code only when something refers to
+// it (mayDelayEmission), and moves it to where it would have been emitted, so
+// its place in the module's list is not where it was created. Legacy runs the
+// getter between the closures that surround the variable. The setters are not
+// referenced here: legacy puts them in the component's walk and a group of
+// their own, and on demand they run later, as roots, so the checks skip them.
+
+@propertyWrapper
+struct W {
+  var wrappedValue: Int
+  init(wrappedValue: Int) { self.wrappedValue = wrappedValue }
+}
+
+func use(_ f: () -> ()) {}
+
+func wrapped() {
+  use { }
+  @W var x = 0
+  use { _ = x }
+}
+
+func lazily() {
+  use { }
+  lazy var l: Int = { use { }; return 1 }()
+  use { _ = l }
+}
+
+// GROUPACCESSORS: Closure group for access-enforcement-selection: $s1M7wrappedyyF $s1M7wrappedyyFyyXEfU_ $s1M7wrappedyyF1xL_Sivg $s1M7wrappedyyFyyXEfU0_{{$}}
+// GROUPACCESSORS: Closure group for access-enforcement-selection: $s1M6lazilyyyF $s1M6lazilyyyFyyXEfU_ $s1M6lazilyyyF1lL_SivgSiyXEfU0_ $s1M6lazilyyyF1lL_Sivg $s1M6lazilyyyF1lL_SivgSiyXEfU0_yyXEfU_ $s1M6lazilyyyFyyXEfU1_{{$}}
+
+// ACCESSORS: NoReturnFolding (noreturn-folding), Function: $s1M7wrappedyyF{{$}}
+// ACCESSORS: NoReturnFolding (noreturn-folding), Function: $s1M7wrappedyyFyyXEfU_{{$}}
+// ACCESSORS: NoReturnFolding (noreturn-folding), Function: $s1M7wrappedyyF1xL_Sivg{{$}}
+// ACCESSORS: NoReturnFolding (noreturn-folding), Function: $s1M7wrappedyyFyyXEfU0_{{$}}
+// ACCESSORS: NoReturnFolding (noreturn-folding), Function: $s1M6lazilyyyF{{$}}
+// ACCESSORS: NoReturnFolding (noreturn-folding), Function: $s1M6lazilyyyFyyXEfU_{{$}}
+// ACCESSORS: NoReturnFolding (noreturn-folding), Function: $s1M6lazilyyyF1lL_SivgSiyXEfU0_{{$}}
+// ACCESSORS: NoReturnFolding (noreturn-folding), Function: $s1M6lazilyyyF1lL_Sivg{{$}}
+// ACCESSORS: NoReturnFolding (noreturn-folding), Function: $s1M6lazilyyyF1lL_SivgSiyXEfU0_yyXEfU_{{$}}
+// ACCESSORS: NoReturnFolding (noreturn-folding), Function: $s1M6lazilyyyFyyXEfU1_{{$}}
+
+//--- Promoted.swift
+
+// Capture promotion clones the two closures that capture a var that nothing
+// writes, and puts each clone just before its original in the module's list.
+// Legacy starts its walk in that order: the clone, then the closure. The third
+// closure captures nothing and is not cloned.
+
+func take(_ f: @escaping () -> ()) {}
+
+func promote() {
+  var y = 0
+  var z = 0
+  take { _ = y }
+  take { _ = z }
+  take { }
+}
+
+// PROMOTED: NoReturnFolding (noreturn-folding), Function: $s1M7promoteyyF{{$}}
+// PROMOTED: NoReturnFolding (noreturn-folding), Function: $s1M7promoteyyFyycfU_Tf2i_n{{$}}
+// PROMOTED: NoReturnFolding (noreturn-folding), Function: $s1M7promoteyyFyycfU_{{$}}
+// PROMOTED: NoReturnFolding (noreturn-folding), Function: $s1M7promoteyyFyycfU0_Tf2i_n{{$}}
+// PROMOTED: NoReturnFolding (noreturn-folding), Function: $s1M7promoteyyFyycfU0_{{$}}
+// PROMOTED: NoReturnFolding (noreturn-folding), Function: $s1M7promoteyyFyycfU1_{{$}}

@@ -1210,20 +1210,59 @@ public:
 };
 } // end anonymous namespace
 
+/// \p members in the order of the module's function list, which is the order
+/// in which BottomUpFunctionOrder starts its walk. SILGen builds the list in
+/// creation order, except that it moves a delayed function to where it would
+/// have been emitted, and a pass may insert a function before another one:
+/// CapturePromotion puts a clone before the closure it clones. The members of a
+/// component were created together, so this searches outward from the first,
+/// forward and backward by turns, and stops at the last, instead of walking
+/// the whole list.
+static llvm::SmallVector<SILFunction *, 8>
+inModuleOrder(llvm::ArrayRef<SILFunction *> members) {
+  llvm::SmallVector<SILFunction *, 8> sorted;
+  if (members.size() < 2) {
+    sorted.append(members.begin(), members.end());
+    return sorted;
+  }
+  SILFunction *anchor = members.front();
+  llvm::SmallPtrSet<SILFunction *, 8> pending(members.begin(), members.end());
+  pending.erase(anchor);
+  llvm::SmallVector<SILFunction *, 4> before, after;
+  auto &list = anchor->getModule().getFunctionList();
+  auto forward = std::next(anchor->getIterator());
+  auto backward = anchor->getIterator();
+  while (!pending.empty() && (forward != list.end() || backward != list.begin())) {
+    if (forward != list.end()) {
+      if (pending.erase(&*forward))
+        after.push_back(&*forward);
+      ++forward;
+    }
+    if (!pending.empty() && backward != list.begin()) {
+      --backward;
+      if (pending.erase(&*backward))
+        before.push_back(&*backward);
+    }
+  }
+  sorted.append(before.rbegin(), before.rend());
+  sorted.push_back(anchor);
+  sorted.append(after.begin(), after.end());
+  // Every function is in the module's list, so nothing is left. If something
+  // were, it would still be visited.
+  for (SILFunction *member : members)
+    if (pending.count(member))
+      sorted.push_back(member);
+  return sorted;
+}
+
 /// \p members in bottom-up order, as runFunctionPasses orders the module: the
 /// strongly connected components of the calls between members, each after the
-/// components it calls (see ComponentOrder).
-///
-/// Legacy starts its walk from every function of the module in turn, in the
-/// order of the module's function list. SILGen keeps that list in creation
-/// order, apart from a delayed function, which it moves to where it would have
-/// been emitted. This starts the walk from each member in the order of
-/// SILFunction::getIndex, which counts creation. In a closure component the
-/// two orders agree (on_demand_component_order_test.swift pins that): the root
-/// comes first, then the closures and local functions that its body defines,
-/// in the order that SILGen emits them. That order decides between functions
-/// that no call connects, such as a local function that is declared before the
-/// closure that passes it.
+/// components it calls (see ComponentOrder). Legacy starts its walk from every
+/// function of the module in turn, in the order of the module's function list,
+/// and this starts it from each member in the same order (inModuleOrder). That
+/// order decides between functions that no call connects, such as a local
+/// function that is declared before the closure that passes it, or a clone that
+/// CapturePromotion made and put before the closure it clones.
 ///
 /// The edges are the static ones, which CalleeCache resolves to a function_ref
 /// (see getStaticCallee). A closure that a function only passes to a call, or
@@ -1242,12 +1281,8 @@ public:
 static llvm::SmallVector<SILFunction *, 8>
 getBottomUpOrder(llvm::ArrayRef<SILFunction *> members) {
   llvm::SmallPtrSet<SILFunction *, 8> isMember(members.begin(), members.end());
-  llvm::SmallVector<SILFunction *, 8> starts(members.begin(), members.end());
-  llvm::sort(starts, [](SILFunction *a, SILFunction *b) {
-    return a->getIndex() < b->getIndex();
-  });
   ComponentOrder walk(isMember);
-  for (SILFunction *member : starts)
+  for (SILFunction *member : inModuleOrder(members))
     walk.visit(member);
   return std::move(walk.order);
 }
