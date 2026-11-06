@@ -39,6 +39,17 @@
 // RUN: %llvm-nm --defined-only -j %t/Model.legacy.o | sort > %t/Model.legacy.defined
 // RUN: %llvm-nm --defined-only -j %t/Model.ondemand.o | sort > %t/Model.ondemand.defined
 // RUN: diff %t/Model.legacy.defined %t/Model.ondemand.defined
+// RUN: %llvm-nm --undefined-only -j %t/Model.legacy.o | sort > %t/Model.legacy.undefined
+// RUN: %llvm-nm --undefined-only -j %t/Model.ondemand.o | sort > %t/Model.ondemand.undefined
+// RUN: diff %t/Model.legacy.undefined %t/Model.ondemand.undefined
+// Use.swift reads members that the macro adds, from another primary: its
+// object must reference them, not define them.
+// RUN: %llvm-nm --defined-only -j %t/Use.legacy.o | sort > %t/Use.legacy.defined
+// RUN: %llvm-nm --defined-only -j %t/Use.ondemand.o | sort > %t/Use.ondemand.defined
+// RUN: diff %t/Use.legacy.defined %t/Use.ondemand.defined
+// RUN: %llvm-nm --undefined-only -j %t/Use.legacy.o | sort > %t/Use.legacy.undefined
+// RUN: %llvm-nm --undefined-only -j %t/Use.ondemand.o | sort > %t/Use.ondemand.undefined
+// RUN: diff %t/Use.legacy.undefined %t/Use.ondemand.undefined
 
 // CHECK: sil_witness_table hidden Model: Observable module M {
 
@@ -53,3 +64,8 @@ import Observation
 func use(_ m: some Observable) -> Int { 1 }
 @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
 func call() -> Int { use(Model()) }
+@available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
+func read(_ m: Model) -> Int {
+  m.x += 1
+  return m.x
+}
