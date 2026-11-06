@@ -2516,11 +2516,18 @@ void SILGenModule::emitSymbolSource(SymbolSource Source) {
 }
 
 /// The declaration whose body \p ref emits, for the entry points that
-/// SILGenModule emits only if shouldEmitFunctionBody; null for the entry
-/// points it synthesizes, such as a class's allocator, and for a reference
-/// without a declaration.
+/// SILGenModule emits only if shouldEmitFunctionBody: the declaration's own
+/// native entry points. Null for the entry points it synthesizes, such as a
+/// class's allocator; for the functions it makes from a declaration, which
+/// legacy's emitAbstractFuncDecl emits whatever the gate says (the thunks of
+/// @_cdecl, distributed, and back-deployed functions, the back-deployment
+/// fallback, and derivative functions); and for a reference without a
+/// declaration.
 static AbstractFunctionDecl *getGatedBodyDecl(SILDeclRef ref) {
   if (!ref.hasDecl())
+    return nullptr;
+  if (ref.isThunk() || ref.isBackDeploymentFallback() ||
+      ref.isAutoDiffDerivativeFunction())
     return nullptr;
   auto *afd = dyn_cast<AbstractFunctionDecl>(ref.getDecl());
   if (!afd)
