@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+# verify_gap_check.py ---------------------------------------------*- python -*-
+#
+# This source file is part of the Swift.org open source project
+#
+# Copyright (c) 2014 - 2026 Apple Inc. and the Swift project authors
+# Licensed under Apache License v2.0 with Runtime Library Exception
+#
+# See https://swift.org/LICENSE.txt for license information
+# See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+# ----------------------------------------------------------------------------
 """Check the expected diagnostics that an on-demand -verify run left
 unproduced: each must be in an allowed context, and the run may produce
 nothing unexpected.
