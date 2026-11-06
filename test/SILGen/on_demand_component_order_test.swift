@@ -17,6 +17,7 @@
 // paths: siblings, a closure applied in place, a closure that a let holds,
 // and recursion between local functions.
 
+// REQUIRES: concurrency
 // RUN: %empty-directory(%t)
 // RUN: split-file %s %t
 
@@ -53,6 +54,30 @@
 // RUN:   %t/Shapes.swift -o /dev/null -Xllvm -sil-print-pass-name \
 // RUN:   -Xllvm -sil-on-demand-emission 2>&1 \
 // RUN:   | %FileCheck --check-prefix=SHAPES %s
+
+// RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
+// RUN:   %t/Cycle.swift -o /dev/null -Xllvm -sil-print-pass-name 2>&1 \
+// RUN:   | %FileCheck --check-prefix=CYCLE %s
+// RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
+// RUN:   %t/Cycle.swift -o /dev/null -Xllvm -sil-print-pass-name \
+// RUN:   -Xllvm -sil-on-demand-emission 2>&1 \
+// RUN:   | %FileCheck --check-prefix=CYCLE %s
+
+// RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
+// RUN:   %t/RootCycle.swift -o /dev/null -Xllvm -sil-print-pass-name 2>&1 \
+// RUN:   | %FileCheck --check-prefix=ROOTCYCLE %s
+// RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
+// RUN:   %t/RootCycle.swift -o /dev/null -Xllvm -sil-print-pass-name \
+// RUN:   -Xllvm -sil-on-demand-emission 2>&1 \
+// RUN:   | %FileCheck --check-prefix=ROOTCYCLE %s
+
+// RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
+// RUN:   %t/Roots.swift -o /dev/null -Xllvm -sil-print-pass-name 2>&1 \
+// RUN:   | %FileCheck --check-prefix=ROOTS %s
+// RUN: %target-swift-frontend -emit-sil -parse-as-library -module-name M \
+// RUN:   %t/Roots.swift -o /dev/null -Xllvm -sil-print-pass-name \
+// RUN:   -Xllvm -sil-on-demand-emission 2>&1 \
+// RUN:   | %FileCheck --check-prefix=ROOTS %s
 
 // RUN: %target-swift-frontend -strict-concurrency=complete -swift-version 5 \
 // RUN:   -parse-as-library -emit-sil -module-name M %t/PassedSending.swift \
@@ -169,3 +194,54 @@ func shapes() -> Int {
 // SHAPES: NoReturnFolding (noreturn-folding), Function: $s1M6shapesSiyF4evenL_ySbSiF{{$}}
 // SHAPES: NoReturnFolding (noreturn-folding), Function: $s1M6shapesSiyF{{$}}
 // SHAPES: NoReturnFolding (noreturn-folding), Function: $s1M6shapesSiyFSiycfU0_{{$}}
+
+//--- Cycle.swift
+
+// a calls b and c, which both call a. Legacy lists the members of the cycle as
+// it pops them off its DFS stack, after all the callees of the first function
+// that it visited: c, b, a.
+
+func scc() -> Int {
+  func a(_ n: Int) -> Int { return n == 0 ? 0 : b(n - 1) + c(n - 1) }
+  func b(_ n: Int) -> Int { return a(n) }
+  func c(_ n: Int) -> Int { return a(n) }
+  return a(3)
+}
+
+// CYCLE: NoReturnFolding (noreturn-folding), Function: $s1M3sccSiyF1cL_yS2iF{{$}}
+// CYCLE: NoReturnFolding (noreturn-folding), Function: $s1M3sccSiyF1bL_yS2iF{{$}}
+// CYCLE: NoReturnFolding (noreturn-folding), Function: $s1M3sccSiyF1aL_yS2iF{{$}}
+// CYCLE: NoReturnFolding (noreturn-folding), Function: $s1M3sccSiyF{{$}}
+
+//--- RootCycle.swift
+
+// helper calls the root, so the root and helper form a cycle, and other, which
+// the root calls after helper, is a component of its own that finishes first.
+
+func walk(_ n: Int) -> Int {
+  func helper() -> Int { return walk(0) }
+  func other() -> Int { return 1 }
+  return n == 0 ? 0 : helper() + other()
+}
+
+// ROOTCYCLE: NoReturnFolding (noreturn-folding), Function: $s1M4walkyS2iF5otherL_SiyF{{$}}
+// ROOTCYCLE: NoReturnFolding (noreturn-folding), Function: $s1M4walkyS2iF6helperL_SiyF{{$}}
+// ROOTCYCLE: NoReturnFolding (noreturn-folding), Function: $s1M4walkyS2iF{{$}}
+
+//--- Roots.swift
+
+// No closure calls another: roots passes them all. Legacy runs the ones that
+// no function calls in the order SILGen created them, a nested closure before
+// the next sibling.
+
+func use(_ f: () -> ()) {}
+
+func roots() {
+  use { use { } }
+  use { }
+}
+
+// ROOTS: NoReturnFolding (noreturn-folding), Function: $s1M5rootsyyF{{$}}
+// ROOTS: NoReturnFolding (noreturn-folding), Function: $s1M5rootsyyFyyXEfU_{{$}}
+// ROOTS: NoReturnFolding (noreturn-folding), Function: $s1M5rootsyyFyyXEfU_yyXEfU_{{$}}
+// ROOTS: NoReturnFolding (noreturn-folding), Function: $s1M5rootsyyFyyXEfU0_{{$}}

@@ -1141,69 +1141,103 @@ void SILPassManager::executePassPipelinePlan(
   }
 }
 
-/// \p members in bottom-up order, as runFunctionPasses orders the module:
-/// each after its callees. A depth-first post-order over the calls between
-/// members, exploring a function's callees in instruction order; a cycle is
-/// broken where it closes.
+/// The function that \p FAS calls, as CalleeCache resolves a function_ref
+/// callee: through the conversions that getCalleeOrigin looks through, and
+/// through a partial_apply to its callee operand
+/// (CalleeCache::getCalleeListForCalleeKind). Null for any other callee.
+static SILFunction *getStaticCallee(FullApplySite FAS) {
+  SILValue callee = FAS.getCalleeOrigin();
+  while (auto *PAI = dyn_cast<PartialApplyInst>(callee))
+    callee = PAI->getCallee();
+  if (auto *FRI = dyn_cast<FunctionRefInst>(callee))
+    return FRI->getReferencedFunctionOrNull();
+  return nullptr;
+}
+
+namespace {
+/// Tarjan's strongly connected components algorithm over the calls between
+/// the members of a closure component: the walk that
+/// BottomUpFunctionOrder::DFS makes over the module. A component is listed
+/// after the components it calls, and the functions of a component in the
+/// order that they pop off the stack.
+class ComponentOrder {
+  const llvm::SmallPtrSetImpl<SILFunction *> &isMember;
+  llvm::DenseMap<SILFunction *, unsigned> dfsNum;
+  llvm::DenseMap<SILFunction *, unsigned> minDfsNum;
+  llvm::SmallSetVector<SILFunction *, 4> dfsStack;
+  unsigned nextDfsNum = 0;
+
+public:
+  llvm::SmallVector<SILFunction *, 8> order;
+
+  explicit ComponentOrder(const llvm::SmallPtrSetImpl<SILFunction *> &isMember)
+      : isMember(isMember) {}
+
+  void visit(SILFunction *start) {
+    if (!dfsNum.insert({start, nextDfsNum}).second)
+      return;
+    unsigned minNum = nextDfsNum++;
+    dfsStack.insert(start);
+
+    // A function's callees, in instruction order.
+    for (auto &BB : *start) {
+      for (auto &I : BB) {
+        auto FAS = FullApplySite::isa(&I);
+        if (!FAS)
+          continue;
+        SILFunction *callee = getStaticCallee(FAS);
+        if (!callee || !isMember.count(callee))
+          continue;
+        if (!dfsNum.count(callee)) {
+          visit(callee);
+          minNum = std::min(minNum, minDfsNum.lookup(callee));
+        } else if (dfsStack.count(callee)) {
+          minNum = std::min(minNum, dfsNum.lookup(callee));
+        }
+      }
+    }
+    minDfsNum[start] = minNum;
+
+    // The first function of a component to be visited pops the component.
+    if (dfsNum.lookup(start) == minNum) {
+      SILFunction *popped;
+      do {
+        popped = dfsStack.pop_back_val();
+        order.push_back(popped);
+      } while (popped != start);
+    }
+  }
+};
+} // end anonymous namespace
+
+/// \p members in bottom-up order, as runFunctionPasses orders the module: the
+/// strongly connected components of the calls between members, each after the
+/// components it calls (see ComponentOrder).
 ///
-/// The edges are legacy's: BottomUpFunctionOrder follows the callee of a full
-/// apply, which FullApplySite::getCalleeFunction resolves through a
-/// partial_apply and the conversions that getCalleeOrigin looks through. A
-/// closure that a function only passes to a call, or that a let binding holds,
-/// is not its callee, and runs after it. Passes that read a closure's body
-/// from the function that passes it depend on that: SendNonSendable looks for
-/// an ignored_use that a later pass of the span erases, and the move-only
-/// checker skips a value that a partial_apply passes to a closure it has
-/// diagnosed.
+/// The edges are the static ones, which CalleeCache resolves to a function_ref
+/// (see getStaticCallee). A closure that a function only passes to a call, or
+/// that a let binding holds, is not its callee, and runs after it. Passes that
+/// read a closure's body from the function that passes it depend on that:
+/// SendNonSendable looks for an ignored_use that a later pass of the span
+/// erases, and the move-only checker skips a value that a partial_apply passes
+/// to a closure it has diagnosed.
 ///
-/// BottomUpFunctionOrder::visitCallees also follows the destructors that a
-/// release may run, dynamic dispatch, and the initializer of a builtin "once".
-/// Those reach a function that is not a closure or local function, which can
-/// only be the component's root, and the walk visits that first. Following
-/// them would also build the CalleeCache, which walks every vtable and
-/// witness table, for each request.
-///
-/// Two orders still differ from legacy's. The functions of a cycle of more than
-/// two: legacy pops a strongly connected component off its DFS stack, and this
-/// post-order lists them as they finish. And the functions that no member
-/// calls, such as sibling closures that the root passes: they keep the
-/// component's discovery order, which is breadth-first, where legacy's is the
-/// order in which SILGen created them, a nested closure before the next
-/// sibling. A pass that reads another function of a cycle can see the
-/// difference. Between the unrelated functions, only the order of their
-/// diagnostics differs.
+/// BottomUpFunctionOrder::visitCallees also follows dynamic dispatch, the
+/// destructors that a release may run, the initializer of a builtin "once",
+/// and callees outside the component. Following them would build the
+/// CalleeCache, which walks every vtable and witness table, for each request.
+/// Where such an edge closes a cycle with members, legacy's components are
+/// larger than these, and the order can differ. The walk also starts from the
+/// members in the component's discovery order, where legacy's starts from the
+/// module's: SILGen's creation order. collectClosureComponent discovers the
+/// members depth first, which is that order for closures that nest.
 static llvm::SmallVector<SILFunction *, 8>
 getBottomUpOrder(llvm::ArrayRef<SILFunction *> members) {
   llvm::SmallPtrSet<SILFunction *, 8> isMember(members.begin(), members.end());
-  llvm::SmallPtrSet<SILFunction *, 8> visited;
-  llvm::SmallVector<SILFunction *, 8> order;
-  // Each entry: a function, and whether its callees have been pushed.
-  llvm::SmallVector<std::pair<SILFunction *, bool>, 8> stack;
-  for (SILFunction *member : members) {
-    stack.push_back({member, false});
-    while (!stack.empty()) {
-      auto [F, expanded] = stack.pop_back_val();
-      if (expanded) {
-        order.push_back(F);
-        continue;
-      }
-      if (!visited.insert(F).second)
-        continue;
-      stack.push_back({F, true});
-      llvm::SmallVector<SILFunction *, 4> callees;
-      for (auto &BB : *F)
-        for (auto &I : BB)
-          if (auto FAS = FullApplySite::isa(&I))
-            if (auto *callee = FAS.getCalleeFunction())
-              if (isMember.count(callee) && !visited.count(callee))
-                callees.push_back(callee);
-      // The stack pops the last push first: reverse, to explore the callees in
-      // instruction order.
-      for (SILFunction *callee : llvm::reverse(callees))
-        stack.push_back({callee, false});
-    }
-  }
-  return order;
+  ComponentOrder walk(isMember);
+  for (SILFunction *member : members)
+    walk.visit(member);
+  return std::move(walk.order);
 }
 
 void SILPassManager::executeScoped(llvm::ArrayRef<SILFunction *> members) {

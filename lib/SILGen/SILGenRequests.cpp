@@ -214,34 +214,42 @@ static bool isClosureOrLocalFunction(SILDeclRef ref) {
          ref.getDecl()->getDeclContext()->isLocalContext();
 }
 
-/// The closure component of \p root, as far as it can be found from \p root
-/// on demand: \p root, then each closure and local function that a member
-/// references, transitively. Each member's body is emitted and run through the
-/// SILGen pipeline. A closure that another root's run already canonicalized is
-/// not a member.
-static void collectClosureComponent(Evaluator &evaluator, SILFunction *root,
-                                    llvm::SmallSetVector<SILFunction *, 8> &members) {
-  members.insert(root);
-  for (unsigned i = 0; i < members.size(); ++i) {
-    SILFunction *member = members[i];
-    for (auto &block : *member) {
-      for (auto &inst : block) {
-        auto *ref = dyn_cast<FunctionRefBaseInst>(&inst);
-        if (!ref)
-          continue;
-        SILFunction *callee = ref->getInitiallyReferencedFunction();
-        if (members.count(callee) || callee->isAlreadyCanonical())
-          continue;
-        SILDeclRef calleeRef = callee->getDeclRef();
-        if (!calleeRef || !isClosureOrLocalFunction(calleeRef))
-          continue;
-        auto *closure =
-            evaluateOrFatal(evaluator, CleanedSILFunctionRequest{calleeRef});
-        if (closure->isDefinition() && !closure->isAlreadyCanonical())
-          members.insert(closure);
+/// Add the closures and local functions that \p member references to
+/// \p members, each followed by its own, depth first. That is the order in
+/// which SILGen creates them, which legacy's pass order follows for functions
+/// that nothing calls (see getBottomUpOrder).
+static void collectClosures(Evaluator &evaluator, SILFunction *member,
+                            llvm::SmallSetVector<SILFunction *, 8> &members) {
+  for (auto &block : *member) {
+    for (auto &inst : block) {
+      auto *ref = dyn_cast<FunctionRefBaseInst>(&inst);
+      if (!ref)
+        continue;
+      SILFunction *callee = ref->getInitiallyReferencedFunction();
+      if (members.count(callee) || callee->isAlreadyCanonical())
+        continue;
+      SILDeclRef calleeRef = callee->getDeclRef();
+      if (!calleeRef || !isClosureOrLocalFunction(calleeRef))
+        continue;
+      auto *closure =
+          evaluateOrFatal(evaluator, CleanedSILFunctionRequest{calleeRef});
+      if (closure->isDefinition() && !closure->isAlreadyCanonical()) {
+        members.insert(closure);
+        collectClosures(evaluator, closure, members);
       }
     }
   }
+}
+
+/// The closure component of \p root, as far as it can be found from \p root
+/// on demand: \p root, then each closure and local function that a member
+/// references, transitively, in the order that collectClosures finds them.
+/// Each member's body is emitted and run through the SILGen pipeline. A closure
+/// that another root's run already canonicalized is not a member.
+static void collectClosureComponent(Evaluator &evaluator, SILFunction *root,
+                                    llvm::SmallSetVector<SILFunction *, 8> &members) {
+  members.insert(root);
+  collectClosures(evaluator, root, members);
   // A capture edge from a member to a definition outside the component
   // would make a group pass read or write outside its group; the passes'
   // membership checks report it.
