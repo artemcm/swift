@@ -88,8 +88,7 @@ public:
   /// Under single-root lowering (-sil-on-demand-root), useConformance records
   /// here the normal conformances that the emitted code and tables use, in
   /// first-use order; the coordinator emits the tables of those its files
-  /// declare. Off otherwise.
-  bool collectRootUsedConformances = false;
+  /// declare.
   llvm::SmallSetVector<NormalProtocolConformance *, 8> rootUsedConformances;
 
   /// Imported noncopyable types that we have seen.
@@ -210,6 +209,9 @@ public:
   /// thunks, theirs and the seeder's, as legacy links nothing before every
   /// table is emitted.
   void emitPendingConformancesOnDemand();
+
+  /// Emits the witness table of every conformance in pendingConformances.
+  void emitPendingConformances();
 
   /// On demand, emits the bodies of the functions that \p f references and
   /// that every referencing unit emits for itself (isEmittedOnDemand), such

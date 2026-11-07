@@ -18,6 +18,7 @@
 #include "SILGen.h"
 #include "swift/AST/ConformanceLookup.h"
 #include "swift/AST/Decl.h"
+#include "swift/AST/SILGenRequests.h"
 #include "swift/AST/PackConformance.h"
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/AST/ProtocolConformanceRef.h"
@@ -96,7 +97,7 @@ void SILGenModule::useConformance(SILInstruction *inst,
   // to emit it.
   if (auto normal = dyn_cast<NormalProtocolConformance>(conformance)) {
     // Single-root lowering emits the tables of the conformances it uses.
-    if (collectRootUsedConformances &&
+    if (isEmittingOnDemand() && isSILOnDemandRootSelected() &&
         !normal->getProtocol()->isMarkerProtocol())
       rootUsedConformances.insert(normal);
 

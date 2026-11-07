@@ -106,12 +106,16 @@ void SILGenModule::canonicalizeDeferredSynthesizedFunctions() {
 void SILGenModule::emitPendingConformancesOnDemand() {
   do {
     deferSynthesizedCanonicalization = true;
-    while (!pendingConformances.empty()) {
-      (void)getWitnessTable(pendingConformances.front());
-      pendingConformances.pop_front();
-    }
+    emitPendingConformances();
     canonicalizeDeferredSynthesizedFunctions();
   } while (!pendingConformances.empty());
+}
+
+void SILGenModule::emitPendingConformances() {
+  while (!pendingConformances.empty()) {
+    (void)getWitnessTable(pendingConformances.front());
+    pendingConformances.pop_front();
+  }
 }
 
 static bool isEmittedOnDemand(SILModule &M, SILDeclRef constant);
@@ -3177,7 +3181,6 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
   // vtable. Legacy runs every pipeline after all of SILGen, so canonicalize
   // the thunks created while seeding once seeding ends.
   SGM.deferSynthesizedCanonicalization = true;
-  SGM.collectRootUsedConformances = !rootSpec.empty();
   for (auto file : desc.getFilesToEmit()) {
     if (auto *sf = dyn_cast<SourceFile>(file)) {
       performTypeChecking(*sf);
@@ -3285,14 +3288,11 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
       }
       SGM.emitPendingConformancesOnDemand();
     }
-    SGM.collectRootUsedConformances = false;
-  }
 
-  // A root leaves the other functions of its files that it references
-  // unemitted. Each is a declaration, and the verifier requires a declaration
-  // to be available externally: their definitions belong to compilations
-  // that lower them.
-  if (!roots.empty()) {
+    // A root leaves the other functions of its files that it references
+    // unemitted. Each is a declaration, and the verifier requires a
+    // declaration to be available externally: their definitions belong to
+    // compilations that lower them.
     for (auto &f : SGM.M) {
       auto linkage = f.getLinkage();
       if (!f.empty() || isAvailableExternally(linkage) ||
@@ -3461,10 +3461,7 @@ ASTLoweringRequest::evaluate(Evaluator &evaluator,
             front, SGM.getEmittedFunction(front, ForDefinition));
         SGM.pendingForcedFunctions.pop_front();
       }
-      while (!SGM.pendingConformances.empty()) {
-        (void)SGM.getWitnessTable(SGM.pendingConformances.front());
-        SGM.pendingConformances.pop_front();
-      }
+      SGM.emitPendingConformances();
     }
   }
 
