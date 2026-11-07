@@ -118,36 +118,6 @@ void SILGenModule::emitPendingConformances() {
   }
 }
 
-static bool isEmittedOnDemand(SILModule &M, SILDeclRef constant);
-
-// Legacy emits every body before any pass runs, so the SIL linker never meets
-// a function of this unit without its body. On demand, a function that each
-// referencing unit emits for itself gets its body from the worklist, which
-// can come after a function that references it runs OnDemandSILLinker, which
-// asserts on a shared declaration it can't deserialize (D18): a witness thunk
-// calls the constructor of an enum case that satisfies a requirement (G-41),
-// and a body reads an imported C enum's rawValue through a Clang-synthesized
-// getter. Callers: CanonicalSynthesizedFunctionRequest, and
-// DiagnosedSILFunctionRequest for each member of a component.
-void SILGenModule::emitOnDemandBodiesReferencedBy(SILFunction *f) {
-  if (!isEmittingOnDemand())
-    return;
-  for (auto &block : *f) {
-    for (auto &inst : block) {
-      auto *ref = dyn_cast<FunctionRefBaseInst>(&inst);
-      if (!ref)
-        continue;
-      auto *callee = ref->getInitiallyReferencedFunction();
-      auto calleeRef = callee->getDeclRef();
-      if (!calleeRef || !callee->empty() || !forcedFunctions.count(calleeRef) ||
-          !isEmittedOnDemand(M, calleeRef))
-        continue;
-      (void)evaluateOrFatal(getASTContext().evaluator,
-                            SILFunctionBodyRequest{calleeRef});
-    }
-  }
-}
-
 SILGenModule::SILGenModule(SILModule &M, ModuleDecl *SM)
     : M(M), Types(M.Types), SwiftModule(SM),
       FileIDsByFilePath(SM->computeFileIDMap(/*shouldDiagnose=*/true)) {
@@ -873,11 +843,9 @@ static bool isEmittedOnDemand(SILModule &M, SILDeclRef constant) {
     auto *fd = cast<FuncDecl>(d);
     // The cheap tests first: under lazy type checking, shouldEmitFunctionBody
     // type-checks the body, and getFunction asks this for every reference.
-    if (!isa<ClangModuleUnit>(dc->getModuleScopeContext()) &&
-        !fd->hasForcedStaticDispatch())
-      break;
-
-    return shouldEmitFunctionBody(fd);
+    return (isa<ClangModuleUnit>(dc->getModuleScopeContext()) ||
+            fd->hasForcedStaticDispatch()) &&
+           shouldEmitFunctionBody(fd);
   }
   case SILDeclRef::Kind::Allocator: {
     auto *cd = cast<ConstructorDecl>(d);
@@ -904,6 +872,34 @@ static bool isEmittedOnDemand(SILModule &M, SILDeclRef constant) {
   }
 
   return false;
+}
+
+// Legacy emits every body before any pass runs, so the SIL linker never meets
+// a function of this unit without its body. On demand, a function that each
+// referencing unit emits for itself gets its body from the worklist, which
+// can come after a function that references it runs OnDemandSILLinker, which
+// asserts on a shared declaration it can't deserialize (D18): a witness thunk
+// calls the constructor of an enum case that satisfies a requirement (G-41),
+// and a body reads an imported C enum's rawValue through a Clang-synthesized
+// getter. Callers: CanonicalSynthesizedFunctionRequest, and
+// DiagnosedSILFunctionRequest for each member of a component.
+void SILGenModule::emitOnDemandBodiesReferencedBy(SILFunction *f) {
+  if (!isEmittingOnDemand())
+    return;
+  for (auto &block : *f) {
+    for (auto &inst : block) {
+      auto *ref = dyn_cast<FunctionRefBaseInst>(&inst);
+      if (!ref)
+        continue;
+      auto *callee = ref->getInitiallyReferencedFunction();
+      auto calleeRef = callee->getDeclRef();
+      if (!calleeRef || !callee->empty() || !forcedFunctions.count(calleeRef) ||
+          !isEmittedOnDemand(M, calleeRef))
+        continue;
+      (void)evaluateOrFatal(getASTContext().evaluator,
+                            SILFunctionBodyRequest{calleeRef});
+    }
+  }
 }
 
 /// Whether SILGen emits \p constant as a closure (SILFunction::isClosure).
