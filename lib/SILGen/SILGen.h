@@ -206,8 +206,9 @@ public:
   void canonicalizeDeferredSynthesizedFunctions();
 
   /// On demand, emits the witness tables of the conformances that bodies
-  /// used (pendingConformances), and only then canonicalizes their witness
-  /// thunks, as legacy links nothing before every table is emitted.
+  /// used (pendingConformances), and only then canonicalizes the deferred
+  /// thunks, theirs and the seeder's, as legacy links nothing before every
+  /// table is emitted.
   void emitPendingConformancesOnDemand();
 
   /// On demand, emits the bodies of the functions that \p f references and
@@ -501,6 +502,11 @@ public:
 
   /// Emit the self-conformance witness table for a protocol.
   SILWitnessTable *emitSelfConformanceWitnessTable(ProtocolDecl *protocol);
+
+  /// Emit a protocol's tables: a resilient protocol's default witness table,
+  /// and the self-conformance table of a protocol that needs one. Shared by
+  /// SILGenType::emitType and the on-demand seeder.
+  void emitProtocolTables(ProtocolDecl *protocol);
 
   /// Emit the lazy initializer function for a global pattern binding
   /// declaration.

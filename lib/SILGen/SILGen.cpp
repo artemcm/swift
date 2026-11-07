@@ -100,20 +100,18 @@ void SILGenModule::canonicalizeDeferredSynthesizedFunctions() {
 
 // A table's entries use more conformances (useConformance), and the linker
 // requires a lazily synthesized conformance's table to exist before it links
-// code that references it. So drain the queue first, then canonicalize the
-// thunks the tables created. While the seeder runs, they wait for the seeder.
+// code that references it. So drain the queue first, then canonicalize every
+// deferred thunk (those the seeder made too), until canonicalizing queues no
+// more.
 void SILGenModule::emitPendingConformancesOnDemand() {
-  while (!pendingConformances.empty()) {
-    bool wasDeferring = deferSynthesizedCanonicalization;
+  do {
     deferSynthesizedCanonicalization = true;
     while (!pendingConformances.empty()) {
       (void)getWitnessTable(pendingConformances.front());
       pendingConformances.pop_front();
     }
-    if (wasDeferring)
-      return;
     canonicalizeDeferredSynthesizedFunctions();
-  }
+  } while (!pendingConformances.empty());
 }
 
 static bool isEmittedOnDemand(SILModule &M, SILDeclRef constant);
@@ -142,9 +140,6 @@ void SILGenModule::emitOnDemandBodiesReferencedBy(SILFunction *f) {
         continue;
       (void)evaluateOrFatal(getASTContext().evaluator,
                             SILFunctionBodyRequest{calleeRef});
-      // queueForcedFunctions may have dropped it while it had no body; queue
-      // it again, so the worklist canonicalizes it.
-      pendingForcedFunctions.push_back(calleeRef);
     }
   }
 }
@@ -2664,6 +2659,14 @@ static bool isEmittedHere(SILFunction *callee, SILDeclRef calleeRef,
   return llvm::is_contained(filesToEmit, sf) && !lacksBodyToEmit(calleeRef);
 }
 
+/// Whether \p dc belongs to a file being emitted. The outermost file: a
+/// macro's expansion has a source file of its own.
+static bool isInFilesToEmit(const DeclContext *dc,
+                            ArrayRef<FileUnit *> filesToEmit) {
+  auto *sf = dc ? dc->getOutermostParentSourceFile() : nullptr;
+  return sf && llvm::is_contained(filesToEmit, sf);
+}
+
 /// The function among \p members whose source range \p contains accepts: a
 /// method, or a method of a nested type. Accessors aren't roots.
 static FuncDecl *
@@ -3066,17 +3069,9 @@ private:
     // type (for a protocol, its requirement signature) uses and that are
     // synthesized lazily, such as the Clang importer's.
     SGM.emitLazyConformancesForType(ntd);
-    // A protocol's tables: a resilient protocol's default witness table, and
-    // the self-conformance table of a protocol that needs one.
+    // A protocol's tables, as legacy emits them.
     if (auto *proto = dyn_cast<ProtocolDecl>(ntd)) {
-      if (!proto->isObjC() && proto->isResilient()) {
-        auto *sf = proto->getParentSourceFile();
-        if (!sf || sf->Kind != SourceFileKind::Interface)
-          SGM.emitDefaultWitnessTable(proto);
-      }
-      if (proto->requiresSelfConformanceWitnessTable() &&
-          !SGM.getASTContext().LangOpts.hasFeature(Feature::Embedded))
-        SGM.emitSelfConformanceWitnessTable(proto);
+      SGM.emitProtocolTables(proto);
       return;
     }
     bool isClass = isa<ClassDecl>(ntd);
@@ -3215,17 +3210,10 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
         rootSpec);
     return;
   }
-  // The tables of the conformances that seeding used, and the thunks they
-  // create, before the deferred thunks are canonicalized: a thunk's linker
-  // needs the table of a synthesized conformance it uses. With deferral on,
-  // this only drains the queue.
-  SGM.emitPendingConformancesOnDemand();
-  SGM.canonicalizeDeferredSynthesizedFunctions();
-
-  // Drain conformances accumulated during aux emission, in case the
-  // worklist iteration below never runs (e.g. no FuncDecl has
-  // shouldEmitFunctionBody true). Then queue what the seeds and the witness
-  // thunks forced.
+  // The tables of the conformances that seeding used, before the thunks
+  // deferred while seeding are canonicalized: a thunk's linker needs the
+  // table of a synthesized conformance it uses. Then queue what the seeds and
+  // the witness thunks forced.
   SGM.emitPendingConformancesOnDemand();
   queueForcedFunctions(SGM, worklist, resolved, desc.getFilesToEmit(), roots);
 
@@ -3273,9 +3261,7 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
       // Ask the SILDeclRef, not the function: a function's DeclContext comes
       // from its debug scope, which for a default argument generator is an
       // expression with no DeclContext.
-      auto *dc = ref.getInnermostDeclContext();
-      auto *sf = dc ? dc->getOutermostParentSourceFile() : nullptr;
-      if (sf && llvm::is_contained(filesToEmit, sf)) {
+      if (isInFilesToEmit(ref.getInnermostDeclContext(), filesToEmit)) {
         DEBUG_WITH_TYPE("silgen-requests", llvm::dbgs() << "[sweep] ";
                         ref.print(llvm::dbgs()); llvm::dbgs() << "\n");
         worklist.push_back(ref);
@@ -3294,12 +3280,10 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
       SGM.deferSynthesizedCanonicalization = true;
       for (; done < SGM.rootUsedConformances.size(); ++done) {
         auto *normal = SGM.rootUsedConformances[done];
-        auto *sf = normal->getDeclContext()->getOutermostParentSourceFile();
-        if (sf && llvm::is_contained(filesToEmit, sf))
+        if (isInFilesToEmit(normal->getDeclContext(), filesToEmit))
           (void)evaluateOrFatal(evaluator, SILWitnessTableRequest{normal});
       }
       SGM.emitPendingConformancesOnDemand();
-      SGM.canonicalizeDeferredSynthesizedFunctions();
     }
     SGM.collectRootUsedConformances = false;
   }
@@ -3315,9 +3299,7 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
           hasSharedVisibility(linkage))
         continue;
       auto ref = f.getDeclRef();
-      auto *dc = ref ? ref.getInnermostDeclContext() : nullptr;
-      auto *sf = dc ? dc->getOutermostParentSourceFile() : nullptr;
-      if (!sf || !llvm::is_contained(filesToEmit, sf))
+      if (!ref || !isInFilesToEmit(ref.getInnermostDeclContext(), filesToEmit))
         continue;
       f.setLinkage(linkage == SILLinkage::Private
                        ? SILLinkage::HiddenExternal
@@ -3345,18 +3327,12 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
     // emitted on demand (isEmittedOnDemand) is emitted into every unit that
     // references it, as on the legacy path.
     auto ref = f.getDeclRef();
-    if (!ref || isEmittedOnDemand(SGM.M, ref))
+    if (!ref)
       continue;
     auto *dc = f.getDeclContext();
-    if (!dc) continue;
-    auto *sf = dc->getOutermostParentSourceFile();
-    if (!sf)
-      continue;
-    bool inFilesToEmit = false;
-    for (auto *file : filesToEmit) {
-      if (file == sf) { inFilesToEmit = true; break; }
-    }
-    if (inFilesToEmit)
+    auto *sf = dc ? dc->getOutermostParentSourceFile() : nullptr;
+    if (!sf || llvm::is_contained(filesToEmit, sf) ||
+        isEmittedOnDemand(SGM.M, ref))
       continue;
     f.convertToDeclaration();
     f.setLinkage(SILLinkage::HiddenExternal);

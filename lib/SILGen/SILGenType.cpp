@@ -1240,6 +1240,20 @@ public:
 
 } // end anonymous namespace
 
+void SILGenModule::emitProtocolTables(ProtocolDecl *protocol) {
+  // Build a default witness table if this is a protocol that needs one.
+  if (!protocol->isObjC() && protocol->isResilient()) {
+    auto *SF = protocol->getParentSourceFile();
+    if (!SF || SF->Kind != SourceFileKind::Interface)
+      emitDefaultWitnessTable(protocol);
+  }
+
+  // Self-conformance witness tables are emitted lazily in Embedded Swift.
+  if (protocol->requiresSelfConformanceWitnessTable() &&
+      !getASTContext().LangOpts.hasFeature(Feature::Embedded))
+    emitSelfConformanceWitnessTable(protocol);
+}
+
 void SILGenModule::emitDefaultWitnessTable(ProtocolDecl *protocol) {
   SILLinkage linkage =
       getSILLinkage(getDeclLinkage(protocol), ForDefinition);
@@ -1572,19 +1586,10 @@ public:
         SGM.M.addExportedTypeSpecialization(type);
     }
 
-    // Build a default witness table if this is a protocol that needs one.
+    // Build a protocol's default and self-conformance witness tables, if it
+    // needs them.
     if (auto protocol = dyn_cast<ProtocolDecl>(theType)) {
-      if (!protocol->isObjC() && protocol->isResilient()) {
-        auto *SF = protocol->getParentSourceFile();
-        if (!SF || SF->Kind != SourceFileKind::Interface)
-          SGM.emitDefaultWitnessTable(protocol);
-      }
-
-      // Self-conformance witness tables are emitted lazily in Embedded Swift.
-      if (protocol->requiresSelfConformanceWitnessTable() &&
-          !SGM.getASTContext().LangOpts.hasFeature(Feature::Embedded)) {
-        SGM.emitSelfConformanceWitnessTable(protocol);
-      }
+      SGM.emitProtocolTables(protocol);
       return;
     }
 

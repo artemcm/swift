@@ -92,15 +92,14 @@ void SILGenModule::useConformance(SILInstruction *inst,
   if (isa<BuiltinProtocolConformance>(rootConformance))
     return;
 
-  // Single-root lowering emits the tables of the conformances it uses.
-  if (collectRootUsedConformances)
-    if (auto *normal = dyn_cast<NormalProtocolConformance>(rootConformance))
-      if (!normal->getProtocol()->isMarkerProtocol())
-        rootUsedConformances.insert(normal);
-
   // If this is a normal conformance that needs to be synthesized, we'll want
   // to emit it.
   if (auto normal = dyn_cast<NormalProtocolConformance>(conformance)) {
+    // Single-root lowering emits the tables of the conformances it uses.
+    if (collectRootUsedConformances &&
+        !normal->getProtocol()->isMarkerProtocol())
+      rootUsedConformances.insert(normal);
+
     // If this conformance was not synthesized, or declared alongside a
     // back-deployed type that we emit into this module, we're not going to be
     // emitting it lazily either, so we can avoid doing anything below.
