@@ -22,6 +22,7 @@
 #include "swift/SIL/SILModule.h"
 #include "swift/SIL/TypeLowering.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SetVector.h"
 #include <deque>
 
 namespace swift {
@@ -83,6 +84,13 @@ public:
 
   /// Set of delayed conformances that have already been forced.
   llvm::DenseSet<RootProtocolConformance *> forcedConformances;
+
+  /// Under single-root lowering (-sil-on-demand-root), useConformance records
+  /// here the normal conformances that the emitted code and tables use, in
+  /// first-use order; the coordinator emits the tables of those its files
+  /// declare. Off otherwise.
+  bool collectRootUsedConformances = false;
+  llvm::SmallSetVector<NormalProtocolConformance *, 8> rootUsedConformances;
 
   /// Imported noncopyable types that we have seen.
   llvm::DenseSet<NominalTypeDecl *> importedNontrivialNoncopyableTypes;

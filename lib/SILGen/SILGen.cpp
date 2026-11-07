@@ -872,16 +872,13 @@ static bool isEmittedOnDemand(SILModule &M, SILDeclRef constant) {
   switch (constant.kind) {
   case SILDeclRef::Kind::Func: {
     auto *fd = cast<FuncDecl>(d);
-    if (!shouldEmitFunctionBody(fd))
-      return false;
+    // The cheap tests first: under lazy type checking, shouldEmitFunctionBody
+    // type-checks the body, and getFunction asks this for every reference.
+    if (!isa<ClangModuleUnit>(dc->getModuleScopeContext()) &&
+        !fd->hasForcedStaticDispatch())
+      break;
 
-    if (isa<ClangModuleUnit>(dc->getModuleScopeContext()))
-      return true;
-
-    if (fd->hasForcedStaticDispatch())
-      return true;
-
-    break;
+    return shouldEmitFunctionBody(fd);
   }
   case SILDeclRef::Kind::Allocator: {
     auto *cd = cast<ConstructorDecl>(d);
@@ -3185,6 +3182,7 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
   // vtable. Legacy runs every pipeline after all of SILGen, so canonicalize
   // the thunks created while seeding once seeding ends.
   SGM.deferSynthesizedCanonicalization = true;
+  SGM.collectRootUsedConformances = !rootSpec.empty();
   for (auto file : desc.getFilesToEmit()) {
     if (auto *sf = dyn_cast<SourceFile>(file)) {
       performTypeChecking(*sf);
@@ -3284,6 +3282,27 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
       }
     }
   } while (!worklist.empty());
+
+  // Single-root lowering: the tables of the conformances that the emitted
+  // code uses, among those that its files declare. A table's entries use more
+  // (a base protocol's, an associated conformance's), and canonicalizing a
+  // thunk can emit a body that uses more, so repeat until none is new. The
+  // witnesses outside the root's scope stay declarations (below).
+  if (!roots.empty()) {
+    size_t done = 0;
+    while (done < SGM.rootUsedConformances.size()) {
+      SGM.deferSynthesizedCanonicalization = true;
+      for (; done < SGM.rootUsedConformances.size(); ++done) {
+        auto *normal = SGM.rootUsedConformances[done];
+        auto *sf = normal->getDeclContext()->getOutermostParentSourceFile();
+        if (sf && llvm::is_contained(filesToEmit, sf))
+          (void)evaluateOrFatal(evaluator, SILWitnessTableRequest{normal});
+      }
+      SGM.emitPendingConformancesOnDemand();
+      SGM.canonicalizeDeferredSynthesizedFunctions();
+    }
+    SGM.collectRootUsedConformances = false;
+  }
 
   // A root leaves the other functions of its files that it references
   // unemitted. Each is a declaration, and the verifier requires a declaration
