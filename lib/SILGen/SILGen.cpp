@@ -2816,7 +2816,11 @@ public:
     if (SGM.shouldSkipDecl(D))
       return;
     if (auto *fd = dyn_cast<FuncDecl>(D))
-      seedFunc(fd, /*includeObjCThunk=*/false);
+      seedFunc(fd);
+    else if (auto *ntd = dyn_cast<NominalTypeDecl>(D))
+      seedNominal(ntd);
+    else if (auto *ed = dyn_cast<ExtensionDecl>(D))
+      seedExtension(ed);
     else if (auto *pbd = dyn_cast<PatternBindingDecl>(D))
       seedGlobalInitialization(pbd);
     else if (auto *vd = dyn_cast<VarDecl>(D))
@@ -2863,9 +2867,58 @@ private:
     (void)evaluateOrDefault(evaluator, AuxiliaryDeclEmissionRequest{decl}, {});
   }
 
+  /// SILGenModule::emitObjCMethodThunk.
+  void seedObjCMethodThunk(FuncDecl *fd) {
+    if (!SGM.requiresObjCMethodEntryPoint(fd) ||
+        isa<ProtocolDecl>(fd->getDeclContext()))
+      return;
+    auto thunk = SILDeclRef(fd).asForeign();
+    if (SGM.hasFunction(thunk))
+      return;
+    seedBody(thunk, /*mayDelay=*/false);
+  }
+
+  /// SILGenModule::emitObjCConstructorThunk.
+  void seedObjCConstructorThunk(ConstructorDecl *cd) {
+    if (!SGM.requiresObjCMethodEntryPoint(cd) ||
+        isa<ProtocolDecl>(cd->getDeclContext()))
+      return;
+    auto thunk = SILDeclRef(cd, SILDeclRef::Kind::Initializer).asForeign();
+    if (SGM.hasFunction(thunk))
+      return;
+    seedBody(thunk, /*mayDelay=*/false);
+  }
+
+  /// SILGenModule::emitObjCDestructorThunk.
+  void seedObjCDestructorThunk(DestructorDecl *dd) {
+    auto thunk = SILDeclRef(dd, SILDeclRef::Kind::Deallocator).asForeign();
+    if (SGM.hasFunction(thunk))
+      return;
+    seedBody(thunk, /*mayDelay=*/false);
+  }
+
+  /// SILGenModule::emitObjCPropertyMethodThunks.
+  void seedObjCPropertyMethodThunks(AbstractStorageDecl *asd) {
+    if (!asd->isObjC() || isa<ProtocolDecl>(asd->getDeclContext()))
+      return;
+    auto *getter = asd->getOpaqueAccessor(AccessorKind::Get);
+    if (!getter || !SGM.requiresObjCMethodEntryPoint(getter))
+      return;
+    auto getterRef = SILDeclRef(getter, SILDeclRef::Kind::Func).asForeign();
+    if (SGM.hasFunction(getterRef))
+      return;
+    seedBody(getterRef, /*mayDelay=*/false);
+    if (!asd->isSettable(asd->getDeclContext()))
+      return;
+    auto *setter = asd->getOpaqueAccessor(AccessorKind::Set);
+    if (SGM.shouldSkipDecl(setter))
+      return;
+    auto setterRef = SILDeclRef(setter, SILDeclRef::Kind::Func).asForeign();
+    seedBody(setterRef, /*mayDelay=*/false);
+  }
+
   /// SILGenModule::emitFunction, plus visitFuncDecl's @objc thunk.
   void seedFunc(FuncDecl *fd, bool includeObjCThunk = true) {
-    (void)includeObjCThunk;
     // A body-less '@specialized' declaration has no body to emit; legacy
     // prepares the imported bodies it names, which on demand doesn't do.
     if (SpecializedAttr::isSpecializationDeclaration(fd))
@@ -2876,6 +2929,97 @@ private:
       SGM.M.Types.setCaptureTypeExpansionContext(SILDeclRef(fd), SGM.M);
       seedBody(SILDeclRef(fd, fd->hasOnlyCEntryPoint()));
     }
+    if (includeObjCThunk)
+      seedObjCMethodThunk(fd);
+  }
+
+  /// SILGenModule::emitConstructor, plus visitConstructorDecl's @objc thunk.
+  void seedConstructor(ConstructorDecl *cd) {
+    if (SpecializedAttr::isSpecializationDeclaration(cd))
+      return;
+    seedAuxiliaries(cd);
+    if (isa<ProtocolDecl>(cd->getDeclContext()))
+      return;
+    if (cd->getDeclContext()->getSelfClassDecl() &&
+        (cd->isDesignatedInit() || cd->isObjC())) {
+      seedBody(SILDeclRef(cd, SILDeclRef::Kind::Allocator));
+      if (shouldEmitFunctionBody(cd))
+        seedBody(SILDeclRef(cd, SILDeclRef::Kind::Initializer));
+    } else if (shouldEmitFunctionBody(cd)) {
+      seedBody(SILDeclRef(cd));
+    }
+    seedObjCConstructorThunk(cd);
+  }
+
+  /// SILGenModule::emitDestructor, including emitObjCAllocatorDestructor.
+  void seedClassDestructor(ClassDecl *cd, DestructorDecl *dd) {
+    seedAuxiliaries(dd);
+    if (SGM.requiresIVarDestroyer(cd))
+      seedBody(SILDeclRef(cd, SILDeclRef::Kind::IVarDestroyer),
+               /*mayDelay=*/false);
+    if (usesObjCAllocator(cd)) {
+      const bool isActorIsolated = needsIsolatingDestructor(dd);
+      if (dd->hasBody() && !dd->isBodySkipped() && isActorIsolated)
+        seedBody(SILDeclRef(dd, SILDeclRef::Kind::IsolatedDeallocator),
+                 /*mayDelay=*/false);
+      if (shouldEmitFunctionBody(dd)) {
+        seedBody(SILDeclRef(dd, SILDeclRef::Kind::Deallocator),
+                 /*mayDelay=*/false);
+        if (!dd->getBody()->empty() || isActorIsolated)
+          seedObjCDestructorThunk(dd);
+      }
+      if (requiresIVarInitialization(SGM, cd))
+        seedBody(SILDeclRef(cd, SILDeclRef::Kind::IVarInitializer).asForeign(),
+                 /*mayDelay=*/false);
+      if (SGM.hasNonTrivialIVars(cd))
+        seedBody(SILDeclRef(cd, SILDeclRef::Kind::IVarDestroyer).asForeign(),
+                 /*mayDelay=*/false);
+      return;
+    }
+    if (shouldEmitFunctionBody(dd))
+      seedBody(SILDeclRef(dd, SILDeclRef::Kind::Destroyer),
+               /*mayDelay=*/false);
+    if (needsIsolatingDestructor(dd))
+      seedBody(SILDeclRef(dd, SILDeclRef::Kind::IsolatedDeallocator),
+               /*mayDelay=*/false);
+    seedBody(SILDeclRef(dd, SILDeclRef::Kind::Deallocator),
+             /*mayDelay=*/false);
+  }
+
+  /// SILGenModule::emitMoveOnlyDestructor.
+  void seedMoveOnlyDestructor(DestructorDecl *dd) {
+    seedAuxiliaries(dd);
+    if (!shouldEmitFunctionBody(dd))
+      return;
+    // Legacy emits the deallocator without the delay heuristic.
+    SILDeclRef deallocator(dd, SILDeclRef::Kind::Deallocator);
+    seedBody(deallocator, /*mayDelay=*/false);
+    if (dd->isBackDeployed())
+      seedBody(deallocator.asBackDeploymentKind(
+                   SILDeclRef::BackDeploymentKind::Fallback),
+               /*mayDelay=*/false);
+  }
+
+  /// SILGenType::visitAbstractStorageDecl and
+  /// SILGenExtension::visitAbstractStorageDecl.
+  void seedStorage(AbstractStorageDecl *asd, bool inExtension) {
+    seedObjCPropertyMethodThunks(asd);
+    SGM.tryEmitPropertyDescriptor(asd);
+    SGM.visitEmittedAccessors(asd, [&](AccessorDecl *accessor) {
+      if (inExtension && skipDynamicReplacementAccessor(accessor))
+        return;
+      seedFunc(accessor);
+    });
+  }
+
+  /// SILGenExtension::visitFuncDecl: in an extension, a dynamic replacement
+  /// of didSet or willSet emits only those accessors; there is no storage.
+  static bool skipDynamicReplacementAccessor(AccessorDecl *accessor) {
+    auto *storage = accessor->getStorage();
+    return storage->hasDidSetOrWillSetDynamicReplacement() &&
+           isa<ExtensionDecl>(storage->getDeclContext()) &&
+           accessor != storage->getParsedAccessor(AccessorKind::WillSet) &&
+           accessor != storage->getParsedAccessor(AccessorKind::DidSet);
   }
 
   /// SILGenModule::visitPatternBindingDecl, and a static property's in
@@ -2898,6 +3042,162 @@ private:
     SGM.tryEmitPropertyDescriptor(vd);
   }
 
+  /// SILGenType::visitVarDecl and SILGenExtension::visitVarDecl.
+  void seedVar(VarDecl *vd, bool inExtension) {
+    if (inExtension) {
+      if (vd->hasStorage() && !vd->isStatic()) {
+        // A non-static stored property of an @_objcImplementation extension
+        // acts as a stored property of the implemented class.
+        auto *ed = cast<ExtensionDecl>(vd->getDeclContext());
+        if (isa_and_nonnull<ClassDecl>(ed->getImplementedObjCDecl())) {
+          seedVar(vd, /*inExtension=*/false);
+          return;
+        }
+      }
+      // A stored property of an extension is static, so a global variable,
+      // unless it is a dynamic replacement of didSet or willSet.
+      if (vd->hasStorage() && !vd->hasDidSetOrWillSetDynamicReplacement()) {
+        seedGlobalVar(vd);
+        return;
+      }
+      seedStorage(vd, inExtension);
+      return;
+    }
+    // A static stored property is a global variable.
+    if (vd->isStatic() && vd->hasStorage()) {
+      seedGlobalVar(vd);
+      return;
+    }
+    auto initInfo = vd->getPropertyWrapperInitializerInfo();
+    if (initInfo.hasInitFromWrappedValue() && !vd->isStatic()) {
+      // SILGenModule::emitPropertyWrapperBackingInitializer and
+      // emitPropertyWrappedFieldInitAccessor.
+      if (!SGM.M.getOptions().SkipNonExportableDecls) {
+        seedBody(SILDeclRef(
+            vd, SILDeclRef::Kind::PropertyWrapperBackingInitializer));
+        if (initInfo.hasInitFromProjectedValue())
+          seedBody(SILDeclRef(
+              vd, SILDeclRef::Kind::PropertyWrapperInitFromProjectedValue));
+      }
+      seedBody(
+          SILDeclRef(vd, SILDeclRef::Kind::PropertyWrappedFieldInitAccessor));
+    }
+    seedStorage(vd, inExtension);
+  }
+
+  /// SILGenType::visitSubscriptDecl.
+  void seedSubscript(SubscriptDecl *sd, bool inExtension) {
+    seedAuxiliaries(sd);
+    seedStorage(sd, inExtension);
+  }
+
+  /// SILGenType::visitPatternBindingDecl, for a struct or an enum.
+  void seedPatternBinding(PatternBindingDecl *pbd) {
+    // A static property's initializer belongs to a global variable.
+    if (pbd->isStatic()) {
+      seedGlobalInitialization(pbd);
+      return;
+    }
+    for (auto i : range(pbd->getNumPatternEntries())) {
+      if (!pbd->getExecutableInit(i))
+        continue;
+      // SILGenModule::emitStoredPropertyInitialization.
+      if (SGM.M.getOptions().SkipNonExportableDecls &&
+          !pbd->getAnchoringVarDecl(i)->isInitExposedToClients())
+        continue;
+      if (!pbd->getCheckedAndContextualizedExecutableInit(i))
+        continue;
+      seedBody(SILDeclRef(pbd->getAnchoringVarDecl(i),
+                          SILDeclRef::Kind::StoredPropertyInitializer));
+    }
+  }
+
+  /// A member of a struct, an enum, or a class, or of an extension of one.
+  void seedMember(Decl *member, bool isClass, bool inExtension) {
+    (void)isClass;
+    if (SGM.shouldSkipDecl(member))
+      return;
+    if (auto *ntd = dyn_cast<NominalTypeDecl>(member)) {
+      seedNominal(ntd);
+      return;
+    }
+    if (auto *fd = dyn_cast<FuncDecl>(member)) {
+      seedFunc(fd);
+    } else if (auto *cd = dyn_cast<ConstructorDecl>(member)) {
+      seedConstructor(cd);
+    } else if (auto *dd = dyn_cast<DestructorDecl>(member)) {
+      if (auto *classDecl = dd->getDeclContext()->getSelfClassDecl())
+        seedClassDestructor(classDecl, dd);
+      else if (auto *objcClass = dyn_cast_or_null<ClassDecl>(
+                   dd->getDeclContext()->getImplementedObjCContext()))
+        seedClassDestructor(objcClass, dd);
+      else if (!dd->getDeclContext()->getSelfNominalTypeDecl()->canBeCopyable())
+        seedMoveOnlyDestructor(dd);
+    } else if (auto *vd = dyn_cast<VarDecl>(member)) {
+      seedVar(vd, inExtension);
+    } else if (auto *sd = dyn_cast<SubscriptDecl>(member)) {
+      seedSubscript(sd, inExtension);
+    } else if (auto *pbd = dyn_cast<PatternBindingDecl>(member)) {
+      // SILGenExtension::visitPatternBindingDecl: static initializers, plus
+      // non-static stored-property initializers in @objcImplementation.
+      if (!inExtension)
+        seedPatternBinding(pbd);
+      else if (pbd->isStatic())
+        seedGlobalInitialization(pbd);
+      else if (cast<ExtensionDecl>(pbd->getDeclContext())
+                   ->isObjCImplementation())
+        seedPatternBinding(pbd);
+    } else if (auto *eed = dyn_cast<EnumElementDecl>(member)) {
+      // SILGenType::visitEnumElementDecl: the payload's argument generators.
+      // The constructor function itself is emitted where it is referenced.
+      if (eed->hasAssociatedValues())
+        seedAuxiliaries(eed);
+    }
+  }
+
+  /// SILGenType::emitType.
+  void seedNominal(NominalTypeDecl *ntd) {
+    // First, as legacy does for every nominal type: the conformances that the
+    // type (for a protocol, its requirement signature) uses and that are
+    // synthesized lazily, such as the Clang importer's.
+    SGM.emitLazyConformancesForType(ntd);
+    if (isa<ProtocolDecl>(ntd))
+      return;
+    bool isClass = isa<ClassDecl>(ntd);
+    for (Decl *member : ntd->getABIMembers())
+      seedMember(member, isClass, /*inExtension=*/false);
+    // After a class's members, its vtable, and a resilient class's default
+    // override table.
+    if (auto *cd = dyn_cast<ClassDecl>(ntd); cd && !cd->hasClangNode()) {
+      (void)evaluateOrFatal(evaluator, SILVTableRequest{cd});
+      if (cd->isResilient()) {
+        auto *sf = cd->getParentSourceFile();
+        if (!sf || sf->Kind != SourceFileKind::Interface)
+          SGM.emitDefaultOverrideTable(cd);
+      }
+    }
+    if (!isClass && !ntd->canBeCopyable()) {
+      SGM.emitNonCopyableTypeDeinitTable(ntd);
+      SGM.recordNonCopyableTypeWithEmittedMetadata(ntd);
+    }
+  }
+
+  /// SILGenExtension::emitExtension.
+  void seedExtension(ExtensionDecl *ed) {
+    auto *nominal = ed->getExtendedNominal();
+    if (!nominal)
+      return;
+    bool isClass = isa<ClassDecl>(nominal);
+    for (Decl *member : ed->getABIMembers())
+      seedMember(member, isClass, /*inExtension=*/true);
+    // Main-interface @_objcImplementation extension whose class has a
+    // synthesized destructor parented on the imported ClassDecl.
+    if (auto *cd = dyn_cast_or_null<ClassDecl>(ed->getImplementedObjCDecl())) {
+      auto *dd = cd->getDestructor();
+      if (dd->getDeclContext() == cd && !SGM.shouldSkipDecl(dd))
+        seedClassDestructor(cd, dd);
+    }
+  }
 };
 } // end anonymous namespace
 
@@ -2952,6 +3252,11 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
       seeder.seedScriptEntryPoint(sf);
       for (auto *D : sf->getTopLevelDecls())
         seeder.visitTopLevel(D);
+      for (TypeDecl *TD : sf->getLocalTypeDecls()) {
+        if (TD->getDeclContext()->getInnermostSkippedFunctionContext())
+          continue;
+        seeder.visitTopLevel(TD);
+      }
       seeder.seedMainDeclEntryPoint(sf);
     }
   }

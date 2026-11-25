@@ -20,6 +20,7 @@
 #include "ManagedValue.h"
 #include "SILGenFunction.h"
 #include "SILGenFunctionBuilder.h"
+#include "SILGenRequestTrace.h"
 #include "swift/AST/ASTMangler.h"
 #include "swift/AST/ConformanceLookup.h"
 #include "swift/AST/GenericEnvironment.h"
@@ -27,6 +28,7 @@
 #include "swift/AST/PropertyWrappers.h"
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/AST/RequirementEnvironment.h"
+#include "swift/AST/SILGenRequests.h"
 #include "swift/AST/SourceFile.h"
 #include "swift/AST/SubstitutionMap.h"
 #include "swift/AST/TypeMemberVisitor.h"
@@ -218,6 +220,7 @@ SILGenModule::emitVTableMethod(ClassDecl *theClass, SILDeclRef derived,
                      derivedInfo.LoweredType,
                      baseLessVisibleThanDerived);
   emitLazyConformancesForFunction(thunk);
+  canonicalizeSynthesizedOnDemand(thunk);
 
   return SILVTable::Entry(base, thunk, implKind, false);
 }
@@ -383,6 +386,18 @@ public:
 
 SILVTable *SILGenModule::emitVTable(ClassDecl *theClass) {
   return SILGenVTable(*this, theClass).emitVTable();
+}
+
+SILVTable *SILVTableRequest::evaluate(Evaluator &evaluator,
+                                      ClassDecl *theClass) const {
+  DEBUG_WITH_TYPE("silgen-requests",
+                  silgen_trace::traceIndent() << "-> SILVTableRequest: "
+                                              << theClass->getName() << "\n");
+  silgen_trace::TraceScope _ts;
+  auto *SGM = theClass->getASTContext().getActiveSILGenModule();
+  ASSERT(SGM && "SILVTableRequest evaluated outside SILGen scope");
+  ASSERT(!theClass->hasClangNode() && "an imported class has no SIL vtable");
+  return SGM->emitVTable(theClass);
 }
 
 static void emitTypeMemberGlobalVariable(SILGenModule &SGM,
@@ -1462,6 +1477,7 @@ SILFunction *SILGenModule::emitDefaultOverride(SILDeclRef replacement,
   SGF.B.setInsertionPoint(errorBlock);
   SGF.B.createAbortApply(loc, token);
   SGF.B.createUnwind(loc);
+  canonicalizeSynthesizedOnDemand(function);
   return function;
 }
 
@@ -1699,8 +1715,20 @@ void SILGenModule::visitNominalTypeDecl(NominalTypeDecl *ntd) {
 void SILGenModule::visitImportedNontrivialNoncopyableType(
   NominalTypeDecl *nominal) {
   emitNonCopyableTypeDeinitTable(nominal);
-  SILGenType(*this, nominal)
-      .visitDestructorDecl(nominal->getValueTypeDestructor());
+  auto *dd = nominal->getValueTypeDestructor();
+  if (isEmittingOnDemand()) {
+    (void)evaluateOrDefault(getASTContext().evaluator,
+                            AuxiliaryDeclEmissionRequest{dd}, {});
+    SILDeclRef deallocator(dd, SILDeclRef::Kind::Deallocator);
+    if (shouldEmitBodyOnDemand(deallocator)) {
+      canonicalizeOnDemand(deallocator);
+      if (dd->isBackDeployed())
+        canonicalizeOnDemand(deallocator.asBackDeploymentKind(
+            SILDeclRef::BackDeploymentKind::Fallback));
+    }
+    return;
+  }
+  SILGenType(*this, nominal).visitDestructorDecl(dd);
 }
 
 /// SILGenExtension - an ASTVisitor for generating SIL from method declarations
