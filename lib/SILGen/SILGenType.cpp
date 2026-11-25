@@ -355,7 +355,7 @@ public:
     {
       auto *dtor = theClass->getDestructor();
       SILDeclRef dtorRef(dtor, SILDeclRef::Kind::Deallocator);
-      auto *dtorFn = SGM.getFunction(dtorRef, NotForDefinition);
+      auto *dtorFn = SGM.getFunctionInterface(dtorRef);
       vtableEntries.emplace_back(dtorRef, dtorFn,
                                  SILVTable::Entry::Kind::Normal,
                                  false);
@@ -363,7 +363,7 @@ public:
 
     if (SGM.requiresIVarDestroyer(theClass)) {
       SILDeclRef dtorRef(theClass, SILDeclRef::Kind::IVarDestroyer);
-      auto *dtorFn = SGM.getFunction(dtorRef, NotForDefinition);
+      auto *dtorFn = SGM.getFunctionInterface(dtorRef);
       vtableEntries.emplace_back(dtorRef, dtorFn,
                                  SILVTable::Entry::Kind::Normal,
                                  false);

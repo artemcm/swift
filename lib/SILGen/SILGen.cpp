@@ -40,6 +40,8 @@
 #include "swift/SIL/SILArgument.h"
 #include "swift/SIL/SILDebugScope.h"
 #include "swift/SIL/SILProfiler.h"
+#include "swift/SILOptimizer/PassManager/PassManager.h"
+#include "swift/SILOptimizer/PassManager/PassPipeline.h"
 #include "swift/Serialization/SerializedModuleLoader.h"
 #include "swift/Serialization/SerializedSILLoader.h"
 #include "swift/Subsystems.h"
@@ -55,6 +57,61 @@ llvm::cl::list<std::string> PrintFunctionAST(
 //===----------------------------------------------------------------------===//
 // SILGenModule Class implementation
 //===----------------------------------------------------------------------===//
+
+bool SILGenModule::isEmittingOnDemand() const {
+  return emittingOnDemand;
+}
+
+void SILGenModule::canonicalizeOnDemand(SILDeclRef ref) {
+  if (!isEmittingOnDemand())
+    return;
+  auto &evaluator = getASTContext().evaluator;
+  (void)evaluateOrFatal(evaluator, SILFunctionBodyRequest{ref});
+  if (deferCanonicalization) {
+    deferredCanonicalRefs.push_back(ref);
+    return;
+  }
+  (void)evaluateOrDefault(evaluator, CanonicalSILFunctionRequest{ref}, nullptr);
+}
+
+void SILGenModule::canonicalizeSynthesizedOnDemand(SILFunction *thunk) {
+  if (!isEmittingOnDemand())
+    return;
+  if (deferCanonicalization) {
+    deferredSynthesizedFunctions.push_back(thunk);
+    return;
+  }
+  (void)evaluateOrDefault(getASTContext().evaluator,
+                          CanonicalSynthesizedFunctionRequest{thunk}, nullptr);
+}
+
+void SILGenModule::canonicalizeDeferredFunctions() {
+  deferCanonicalization = false;
+  auto deferredRefs = std::move(deferredCanonicalRefs);
+  deferredCanonicalRefs.clear();
+  auto deferredSynth = std::move(deferredSynthesizedFunctions);
+  deferredSynthesizedFunctions.clear();
+  auto &evaluator = getASTContext().evaluator;
+  for (auto ref : deferredRefs)
+    (void)evaluateOrDefault(evaluator, CanonicalSILFunctionRequest{ref},
+                            nullptr);
+  for (auto *thunk : deferredSynth)
+    canonicalizeSynthesizedOnDemand(thunk);
+}
+
+// A table's entries use more conformances (useConformance), and the linker
+// requires a lazily synthesized conformance's table to exist before it links
+// code that references it. So drain the queue first, then canonicalize every
+// deferred function (those the seeder made too), until canonicalizing queues
+// no more.
+void SILGenModule::emitPendingConformancesOnDemand() {
+  do {
+    deferCanonicalization = true;
+    emitPendingConformances();
+    canonicalizeDeferredFunctions();
+  } while (!pendingConformances.empty() || !deferredCanonicalRefs.empty() ||
+           !deferredSynthesizedFunctions.empty());
+}
 
 void SILGenModule::emitPendingConformances() {
   while (!pendingConformances.empty()) {
@@ -786,16 +843,11 @@ static bool isEmittedOnDemand(SILModule &M, SILDeclRef constant) {
   switch (constant.kind) {
   case SILDeclRef::Kind::Func: {
     auto *fd = cast<FuncDecl>(d);
-    if (!shouldEmitFunctionBody(fd))
-      return false;
-
-    if (isa<ClangModuleUnit>(dc->getModuleScopeContext()))
-      return true;
-
-    if (fd->hasForcedStaticDispatch())
-      return true;
-
-    break;
+    // The cheap tests first: under lazy type checking, shouldEmitFunctionBody
+    // type-checks the body, and getFunction asks this for every reference.
+    return (isa<ClangModuleUnit>(dc->getModuleScopeContext()) ||
+            fd->hasForcedStaticDispatch()) &&
+           shouldEmitFunctionBody(fd);
   }
   case SILDeclRef::Kind::Allocator: {
     auto *cd = cast<ConstructorDecl>(d);
@@ -822,6 +874,34 @@ static bool isEmittedOnDemand(SILModule &M, SILDeclRef constant) {
   }
 
   return false;
+}
+
+// Legacy emits every body before any pass runs, so the SIL linker never meets
+// a function of this unit without its body. On demand, a function that each
+// referencing unit emits for itself gets its body from the worklist, which
+// can come after a function that references it runs OnDemandSILLinker, which
+// asserts on a shared declaration it can't deserialize (D18): a witness thunk
+// calls the constructor of an enum case that satisfies a requirement (G-41),
+// and a body reads an imported C enum's rawValue through a Clang-synthesized
+// getter. Callers: CanonicalSynthesizedFunctionRequest, and
+// DiagnosedSILFunctionRequest for each member of a component.
+void SILGenModule::emitOnDemandBodiesReferencedBy(SILFunction *f) {
+  if (!isEmittingOnDemand())
+    return;
+  for (auto &block : *f) {
+    for (auto &inst : block) {
+      auto *ref = dyn_cast<FunctionRefBaseInst>(&inst);
+      if (!ref)
+        continue;
+      auto *callee = ref->getInitiallyReferencedFunction();
+      auto calleeRef = callee->getDeclRef();
+      if (!calleeRef || !callee->empty() || !forcedFunctions.count(calleeRef) ||
+          !isEmittedOnDemand(M, calleeRef))
+        continue;
+      (void)evaluateOrFatal(getASTContext().evaluator,
+                            SILFunctionBodyRequest{calleeRef});
+    }
+  }
 }
 
 /// Whether SILGen emits \p constant as a closure (SILFunction::isClosure).
@@ -919,6 +999,11 @@ SILFunction *SILGenModule::getFunction(SILDeclRef constant,
   }
 
   return F;
+}
+
+SILFunction *SILGenModule::getFunctionInterface(SILDeclRef constant) {
+  return evaluateOrFatal(getASTContext().evaluator,
+                         SILFunctionInterfaceRequest{constant});
 }
 
 bool SILGenModule::hasFunction(SILDeclRef constant) {
@@ -1437,6 +1522,25 @@ void SILGenModule::emitOrDelayFunction(SILDeclRef constant) {
   // lastEmittedFunction so that we preserve the original ordering that
   // the symbols would have been emitted in.
   lastEmittedFunction = constant;
+}
+
+bool SILGenModule::delayFunctionOnDemand(SILDeclRef constant) {
+  assert(isEmittingOnDemand());
+  assert(!constant.isThunk());
+  assert(!constant.isClangImported());
+
+  // As emitOrDelayFunction does, but leave the emission to the caller and
+  // the forced function to the coordinator's body scan.
+  auto emitAfter = lastEmittedFunction;
+  if (!mayDelayEmission(M, constant))
+    return false;
+  if (forcedFunctions.contains(constant))
+    return true;
+  if (hasFunction(constant))
+    return false;
+  delayedFunctions.insert({constant, emitAfter});
+  lastEmittedFunction = constant;
+  return true;
 }
 
 void SILGenModule::preEmitFunction(SILDeclRef constant, SILFunction *F,
@@ -2487,9 +2591,83 @@ void SILGenModule::emitSymbolSource(SymbolSource Source) {
   }
 }
 
+/// The declaration whose body \p ref emits, for the entry points that
+/// SILGenModule emits only if shouldEmitFunctionBody: the declaration's own
+/// native entry points. Null for
+///  - the entry points that SILGenModule synthesizes, such as a class's
+///    allocator, and a native class's deallocator (an Objective-C-allocated
+///    class's deallocator is -dealloc, gated by shouldEmitFunctionBody in
+///    emitObjCAllocatorDestructor);
+///  - the functions it makes from a declaration, which legacy's
+///    emitAbstractFuncDecl emits whatever the gate says: the thunks of
+///    @_cdecl, distributed, and back-deployed functions, and the
+///    back-deployment fallback (legacy gates the fallback of a noncopyable
+///    type's deinit, which the seeder gates itself);
+///  - a derivative function, which SILGen only declares; and
+///  - a reference without a declaration.
+static AbstractFunctionDecl *getGatedBodyDecl(SILDeclRef ref) {
+  if (!ref.hasDecl())
+    return nullptr;
+  if (ref.isThunk() || ref.isBackDeploymentFallback() ||
+      ref.isAutoDiffDerivativeFunction())
+    return nullptr;
+  auto *afd = dyn_cast<AbstractFunctionDecl>(ref.getDecl());
+  if (!afd)
+    return nullptr;
+  bool inClass = afd->getDeclContext()->getSelfClassDecl() != nullptr;
+  switch (ref.kind) {
+  case SILDeclRef::Kind::Func:
+  case SILDeclRef::Kind::Initializer:
+  case SILDeclRef::Kind::Destroyer:
+    return afd;
+  case SILDeclRef::Kind::Allocator: {
+    // emitConstructor: a class's designated or @objc initializer gets an
+    // allocating entry point even without a body.
+    auto *ctor = cast<ConstructorDecl>(afd);
+    if (inClass && (ctor->isDesignatedInit() || ctor->isObjC()))
+      return nullptr;
+    return afd;
+  }
+  case SILDeclRef::Kind::Deallocator: {
+    // emitMoveOnlyDestructor: a noncopyable type's deinit is its deallocator.
+    // A native class's deallocator is synthesized; an Objective-C-allocated
+    // class's deallocator is -dealloc, gated by shouldEmitFunctionBody.
+    if (auto *cd = afd->getDeclContext()->getSelfClassDecl())
+      return usesObjCAllocator(cd) ? afd : nullptr;
+    if (auto *cd = dyn_cast_or_null<ClassDecl>(
+            afd->getDeclContext()->getImplementedObjCContext()))
+      return usesObjCAllocator(cd) ? afd : nullptr;
+    return afd;
+  }
+  default:
+    return nullptr;
+  }
+}
+
+bool SILGenModule::shouldEmitBodyOnDemand(SILDeclRef constant) {
+  if (forcedFunctions.contains(constant))
+    return true;
+  auto *afd = getGatedBodyDecl(constant);
+  bool emit = !afd || shouldEmitFunctionBody(afd);
+  DEBUG_WITH_TYPE("silgen-requests", if (!emit) {
+    llvm::dbgs() << "[declined] ";
+    constant.print(llvm::dbgs());
+    llvm::dbgs() << "\n";
+  });
+  return emit;
+}
+
 std::unique_ptr<SILModule>
 ASTLoweringRequest::evaluate(Evaluator &evaluator,
                              ASTLoweringDescriptor desc) const {
+  // The SILGen zone's cached results are valid for one lowering only: they
+  // point into the SILModule built below, or stand for emission into it.
+  // In batch mode, each primary file gets its own ASTLoweringRequest and
+  // SILModule, but all share one evaluator, and the previous primary's module
+  // is destroyed by now. Start from an empty zone. Clearing on entry, not on
+  // exit, keeps the last lowering's entries for -analyze-request-evaluator.
+  evaluator.clearCachedOutputs(Zone::SILGen);
+
   // If we have a .sil file to parse, defer to the parsing request.
   if (desc.getSourceFileToParse()) {
     return evaluateOrFatal(evaluator, ParseSILModuleRequest{desc});
@@ -2512,6 +2690,7 @@ ASTLoweringRequest::evaluate(Evaluator &evaluator,
     return silMod;
 
   SILGenModule SGM(*silMod, silMod->getSwiftModule());
+  ActiveSILGenModuleScope activeScope(ctx, SGM);
 
   // Emit a specific set of SILDeclRefs if needed.
   if (auto Sources = desc.SourcesToEmit) {

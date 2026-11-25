@@ -22,14 +22,26 @@
 #include "swift/AST/SimpleRequest.h"
 #include "swift/AST/SourceFile.h"
 #include "swift/AST/TBDGenRequests.h"
+#include "swift/AST/Types.h"
+#include "swift/SIL/AbstractionPattern.h"
 #include "swift/SIL/SILDeclRef.h"
+#include "swift/SIL/SILLocation.h"
 
 namespace swift {
 
 class LangOptions;
 class ModuleDecl;
+class AbstractFunctionDecl;
+class DeclContext;
+class DerivativeAttr;
+class GenericEnvironment;
+class SILDifferentiabilityWitness;
+class SILFunction;
 class SILModule;
 class SILOptions;
+class SILVTable;
+class SILWitnessTable;
+class RootProtocolConformance;
 class IRGenOptions;
 
 namespace Lowering {
@@ -142,6 +154,123 @@ private:
   // Evaluation.
   std::unique_ptr<SILModule> evaluate(Evaluator &evaluator,
                                       ASTLoweringDescriptor desc) const;
+};
+
+/// Creates a SILFunction declaration (empty body) for a given SILDeclRef,
+/// with correct lowered type, linkage, generic environment, and attributes.
+/// The function is registered in SILModule's function table but has no body.
+///
+/// This is the "interface" half of function emission. SILFunctionBodyRequest
+/// depends on this request to obtain the declaration before filling in the body.
+class SILFunctionInterfaceRequest
+    : public SimpleRequest<SILFunctionInterfaceRequest,
+                           SILFunction *(SILDeclRef),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  SILFunction *evaluate(Evaluator &evaluator, SILDeclRef constant) const;
+};
+
+/// Emits a single function body on demand, producing Raw SIL. Depends on
+/// SILFunctionInterfaceRequest for the function declaration. Callee references
+/// discovered during body emission are created via SILGenModule::getFunction
+/// and may be queued in pendingForcedFunctions; the caller
+/// (ASTLoweringRequest) is responsible for draining that queue
+/// and firing SILFunctionBodyRequest for each discovered callee.
+class SILFunctionBodyRequest
+    : public SimpleRequest<SILFunctionBodyRequest,
+                           SILFunction *(SILDeclRef),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  SILFunction *evaluate(Evaluator &evaluator, SILDeclRef constant) const;
+};
+
+/// Runs the SILGen cleanup pipeline on a single function, producing
+/// cleaned Raw SIL. Depends on SILFunctionBodyRequest.
+class CleanedSILFunctionRequest
+    : public SimpleRequest<CleanedSILFunctionRequest,
+                           SILFunction *(SILDeclRef),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  SILFunction *evaluate(Evaluator &evaluator, SILDeclRef constant) const;
+};
+
+/// Runs the function-only mandatory diagnostic pipeline on a single
+/// function, producing diagnosed SIL. Depends on
+/// CleanedSILFunctionRequest.
+class DiagnosedSILFunctionRequest
+    : public SimpleRequest<DiagnosedSILFunctionRequest,
+                           SILFunction *(SILDeclRef),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  SILFunction *evaluate(Evaluator &evaluator, SILDeclRef constant) const;
+};
+
+/// Sets the per-function stage to Canonical after all mandatory passes
+/// have been applied. Depends on DiagnosedSILFunctionRequest.
+/// Implements cycle diagnostics for circular @transparent / @inline(__always).
+class CanonicalSILFunctionRequest
+    : public SimpleRequest<CanonicalSILFunctionRequest,
+                           SILFunction *(SILDeclRef),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+  void diagnoseCycle(DiagnosticEngine &diags) const;
+  void noteCycleStep(DiagnosticEngine &diags) const;
+
+private:
+  friend SimpleRequest;
+
+  SILFunction *evaluate(Evaluator &evaluator, SILDeclRef constant) const;
+};
+
+/// Canonicalizes a synthesized SILFunction with no SILDeclRef (reabstraction /
+/// custom-derivative thunks): runs the cleanup + function-only diagnostic
+/// pipelines and sets its stage to Canonical. Keyed on the SILFunction*, since
+/// these never flow through CanonicalSILFunctionRequest.
+class CanonicalSynthesizedFunctionRequest
+    : public SimpleRequest<CanonicalSynthesizedFunctionRequest,
+                           SILFunction *(SILFunction *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  SILFunction *evaluate(Evaluator &evaluator, SILFunction *f) const;
 };
 
 /// The zone number for SILGen.

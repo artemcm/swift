@@ -11,14 +11,36 @@
 //===----------------------------------------------------------------------===//
 
 #include "swift/AST/SILGenRequests.h"
+#include "SILGen.h"
+#include "SILGenRequestTrace.h"
 #include "swift/AST/ASTContext.h"
-#include "swift/AST/Module.h"
+#include "swift/AST/Attr.h"
+#include "swift/AST/AutoDiff.h"
+#include "swift/AST/Decl.h"
+#include "swift/AST/DiagnosticsSIL.h"
 #include "swift/AST/FileUnit.h"
+#include "swift/AST/Module.h"
+#include "swift/AST/ParameterList.h"
+#include "swift/AST/PropertyWrappers.h"
 #include "swift/AST/SourceFile.h"
 #include "swift/SIL/SILModule.h"
+#include "swift/Basic/Assertions.h"
+#include "swift/SIL/SILDifferentiabilityWitness.h"
+#include "swift/SIL/SILFunction.h"
+#include "swift/SIL/SILModule.h"
+#include "swift/SILOptimizer/PassManager/PassManager.h"
+#include "swift/SILOptimizer/PassManager/PassPipeline.h"
 #include "swift/Subsystems.h"
+#include "llvm/Support/Debug.h"
+
+#define DEBUG_TYPE "silgen-requests"
 
 using namespace swift;
+using namespace swift::silgen_trace;
+
+#ifndef NDEBUG
+unsigned swift::silgen_trace::requestTraceDepth = 0;
+#endif
 
 namespace swift {
 // Implement the SILGen type zone (zone 12).
@@ -101,6 +123,254 @@ SourceFile *ASTLoweringDescriptor::getSourceFileToParse() const {
     }
   }
   return nullptr;
+}
+
+SILFunction *
+SILFunctionInterfaceRequest::evaluate(Evaluator &evaluator,
+                                      SILDeclRef constant) const {
+  LLVM_DEBUG(traceIndent() << "-> SILFunctionInterfaceRequest: ";
+             constant.print(llvm::dbgs()); llvm::dbgs() << "\n");
+  TraceScope _ts1;
+  auto *SGM = constant.getASTContext().getActiveSILGenModule();
+  ASSERT(SGM && "SILFunctionInterfaceRequest evaluated outside SILGen scope");
+  return SGM->getFunction(constant, NotForDefinition);
+}
+
+SILFunction *
+SILFunctionBodyRequest::evaluate(Evaluator &evaluator,
+                                 SILDeclRef constant) const {
+  LLVM_DEBUG(traceIndent() << "-> SILFunctionBodyRequest: ";
+             constant.print(llvm::dbgs()); llvm::dbgs() << "\n");
+  TraceScope _ts2;
+  auto *SGM = constant.getASTContext().getActiveSILGenModule();
+  ASSERT(SGM && "SILFunctionBodyRequest evaluated outside SILGen scope");
+
+  // Get or create the function declaration via the interface request.
+  auto *f = evaluateOrFatal(evaluator,
+                            SILFunctionInterfaceRequest{constant});
+
+  // If the function already has a body (e.g., deserialized from a
+  // cross-module .swiftmodule or already emitted via the non-request
+  // path), skip emission. Do NOT upgrade linkage: cross-module
+  // functions should retain their external linkage.
+  if (!f->empty())
+    return f;
+
+  // A body that legacy's gate declines stays a declaration (D15), with the
+  // external linkage that the interface request gave it.
+  if (!SGM->shouldEmitBodyOnDemand(constant))
+    return f;
+
+  // The interface request uses NotForDefinition linkage. Upgrade to
+  // definition linkage before emitting the body.
+  if (isAvailableExternally(f->getLinkage()))
+    f->setLinkage(constant.getLinkage(ForDefinition));
+
+  // Emit the function body.
+  if (!f->empty())
+    return f;
+
+  // Emit the function body. Callee references discovered during emission
+  // are created via SILGenModule::getFunction and may be queued in
+  // pendingForcedFunctions. The drain loop in ASTLoweringRequest handles
+  // emitting those bodies.
+  SGM->emitFunctionDefinition(constant, f);
+  return f;
+}
+
+SILFunction *
+CleanedSILFunctionRequest::evaluate(Evaluator &evaluator,
+                                    SILDeclRef constant) const {
+  LLVM_DEBUG(traceIndent() << "-> CleanedSILFunctionRequest: ";
+             constant.print(llvm::dbgs()); llvm::dbgs() << "\n");
+  TraceScope _ts3;
+  auto *f = evaluateOrFatal(evaluator,
+                            SILFunctionBodyRequest{constant});
+  // A declaration has no body to clean.
+  if (f->empty() || f->isAlreadyCanonical())
+    return f;
+
+  // Clear pass-notification flags set during SIL construction.
+  // SILGenCleanup handles these concerns unconditionally, but the pass
+  // manager asserts flags are false before starting.
+  f->setNeedBreakInfiniteLoops(false);
+  f->setNeedCompleteLifetimes(false);
+
+  auto &silMod = f->getModule();
+  if (auto *SGM = silMod.getASTContext().getActiveSILGenModule())
+    ASSERT(!SGM->deferCanonicalization &&
+           "CleanedSILFunctionRequest evaluated while canonicalization is deferred");
+  SILPassManager PM(&silMod, /*isMandatory=*/true, /*IRMod=*/nullptr);
+  PM.executePassPipelinePlan(
+      SILPassPipelinePlan::getSILGenPassPipeline(silMod.getOptions()),
+      f);
+  return f;
+}
+
+/// A closure or local function: a member of its scope's closure component.
+/// On demand, the closure's body may not exist yet, so this reads the
+/// declaration, not the body's markers (ClosureGroupSchedule's closure links).
+static bool isClosureOrLocalFunction(SILDeclRef ref) {
+  if (ref.getAbstractClosureExpr())
+    return true;
+  return ref.isFunc() && ref.hasDecl() &&
+         ref.getDecl()->getDeclContext()->isLocalContext();
+}
+
+/// The closure component of \p root, as far as it can be found from \p root
+/// on demand: \p root, then each closure and local function that a member
+/// references, transitively. Each member's body is emitted and run through the
+/// SILGen pipeline. A closure that another root's run already canonicalized is
+/// not a member.
+static void collectClosureComponent(Evaluator &evaluator, SILFunction *root,
+                                    llvm::SmallSetVector<SILFunction *, 8> &members) {
+  members.insert(root);
+  for (unsigned i = 0; i < members.size(); ++i) {
+    SILFunction *member = members[i];
+    for (auto &block : *member) {
+      for (auto &inst : block) {
+        auto *ref = dyn_cast<FunctionRefBaseInst>(&inst);
+        if (!ref)
+          continue;
+        SILFunction *callee = ref->getInitiallyReferencedFunction();
+        if (members.count(callee) || callee->isAlreadyCanonical())
+          continue;
+        SILDeclRef calleeRef = callee->getDeclRef();
+        if (!calleeRef || !isClosureOrLocalFunction(calleeRef))
+          continue;
+        auto *closure =
+            evaluateOrFatal(evaluator, CleanedSILFunctionRequest{calleeRef});
+        if (closure->isDefinition() && !closure->isAlreadyCanonical())
+          members.insert(closure);
+      }
+    }
+  }
+  // A capture edge from a member to a definition outside the component
+  // would make a group pass read or write outside its group; the passes'
+  // membership checks report it.
+}
+
+/// Runs the function-only diagnostic pipeline once over \p f's closure
+/// component, so that the closure group passes see each closure with its
+/// scope, then marks the other members canonical, so that their own requests
+/// skip the pipelines. The caller marks \p f.
+static void diagnoseClosureComponent(Evaluator &evaluator, SILFunction *f) {
+  auto &silMod = f->getModule();
+  if (auto *SGM = silMod.getASTContext().getActiveSILGenModule())
+    ASSERT(!SGM->deferCanonicalization &&
+           "diagnoseClosureComponent evaluated while canonicalization is deferred");
+  llvm::SmallSetVector<SILFunction *, 8> members;
+  collectClosureComponent(evaluator, f, members);
+  DEBUG_WITH_TYPE("silgen-requests", {
+    llvm::dbgs() << "[component] " << f->getName() << ":";
+    for (SILFunction *member : members)
+      llvm::dbgs() << " " << member->getName();
+    llvm::dbgs() << "\n";
+  });
+  // The bodies that the members' OnDemandSILLinker would otherwise meet
+  // missing (D18).
+  if (auto *SGM = silMod.getASTContext().getActiveSILGenModule())
+    for (SILFunction *member : members)
+      SGM->emitOnDemandBodiesReferencedBy(member);
+  {
+    SILPassManager PM(&silMod, /*isMandatory=*/true, /*IRMod=*/nullptr);
+    PM.executePassPipelinePlan(
+        SILPassPipelinePlan::getFunctionOnlyDiagnosticPassPipeline(
+            silMod.getOptions()),
+        members.getArrayRef());
+  }
+  for (SILFunction *member : members)
+    if (member != f && member->isDefinition())
+      member->setFunctionStage(SILStage::Canonical);
+}
+
+SILFunction *
+DiagnosedSILFunctionRequest::evaluate(Evaluator &evaluator,
+                                      SILDeclRef constant) const {
+  LLVM_DEBUG(traceIndent() << "-> DiagnosedSILFunctionRequest: ";
+             constant.print(llvm::dbgs()); llvm::dbgs() << "\n");
+  TraceScope _ts4;
+  auto *f = evaluateOrFatal(evaluator,
+                            CleanedSILFunctionRequest{constant});
+  // A declaration has no body to diagnose.
+  if (f->empty() || f->isAlreadyCanonical())
+    return f;
+
+  // CanonicalSILFunctionRequest marks f.
+  diagnoseClosureComponent(evaluator, f);
+  return f;
+}
+
+SILFunction *
+CanonicalSILFunctionRequest::evaluate(Evaluator &evaluator,
+                                      SILDeclRef constant) const {
+  LLVM_DEBUG(traceIndent() << "-> CanonicalSILFunctionRequest: ";
+             constant.print(llvm::dbgs()); llvm::dbgs() << "\n");
+  TraceScope _ts5;
+  auto *f = evaluateOrFatal(evaluator,
+                            DiagnosedSILFunctionRequest{constant});
+  // Only a function with a body reaches the Canonical stage.
+  if (!f->empty() && !f->isAlreadyCanonical())
+    f->setFunctionStage(SILStage::Canonical);
+  return f;
+}
+
+void CanonicalSILFunctionRequest::diagnoseCycle(
+    DiagnosticEngine &diags) const {
+  auto constant = std::get<0>(getStorage());
+  if (constant.hasDecl()) {
+    if (auto *afd = dyn_cast<AbstractFunctionDecl>(constant.getDecl())) {
+      if (afd->isTransparent()) {
+        diags.diagnose(afd->getLoc(), diag::circular_transparent);
+        return;
+      }
+    }
+    diags.diagnose(constant.getDecl()->getLoc(), diag::circular_inlineAlways);
+  }
+}
+
+void CanonicalSILFunctionRequest::noteCycleStep(
+    DiagnosticEngine &diags) const {
+  auto constant = std::get<0>(getStorage());
+  if (constant.hasDecl())
+    diags.diagnose(constant.getDecl()->getLoc(), diag::note_while_inlining);
+}
+
+SILFunction *
+CanonicalSynthesizedFunctionRequest::evaluate(Evaluator &evaluator,
+                                              SILFunction *f) const {
+  LLVM_DEBUG(traceIndent() << "-> CanonicalSynthesizedFunctionRequest: "
+                           << f->getName() << "\n");
+  TraceScope _ts;
+
+  if (f->isAlreadyCanonical())
+    return f;
+  if (f->empty())
+    return f;
+
+  auto &silMod = f->getModule();
+  // As legacy emits them at reference, before any pass can drop one.
+  if (auto *SGM = silMod.getASTContext().getActiveSILGenModule()) {
+    ASSERT(!SGM->deferCanonicalization &&
+           "CanonicalSynthesizedFunctionRequest evaluated while canonicalization is deferred");
+    SGM->emitOnDemandBodiesReferencedBy(f);
+  }
+
+  // Clear pass-notification flags; the pass manager asserts they're false
+  // (as in CleanedSILFunctionRequest::evaluate).
+  f->setNeedBreakInfiniteLoops(false);
+  f->setNeedCompleteLifetimes(false);
+
+  {
+    SILPassManager PM(&silMod, /*isMandatory=*/true, /*IRMod=*/nullptr);
+    PM.executePassPipelinePlan(
+        SILPassPipelinePlan::getSILGenPassPipeline(silMod.getOptions()), f);
+  }
+  // A synthesized function can hold user code with closures, such as a
+  // global's lazy initializer: its component, as for a declaration's body.
+  diagnoseClosureComponent(evaluator, f);
+  f->setFunctionStage(SILStage::Canonical);
+  return f;
 }
 
 // Define request evaluation functions for each of the SILGen requests.

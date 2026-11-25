@@ -148,6 +148,11 @@ public:
   SILFunction *getFunction(SILDeclRef constant,
                            ForDefinition_t forDefinition);
 
+  /// Get or create a function declaration via SILFunctionInterfaceRequest.
+  /// Use this instead of getFunction(ref, NotForDefinition) during body
+  /// emission so the evaluator records callee-interface dependencies.
+  SILFunction *getFunctionInterface(SILDeclRef constant);
+
   /// Get the dynamic dispatch thunk for a SILDeclRef.
   SILFunction *getDynamicThunk(SILDeclRef constant,
                                CanSILFunctionType constantTy);
@@ -164,8 +169,59 @@ public:
   /// True if a function has been emitted for a given SILDeclRef.
   bool hasFunction(SILDeclRef constant);
 
+  /// True on the request-based on-demand path: -sil-on-demand-emission, and a
+  /// lowering that doesn't compile a module interface (ASTLoweringRequest).
+  /// False on the legacy path.
+  bool isEmittingOnDemand() const;
+
+  /// Set by ASTLoweringRequest::evaluate; see isEmittingOnDemand.
+  bool emittingOnDemand = false;
+
+  /// Whether SILFunctionBodyRequest emits the body of \p constant. Legacy asks
+  /// shouldEmitFunctionBody where it visits a declaration, and under
+  /// -experimental-lazy-typecheck that declines every body once an error has
+  /// been diagnosed. On demand, a body that nothing visited is requested too,
+  /// by the coordinator's scan of an emitted body and by the mandatory
+  /// inliner. This asks the same gate for the entry points that legacy gates.
+  /// A forced function passed the gate when it was delayed, and legacy emits
+  /// it whatever the error state.
+  bool shouldEmitBodyOnDemand(SILDeclRef constant);
+
+  /// Canonicalize a declaration-backed auxiliary or imported function via
+  /// CanonicalSILFunctionRequest, emitting its raw body immediately so module
+  /// function order matches legacy while deferring pipelines until seeding and
+  /// pending-conformance emission complete (D25). No-op on the legacy path.
+  void canonicalizeOnDemand(SILDeclRef ref);
+
+  /// Canonicalize a synthesized thunk (no SILDeclRef) via
+  /// CanonicalSynthesizedFunctionRequest. No-op on the legacy path. While
+  /// deferCanonicalization is set, queue the thunk instead:
+  /// canonicalizeDeferredFunctions runs it once seeding and conformance table
+  /// emission end, when every vtable and witness table exists.
+  void canonicalizeSynthesizedOnDemand(SILFunction *thunk);
+
+  /// Stop deferring, and canonicalize the functions queued while seeding.
+  void canonicalizeDeferredFunctions();
+
+  /// On demand, emits the witness tables of the conformances that bodies
+  /// used (pendingConformances), and only then canonicalizes the deferred
+  /// functions, theirs and the seeder's, as legacy links nothing before every
+  /// table is emitted.
+  void emitPendingConformancesOnDemand();
+
   /// Emits the witness table of every conformance in pendingConformances.
   void emitPendingConformances();
+
+  /// On demand, emits the bodies of the functions that \p f references and
+  /// that every referencing unit emits for itself (isEmittedOnDemand), such
+  /// as an enum case's constructor that a witness thunk calls, or a
+  /// Clang-synthesized accessor.
+  void emitOnDemandBodiesReferencedBy(SILFunction *f);
+
+  /// Set while the on-demand seeder or conformance drain runs (D12, D25).
+  bool deferCanonicalization = false;
+  std::vector<SILDeclRef> deferredCanonicalRefs;
+  std::vector<SILFunction *> deferredSynthesizedFunctions;
 
   /// Get or create the declaration of a reabstraction thunk with the
   /// given signature.
@@ -334,6 +390,13 @@ public:
   /// Emit a function now, if it's externally usable or has been referenced in
   /// the current TU, or remember how to emit it later if not.
   void emitOrDelayFunction(SILDeclRef constant);
+
+  /// The bookkeeping half of emitOrDelayFunction, for the on-demand
+  /// coordinator. Returns true if \p constant is left until a reference
+  /// forces it: either it is recorded as delayed, so that getFunction moves it
+  /// into its source-order place when something references it, or it is
+  /// already forced. Returns false if the caller should emit it now.
+  bool delayFunctionOnDemand(SILDeclRef constant);
 
   /// Generates code for the given closure expression and adds the
   /// SILFunction to the current SILModule under the name SILDeclRef(ce).
