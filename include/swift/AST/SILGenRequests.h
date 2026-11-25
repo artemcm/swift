@@ -393,6 +393,26 @@ private:
   SILVTable *evaluate(Evaluator &evaluator, ClassDecl *theClass) const;
 };
 
+/// The SIL witness table of a conformance that a file being emitted on demand
+/// declares, as SILGenModule::getWitnessTable emits it: evaluating it creates
+/// the table, and the declarations and bodies of its witness thunks; the
+/// witnesses' own bodies come from the on-demand seeder, or are forced.
+class SILWitnessTableRequest
+    : public SimpleRequest<SILWitnessTableRequest,
+                           SILWitnessTable *(RootProtocolConformance *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  SILWitnessTable *evaluate(Evaluator &evaluator,
+                            RootProtocolConformance *conformance) const;
+};
+
 /// Canonicalizes a synthesized SILFunction with no SILDeclRef (reabstraction /
 /// custom-derivative thunks): runs the cleanup + function-only diagnostic
 /// pipelines and sets its stage to Canonical. Keyed on the SILFunction*, since

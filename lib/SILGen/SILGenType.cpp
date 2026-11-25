@@ -400,6 +400,20 @@ SILVTable *SILVTableRequest::evaluate(Evaluator &evaluator,
   return SGM->emitVTable(theClass);
 }
 
+SILWitnessTable *
+SILWitnessTableRequest::evaluate(Evaluator &evaluator,
+                                 RootProtocolConformance *conformance) const {
+  DEBUG_WITH_TYPE("silgen-requests",
+                  silgen_trace::traceIndent()
+                      << "-> SILWitnessTableRequest: ";
+                  conformance->printName(llvm::dbgs()); llvm::dbgs() << "\n");
+  silgen_trace::TraceScope _ts;
+  auto *SGM = conformance->getDeclContext()->getASTContext()
+                  .getActiveSILGenModule();
+  ASSERT(SGM && "SILWitnessTableRequest evaluated outside SILGen scope");
+  return SGM->getWitnessTable(conformance);
+}
+
 static void emitTypeMemberGlobalVariable(SILGenModule &SGM,
                                          VarDecl *var) {
   assert(!var->getDeclContext()->isEffectivelyGenericContext() &&
@@ -978,6 +992,7 @@ SILFunction *SILGenModule::emitProtocolWitness(
                           witness.getEnterIsolation());
 
   emitLazyConformancesForFunction(f);
+  canonicalizeSynthesizedOnDemand(f);
 
   return f;
 }
@@ -1052,6 +1067,7 @@ static SILFunction *emitSelfConformanceWitness(SILGenModule &SGM,
                           /*isPreconcurrency*/ false, std::nullopt);
 
   SGM.emitLazyConformancesForFunction(f);
+  SGM.canonicalizeSynthesizedOnDemand(f);
 
   return f;
 }

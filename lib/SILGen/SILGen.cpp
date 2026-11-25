@@ -3161,8 +3161,11 @@ private:
     // type (for a protocol, its requirement signature) uses and that are
     // synthesized lazily, such as the Clang importer's.
     SGM.emitLazyConformancesForType(ntd);
-    if (isa<ProtocolDecl>(ntd))
+    // A protocol's tables, as legacy emits them.
+    if (auto *proto = dyn_cast<ProtocolDecl>(ntd)) {
+      SGM.emitProtocolTables(proto);
       return;
+    }
     bool isClass = isa<ClassDecl>(ntd);
     for (Decl *member : ntd->getABIMembers())
       seedMember(member, isClass, /*inExtension=*/false);
@@ -3180,6 +3183,17 @@ private:
       SGM.emitNonCopyableTypeDeinitTable(ntd);
       SGM.recordNonCopyableTypeWithEmittedMetadata(ntd);
     }
+    seedWitnessTables(
+        ntd->getLocalConformances(ConformanceLookupKind::NonInherited));
+  }
+
+  /// The witness tables of the conformances that a type or an extension
+  /// declares, as SILGenType::emitType and SILGenExtension::emitExtension
+  /// emit them.
+  void seedWitnessTables(ArrayRef<ProtocolConformance *> conformances) {
+    for (auto *conformance : conformances)
+      if (auto *normal = dyn_cast<NormalProtocolConformance>(conformance))
+        (void)evaluateOrFatal(evaluator, SILWitnessTableRequest{normal});
   }
 
   /// SILGenExtension::emitExtension.
@@ -3197,6 +3211,9 @@ private:
       if (dd->getDeclContext() == cd && !SGM.shouldSkipDecl(dd))
         seedClassDestructor(cd, dd);
     }
+    // A protocol extension declares no conformance with a table.
+    if (!isa<ProtocolDecl>(nominal))
+      seedWitnessTables(ed->getLocalConformances(ConformanceLookupKind::All));
   }
 };
 } // end anonymous namespace
@@ -3250,7 +3267,9 @@ static void emitOnDemandViaRequests(Evaluator &evaluator,
     if (auto *sf = dyn_cast<SourceFile>(file)) {
       performTypeChecking(*sf);
       seeder.seedScriptEntryPoint(sf);
-      for (auto *D : sf->getTopLevelDecls())
+      SmallVector<Decl *, 64> decls;
+      sf->getTopLevelDeclsWithAuxiliaryDecls(decls);
+      for (auto *D : decls)
         seeder.visitTopLevel(D);
       for (TypeDecl *TD : sf->getLocalTypeDecls()) {
         if (TD->getDeclContext()->getInnermostSkippedFunctionContext())
