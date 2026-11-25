@@ -1119,6 +1119,8 @@ void SILGenModule::emitFunctionDefinition(SILDeclRef constant, SILFunction *f) {
     SILGenFunction(*this, *f, dc).emitNativeToForeignThunk(constant);
 
     postEmitFunction(constant, f);
+    if (constant.hasAsync())
+      canonicalizeSynthesizedOnDemand(f);
     return;
   }
 
@@ -2221,6 +2223,7 @@ SILFunction *SILGenModule::emitLazyGlobalInitializer(StringRef funcName,
   SILGenFunction(*this, *f, dc).emitLazyGlobalInitializer(binding, pbdEntry);
   emitLazyConformancesForFunction(f);
   f->verifyIncompleteOSSA();
+  canonicalizeSynthesizedOnDemand(f);
 
   return f;
 }
@@ -2230,7 +2233,16 @@ void SILGenModule::emitGlobalAccessor(VarDecl *global,
                                       SILFunction *onceFunc) {
   SILDeclRef accessor(global, SILDeclRef::Kind::GlobalAccessor);
   delayedGlobals[global] = std::make_pair(onceToken, onceFunc);
-  emitOrDelayFunction(accessor);
+  if (!isEmittingOnDemand()) {
+    emitOrDelayFunction(accessor);
+    return;
+  }
+  // On demand, as emitOrDelayFunction: delay it, or emit its body now, in
+  // legacy's order. The coordinator's sweep canonicalizes it.
+  if (delayFunctionOnDemand(accessor))
+    return;
+  (void)evaluateOrFatal(getASTContext().evaluator,
+                        SILFunctionBodyRequest{accessor});
 }
 
 void SILGenModule::emitArgumentGenerators(SILDeclRef::Loc decl,

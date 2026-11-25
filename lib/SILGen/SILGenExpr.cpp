@@ -4121,6 +4121,7 @@ static SILFunction *getOrCreateKeyPathGetter(
   emitReturn(subSGF, propertyType, resultSubst, resultArgTy, resultArg, scope,
              loc);
   SGM.emitLazyConformancesForFunction(thunk);
+  SGM.canonicalizeSynthesizedOnDemand(thunk);
   return thunk;
 }
 
@@ -4242,6 +4243,7 @@ static SILFunction *getOrCreateKeyPathSetter(
   subSGF.B.createReturn(loc, subSGF.emitEmptyTuple(loc));
 
   SGM.emitLazyConformancesForFunction(thunk);
+  SGM.canonicalizeSynthesizedOnDemand(thunk);
   return thunk;
 }
 
@@ -4333,6 +4335,7 @@ static SILFunction *getOrCreateKeyPathAppliedMethod(
   emitReturn(subSGF, methodType, resultSubst, resultArgTy, resultArg, scope,
              loc);
   SGM.emitLazyConformancesForFunction(thunk);
+  SGM.canonicalizeSynthesizedOnDemand(thunk);
   return thunk;
 }
 
@@ -4422,6 +4425,7 @@ static SILFunction *getOrCreateUnappliedKeypathMethod(
   emitReturn(subSGF, methodType, resultSubst, resultArgTy, resultArg, scope,
              loc);
   SGM.emitLazyConformancesForFunction(thunk);
+  SGM.canonicalizeSynthesizedOnDemand(thunk);
   return thunk;
 }
 
@@ -4667,6 +4671,7 @@ getOrCreateKeyPathEqualsAndHash(SILGenModule &SGM,
     subSGF.B.createReturn(loc, returnBoolVal);
 
     SGM.emitLazyConformancesForFunction(equals);
+    SGM.canonicalizeSynthesizedOnDemand(equals);
   }();
 
   // Get or create the hash witness
@@ -4766,6 +4771,7 @@ getOrCreateKeyPathEqualsAndHash(SILGenModule &SGM,
 
     subSGF.B.createReturn(loc, hashCode);
     SGM.emitLazyConformancesForFunction(hash);
+    SGM.canonicalizeSynthesizedOnDemand(hash);
   }();
   
   return;

@@ -373,6 +373,174 @@ CanonicalSynthesizedFunctionRequest::evaluate(Evaluator &evaluator,
   return f;
 }
 
+// MARK: Auxiliary-emission requests
+
+evaluator::SideEffect
+AuxiliaryDeclEmissionRequest::evaluate(Evaluator &evaluator,
+                                       ValueDecl *decl) const {
+  LLVM_DEBUG(traceIndent() << "-> AuxiliaryDeclEmissionRequest: "
+                           << decl->getName() << "\n");
+  TraceScope _ts;
+  auto *SGM = decl->getASTContext().getActiveSILGenModule();
+  ASSERT(SGM &&
+         "AuxiliaryDeclEmissionRequest evaluated outside SILGen scope");
+
+  // Mirror legacy emitAbstractFuncDecl preconditions.
+  ASSERT(ABIRoleInfo(decl).providesAPI() &&
+         "AuxiliaryDeclEmissionRequest evaluated on ABI-only decl");
+
+  (void)evaluateOrDefault(evaluator, ArgumentGeneratorsRequest{decl}, {});
+
+  // A subscript or an enum element has only argument generators
+  // (SILGenType::visitSubscriptDecl, visitEnumElementDecl).
+  auto *afd = dyn_cast<AbstractFunctionDecl>(decl);
+  if (!afd)
+    return {};
+
+  if (afd->getAttrs().getAttribute<CDeclAttr>())
+    (void)evaluateOrDefault(evaluator, CDeclThunkRequest{afd}, {});
+  if (afd->getDistributedThunk())
+    (void)evaluateOrDefault(evaluator, DistributedThunkRequest{afd}, {});
+  if (afd->isBackDeployed())
+    (void)evaluateOrDefault(evaluator, BackDeploymentRequest{afd}, {});
+  for (auto *derivAttr : afd->getAttrs().getAttributes<DerivativeAttr>()) {
+    (void)evaluateOrDefault(
+        evaluator,
+        SILDifferentiabilityWitnessRequest{afd, derivAttr}, nullptr);
+  }
+  return {};
+}
+
+evaluator::SideEffect
+ArgumentGeneratorsRequest::evaluate(Evaluator &evaluator,
+                                    ValueDecl *decl) const {
+  LLVM_DEBUG(traceIndent() << "-> ArgumentGeneratorsRequest: "
+                           << decl->getName() << "\n");
+  TraceScope _ts;
+  auto *SGM = decl->getASTContext().getActiveSILGenModule();
+  ASSERT(SGM);
+
+  // Mirror SILGenModule::emitArgumentGenerators, emitDefaultArgGenerator, and
+  // emitPropertyWrapperBackingInitializer, with emitOrDelayFunction's delay
+  // heuristic: a function legacy would delay is left for a reference.
+  auto emitOrDelay = [&](SILDeclRef ref) {
+    if (!SGM->delayFunctionOnDemand(ref))
+      SGM->canonicalizeOnDemand(ref);
+  };
+  auto *params = decl->getParameterList();
+  if (!params)
+    return {};
+  unsigned i = 0;
+  for (auto *param : *params) {
+    if (param->isDefaultArgument()) {
+      auto kind = param->getDefaultArgumentKind();
+      if (kind == DefaultArgumentKind::Normal ||
+          kind == DefaultArgumentKind::StoredProperty)
+        emitOrDelay(SILDeclRef::getDefaultArgGenerator(decl, i));
+    }
+    if (param->hasExternalPropertyWrapper() &&
+        !SGM->M.getOptions().SkipNonExportableDecls) {
+      auto initInfo = param->getPropertyWrapperInitializerInfo();
+      if (initInfo.hasInitFromWrappedValue())
+        emitOrDelay(SILDeclRef(
+            param, SILDeclRef::Kind::PropertyWrapperBackingInitializer));
+      if (initInfo.hasInitFromProjectedValue())
+        emitOrDelay(SILDeclRef(
+            param, SILDeclRef::Kind::PropertyWrapperInitFromProjectedValue));
+    }
+    ++i;
+  }
+  return {};
+}
+
+evaluator::SideEffect
+CDeclThunkRequest::evaluate(Evaluator &evaluator,
+                            AbstractFunctionDecl *afd) const {
+  LLVM_DEBUG(traceIndent() << "-> CDeclThunkRequest: " << afd->getName()
+                           << "\n");
+  TraceScope _ts;
+  auto *cdeclAttr = afd->getAttrs().getAttribute<CDeclAttr>();
+  if (!cdeclAttr || !cdeclAttr->Underscored)
+    return {};
+  auto *SGM = afd->getASTContext().getActiveSILGenModule();
+  ASSERT(SGM);
+  SGM->canonicalizeOnDemand(SILDeclRef(afd).asForeign());
+  return {};
+}
+
+evaluator::SideEffect
+DistributedThunkRequest::evaluate(Evaluator &evaluator,
+                                  AbstractFunctionDecl *afd) const {
+  LLVM_DEBUG(traceIndent() << "-> DistributedThunkRequest: "
+                           << afd->getName() << "\n");
+  TraceScope _ts;
+  auto *thunkDecl = afd->getDistributedThunk();
+  if (!thunkDecl || !thunkDecl->hasBody() || thunkDecl->isBodySkipped())
+    return {};
+  auto *SGM = afd->getASTContext().getActiveSILGenModule();
+  ASSERT(SGM);
+  SGM->canonicalizeOnDemand(SILDeclRef(thunkDecl).getDistributedThunkDeclRef());
+  return {};
+}
+
+evaluator::SideEffect
+BackDeploymentRequest::evaluate(Evaluator &evaluator,
+                                AbstractFunctionDecl *afd) const {
+  LLVM_DEBUG(traceIndent() << "-> BackDeploymentRequest: "
+                           << afd->getName() << "\n");
+  TraceScope _ts;
+  // Legacy emitAbstractFuncDecl's condition. A destructor's fallback comes
+  // from emitMoveOnlyDestructor, and a member without a body of its own has
+  // nothing to use as one.
+  if (!afd->isBackDeployed() || isa<DestructorDecl>(afd))
+    return {};
+  if (!afd->hasBody() && !afd->getAttrs().hasAttribute<BackDeployedAttr>() &&
+      !(isa<AccessorDecl>(afd) && cast<AccessorDecl>(afd)
+                                      ->getStorage()
+                                      ->getAttrs()
+                                      .hasAttribute<BackDeployedAttr>()))
+    return {};
+  auto *SGM = afd->getASTContext().getActiveSILGenModule();
+  ASSERT(SGM);
+  SGM->canonicalizeOnDemand(
+      SILDeclRef(afd).asBackDeploymentKind(
+          SILDeclRef::BackDeploymentKind::Fallback));
+  SGM->canonicalizeOnDemand(
+      SILDeclRef(afd).asBackDeploymentKind(
+          SILDeclRef::BackDeploymentKind::Thunk));
+  return {};
+}
+
+SILDifferentiabilityWitness *
+SILDifferentiabilityWitnessRequest::evaluate(
+    Evaluator &evaluator, AbstractFunctionDecl *afd,
+    DerivativeAttr *derivAttr) const {
+  LLVM_DEBUG(traceIndent() << "-> SILDifferentiabilityWitnessRequest: "
+                           << afd->getName() << "\n");
+  TraceScope _ts;
+  auto *SGM = afd->getASTContext().getActiveSILGenModule();
+  ASSERT(SGM);
+
+  auto *witness = SGM->emitWitnessForDerivativeAttr(afd, derivAttr);
+  if (!witness)
+    return nullptr;
+
+  // Canonicalize each derivative thunk produced by the witness emission,
+  // honoring the seeding barrier (D25).
+  auto canonicalize = [&](SILFunction *thunk) {
+    if (!thunk)
+      return;
+    if (auto thunkRef = thunk->getDeclRef()) {
+      SGM->canonicalizeOnDemand(thunkRef);
+    } else {
+      SGM->canonicalizeSynthesizedOnDemand(thunk);
+    }
+  };
+  canonicalize(witness->getJVP());
+  canonicalize(witness->getVJP());
+  return witness;
+}
+
 // Define request evaluation functions for each of the SILGen requests.
 static AbstractRequestFunction *silGenRequestFunctions[] = {
 #define SWIFT_REQUEST(Zone, Name, Sig, Caching, LocOptions)                    \

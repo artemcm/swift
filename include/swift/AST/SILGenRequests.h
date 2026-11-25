@@ -254,6 +254,128 @@ private:
   SILFunction *evaluate(Evaluator &evaluator, SILDeclRef constant) const;
 };
 
+/// Orchestrates the emission of all auxiliary SIL functions and
+/// SIL-module side effects associated with a declaration that has a
+/// parameter list: an AbstractFunctionDecl, a SubscriptDecl, or an
+/// EnumElementDecl. For a function, mirrors the structure of legacy
+/// `SILGenModule::emitAbstractFuncDecl` but routes each auxiliary kind
+/// through a per-feature sub-request, which in turn fires
+/// `CanonicalSILFunctionRequest` for each auxiliary SILDeclRef. A subscript or
+/// an enum element has only argument generators.
+class AuxiliaryDeclEmissionRequest
+    : public SimpleRequest<AuxiliaryDeclEmissionRequest,
+                           evaluator::SideEffect(ValueDecl *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  evaluator::SideEffect evaluate(Evaluator &evaluator, ValueDecl *decl) const;
+};
+
+/// Emits default-argument generators and property-wrapper backing
+/// initializers for a declaration's parameter list, by walking it in order
+/// and firing CanonicalSILFunctionRequest for each, unless legacy
+/// `emitOrDelayFunction` would delay it until something references it.
+class ArgumentGeneratorsRequest
+    : public SimpleRequest<ArgumentGeneratorsRequest,
+                           evaluator::SideEffect(ValueDecl *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  evaluator::SideEffect evaluate(Evaluator &evaluator, ValueDecl *decl) const;
+};
+
+/// Emits the native-to-foreign thunk for a `@_cdecl` (Underscored)
+/// declaration. No-op for other declarations.
+class CDeclThunkRequest
+    : public SimpleRequest<CDeclThunkRequest,
+                           evaluator::SideEffect(AbstractFunctionDecl *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  evaluator::SideEffect
+  evaluate(Evaluator &evaluator, AbstractFunctionDecl *afd) const;
+};
+
+/// Emits the distributed thunk for a `@distributed` declaration.
+/// No-op for non-distributed declarations.
+class DistributedThunkRequest
+    : public SimpleRequest<DistributedThunkRequest,
+                           evaluator::SideEffect(AbstractFunctionDecl *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  evaluator::SideEffect
+  evaluate(Evaluator &evaluator, AbstractFunctionDecl *afd) const;
+};
+
+/// Emits the back-deployment fallback and dispatch thunk for a
+/// `@backDeployed` declaration. No-op for declarations without the
+/// attribute.
+class BackDeploymentRequest
+    : public SimpleRequest<BackDeploymentRequest,
+                           evaluator::SideEffect(AbstractFunctionDecl *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  evaluator::SideEffect
+  evaluate(Evaluator &evaluator, AbstractFunctionDecl *afd) const;
+};
+
+/// Emits a SILDifferentiabilityWitness registered by a single
+/// `@derivative(of:)` attribute. Returns the witness pointer, or
+/// nullptr if creation failed. Canonicalizes the resulting JVP/VJP
+/// derivative thunks via CanonicalSILFunctionRequest (or
+/// CanonicalSynthesizedFunctionRequest for thunks lacking a
+/// SILDeclRef).
+class SILDifferentiabilityWitnessRequest
+    : public SimpleRequest<SILDifferentiabilityWitnessRequest,
+                           SILDifferentiabilityWitness *(
+                               AbstractFunctionDecl *,
+                               DerivativeAttr *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  SILDifferentiabilityWitness *
+  evaluate(Evaluator &evaluator, AbstractFunctionDecl *afd,
+           DerivativeAttr *derivAttr) const;
+};
+
 /// Canonicalizes a synthesized SILFunction with no SILDeclRef (reabstraction /
 /// custom-derivative thunks): runs the cleanup + function-only diagnostic
 /// pipelines and sets its stage to Canonical. Keyed on the SILFunction*, since
@@ -271,6 +393,263 @@ private:
   friend SimpleRequest;
 
   SILFunction *evaluate(Evaluator &evaluator, SILFunction *f) const;
+};
+
+// Phase 5.6: each relocates one thunk-body builder behind an Uncached request
+// keyed on its inputs (getOrCreateReabstractionThunk + the thunk->empty() guard
+// are the cache). Identity (hash/eq) = the mangled-name determinants; the rest
+// are build inputs.
+
+/// ObjC-block-to-Swift-closure thunk body (emitBlockToFunc).
+struct BlockToFuncThunkBodyDescriptor {
+  // Identity:
+  CanSILFunctionType thunkTy;
+  CanSILFunctionType loweredBlockTy;
+  CanSILFunctionType loweredFuncUnsubstTy;
+  // Build-only:
+  CanAnyFunctionType blockType;
+  CanAnyFunctionType funcType;
+  GenericEnvironment *genericEnv;
+  DeclContext *fnDC;
+
+  friend llvm::hash_code hash_value(const BlockToFuncThunkBodyDescriptor &d) {
+    return llvm::hash_combine(d.thunkTy.getPointer(),
+                              d.loweredBlockTy.getPointer(),
+                              d.loweredFuncUnsubstTy.getPointer());
+  }
+  friend bool operator==(const BlockToFuncThunkBodyDescriptor &a,
+                         const BlockToFuncThunkBodyDescriptor &b) {
+    return a.thunkTy == b.thunkTy && a.loweredBlockTy == b.loweredBlockTy &&
+           a.loweredFuncUnsubstTy == b.loweredFuncUnsubstTy;
+  }
+  friend bool operator!=(const BlockToFuncThunkBodyDescriptor &a,
+                         const BlockToFuncThunkBodyDescriptor &b) {
+    return !(a == b);
+  }
+};
+void simple_display(llvm::raw_ostream &out,
+                    const BlockToFuncThunkBodyDescriptor &d);
+SourceLoc extractNearestSourceLoc(const BlockToFuncThunkBodyDescriptor &d);
+
+class BlockToFuncThunkBodyRequest
+    : public SimpleRequest<BlockToFuncThunkBodyRequest,
+                           SILFunction *(BlockToFuncThunkBodyDescriptor),
+                           RequestFlags::Uncached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+private:
+  friend SimpleRequest;
+
+  SILFunction *evaluate(Evaluator &evaluator,
+                        BlockToFuncThunkBodyDescriptor desc) const;
+};
+
+/// General reabstraction thunk body (the createThunk site).
+struct ReabstractionThunkBodyDescriptor {
+  // Identity:
+  CanSILFunctionType thunkType;
+  CanSILFunctionType fromType;
+  CanSILFunctionType toType;
+  CanType dynamicSelfType;
+  CanType globalActor;
+  // Build-only:
+  Lowering::AbstractionPattern inputOrigType;
+  CanAnyFunctionType inputSubstType;
+  Lowering::AbstractionPattern outputOrigType;
+  CanAnyFunctionType outputSubstType;
+  CanSILFunctionType expectedType;
+  GenericEnvironment *genericEnv;
+  DeclContext *fnDC;
+
+  friend llvm::hash_code hash_value(const ReabstractionThunkBodyDescriptor &d) {
+    return llvm::hash_combine(d.thunkType.getPointer(), d.fromType.getPointer(),
+                              d.toType.getPointer(),
+                              d.dynamicSelfType.getPointer(),
+                              d.globalActor.getPointer());
+  }
+  friend bool operator==(const ReabstractionThunkBodyDescriptor &a,
+                         const ReabstractionThunkBodyDescriptor &b) {
+    return a.thunkType == b.thunkType && a.fromType == b.fromType &&
+           a.toType == b.toType && a.dynamicSelfType == b.dynamicSelfType &&
+           a.globalActor == b.globalActor;
+  }
+  friend bool operator!=(const ReabstractionThunkBodyDescriptor &a,
+                         const ReabstractionThunkBodyDescriptor &b) {
+    return !(a == b);
+  }
+};
+void simple_display(llvm::raw_ostream &out,
+                    const ReabstractionThunkBodyDescriptor &d);
+SourceLoc extractNearestSourceLoc(const ReabstractionThunkBodyDescriptor &d);
+
+class ReabstractionThunkBodyRequest
+    : public SimpleRequest<ReabstractionThunkBodyRequest,
+                           SILFunction *(ReabstractionThunkBodyDescriptor),
+                           RequestFlags::Uncached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+private:
+  friend SimpleRequest;
+
+  SILFunction *evaluate(Evaluator &evaluator,
+                        ReabstractionThunkBodyDescriptor desc) const;
+};
+
+/// Actor-isolation-erasure thunk body (emitActorIsolationErasureThunk);
+/// evaluate reconstructs the global-actor executor-precondition prolog.
+struct PreconditionClosureThunkBodyDescriptor {
+  // Identity:
+  CanSILFunctionType thunkType;
+  CanSILFunctionType fromType;
+  CanSILFunctionType toType;
+  CanType dynamicSelfType;
+  CanType globalActor;
+  // Build-only:
+  CanAnyFunctionType isolatedType;
+  CanAnyFunctionType nonIsolatedType;
+  Type globalActorForProlog;
+  GenericEnvironment *genericEnv;
+  DeclContext *fnDC;
+  // Call-site location (build-only). Must be threaded, not synthesized: the
+  // erasure prolog bakes it into source-location operands of the precondition.
+  SILLocation loc;
+
+  friend llvm::hash_code
+  hash_value(const PreconditionClosureThunkBodyDescriptor &d) {
+    return llvm::hash_combine(d.thunkType.getPointer(), d.fromType.getPointer(),
+                              d.toType.getPointer(),
+                              d.dynamicSelfType.getPointer(),
+                              d.globalActor.getPointer());
+  }
+  friend bool operator==(const PreconditionClosureThunkBodyDescriptor &a,
+                         const PreconditionClosureThunkBodyDescriptor &b) {
+    return a.thunkType == b.thunkType && a.fromType == b.fromType &&
+           a.toType == b.toType && a.dynamicSelfType == b.dynamicSelfType &&
+           a.globalActor == b.globalActor;
+  }
+  friend bool operator!=(const PreconditionClosureThunkBodyDescriptor &a,
+                         const PreconditionClosureThunkBodyDescriptor &b) {
+    return !(a == b);
+  }
+};
+void simple_display(llvm::raw_ostream &out,
+                    const PreconditionClosureThunkBodyDescriptor &d);
+SourceLoc
+extractNearestSourceLoc(const PreconditionClosureThunkBodyDescriptor &d);
+
+class PreconditionClosureThunkBodyRequest
+    : public SimpleRequest<
+          PreconditionClosureThunkBodyRequest,
+          SILFunction *(PreconditionClosureThunkBodyDescriptor),
+          RequestFlags::Uncached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+private:
+  friend SimpleRequest;
+
+  SILFunction *evaluate(Evaluator &evaluator,
+                        PreconditionClosureThunkBodyDescriptor desc) const;
+};
+
+/// withoutActuallyEscaping thunk body; evaluate also sets the
+/// without-actually-escaping flag.
+struct WithoutActuallyEscapingThunkBodyDescriptor {
+  // Identity:
+  CanSILFunctionType thunkType;
+  CanSILFunctionType noEscapingFnTy;
+  CanSILFunctionType escapingFnTy;
+  CanType dynamicSelfType;
+  // Build-only:
+  GenericEnvironment *genericEnv;
+  DeclContext *fnDC;
+
+  friend llvm::hash_code
+  hash_value(const WithoutActuallyEscapingThunkBodyDescriptor &d) {
+    return llvm::hash_combine(d.thunkType.getPointer(),
+                              d.noEscapingFnTy.getPointer(),
+                              d.escapingFnTy.getPointer(),
+                              d.dynamicSelfType.getPointer());
+  }
+  friend bool operator==(const WithoutActuallyEscapingThunkBodyDescriptor &a,
+                         const WithoutActuallyEscapingThunkBodyDescriptor &b) {
+    return a.thunkType == b.thunkType && a.noEscapingFnTy == b.noEscapingFnTy &&
+           a.escapingFnTy == b.escapingFnTy &&
+           a.dynamicSelfType == b.dynamicSelfType;
+  }
+  friend bool operator!=(const WithoutActuallyEscapingThunkBodyDescriptor &a,
+                         const WithoutActuallyEscapingThunkBodyDescriptor &b) {
+    return !(a == b);
+  }
+};
+void simple_display(llvm::raw_ostream &out,
+                    const WithoutActuallyEscapingThunkBodyDescriptor &d);
+SourceLoc
+extractNearestSourceLoc(const WithoutActuallyEscapingThunkBodyDescriptor &d);
+
+class WithoutActuallyEscapingThunkBodyRequest
+    : public SimpleRequest<
+          WithoutActuallyEscapingThunkBodyRequest,
+          SILFunction *(WithoutActuallyEscapingThunkBodyDescriptor),
+          RequestFlags::Uncached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+private:
+  friend SimpleRequest;
+
+  SILFunction *evaluate(Evaluator &evaluator,
+                        WithoutActuallyEscapingThunkBodyDescriptor desc) const;
+};
+
+/// Swift-closure-to-ObjC-block thunk body (emitFuncToBlock).
+struct FuncToBlockThunkBodyDescriptor {
+  // Identity:
+  CanSILFunctionType invokeTy;
+  CanSILFunctionType loweredFuncUnsubstTy;
+  CanSILFunctionType loweredBlockTy;
+  // Build-only:
+  CanAnyFunctionType funcType;
+  CanAnyFunctionType blockType;
+  CanSILBlockStorageType storageTy;
+  bool useWithoutEscapingVerification;
+  GenericEnvironment *genericEnv;
+  DeclContext *fnDC;
+
+  friend llvm::hash_code hash_value(const FuncToBlockThunkBodyDescriptor &d) {
+    return llvm::hash_combine(d.invokeTy.getPointer(),
+                              d.loweredFuncUnsubstTy.getPointer(),
+                              d.loweredBlockTy.getPointer());
+  }
+  friend bool operator==(const FuncToBlockThunkBodyDescriptor &a,
+                         const FuncToBlockThunkBodyDescriptor &b) {
+    return a.invokeTy == b.invokeTy &&
+           a.loweredFuncUnsubstTy == b.loweredFuncUnsubstTy &&
+           a.loweredBlockTy == b.loweredBlockTy;
+  }
+  friend bool operator!=(const FuncToBlockThunkBodyDescriptor &a,
+                         const FuncToBlockThunkBodyDescriptor &b) {
+    return !(a == b);
+  }
+};
+void simple_display(llvm::raw_ostream &out,
+                    const FuncToBlockThunkBodyDescriptor &d);
+SourceLoc extractNearestSourceLoc(const FuncToBlockThunkBodyDescriptor &d);
+
+class FuncToBlockThunkBodyRequest
+    : public SimpleRequest<FuncToBlockThunkBodyRequest,
+                           SILFunction *(FuncToBlockThunkBodyDescriptor),
+                           RequestFlags::Uncached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+private:
+  friend SimpleRequest;
+
+  SILFunction *evaluate(Evaluator &evaluator,
+                        FuncToBlockThunkBodyDescriptor desc) const;
 };
 
 /// The zone number for SILGen.

@@ -35,6 +35,40 @@ SWIFT_REQUEST(SILGen, DiagnosedSILFunctionRequest,
 SWIFT_REQUEST(SILGen, CanonicalSILFunctionRequest,
               SILFunction *(SILDeclRef),
               Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, AuxiliaryDeclEmissionRequest,
+              evaluator::SideEffect(ValueDecl *),
+              Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, ArgumentGeneratorsRequest,
+              evaluator::SideEffect(ValueDecl *),
+              Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, CDeclThunkRequest,
+              evaluator::SideEffect(AbstractFunctionDecl *),
+              Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, DistributedThunkRequest,
+              evaluator::SideEffect(AbstractFunctionDecl *),
+              Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, BackDeploymentRequest,
+              evaluator::SideEffect(AbstractFunctionDecl *),
+              Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, SILDifferentiabilityWitnessRequest,
+              SILDifferentiabilityWitness *(AbstractFunctionDecl *,
+                                            DerivativeAttr *),
+              Cached, NoLocationInfo)
 SWIFT_REQUEST(SILGen, CanonicalSynthesizedFunctionRequest,
               SILFunction *(SILFunction *),
               Cached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, BlockToFuncThunkBodyRequest,
+              SILFunction *(BlockToFuncThunkBodyDescriptor),
+              Uncached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, ReabstractionThunkBodyRequest,
+              SILFunction *(ReabstractionThunkBodyDescriptor),
+              Uncached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, PreconditionClosureThunkBodyRequest,
+              SILFunction *(PreconditionClosureThunkBodyDescriptor),
+              Uncached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, WithoutActuallyEscapingThunkBodyRequest,
+              SILFunction *(WithoutActuallyEscapingThunkBodyDescriptor),
+              Uncached, NoLocationInfo)
+SWIFT_REQUEST(SILGen, FuncToBlockThunkBodyRequest,
+              SILFunction *(FuncToBlockThunkBodyDescriptor),
+              Uncached, NoLocationInfo)

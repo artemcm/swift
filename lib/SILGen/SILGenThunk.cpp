@@ -649,8 +649,9 @@ SILFunction *SILGenModule::getOrCreateForeignAsyncCompletionHandlerImplFunction(
 
     SGF.B.createReturn(
         loc, SILUndef::get(&SGF.F, SGF.SGM.Types.getEmptyTupleType()));
+    emitLazyConformancesForFunction(F);
   }
-  
+  canonicalizeSynthesizedOnDemand(F);
   return F;
 }
 
@@ -770,37 +771,40 @@ SILFunction *SILGenModule::getOrCreateDerivativeVTableThunk(
     return thunk;
 
   thunk->setGenericEnvironment(constantTy->getSubstGenericSignature().getGenericEnvironment());
-  SILGenFunction SGF(*this, *thunk, SwiftModule);
-  SmallVector<ManagedValue, 4> params;
-  auto loc = derivativeFnDeclRef.getAsRegularLocation();
-  SGF.collectThunkParams(loc, params);
+  {
+    SILGenFunction SGF(*this, *thunk, SwiftModule);
+    SmallVector<ManagedValue, 4> params;
+    auto loc = derivativeFnDeclRef.getAsRegularLocation();
+    SGF.collectThunkParams(loc, params);
 
-  auto originalFn = SGF.emitGlobalFunctionRef(loc, originalFnDeclRef);
-  auto *loweredParamIndices = autodiff::getLoweredParameterIndices(
-      derivativeId->getParameterIndices(),
-      derivativeFnDecl->getInterfaceType()->castTo<AnyFunctionType>());
-  // FIXME: Do we need to lower the result indices? Likely yes.
-  auto *loweredResultIndices =
-    autodiff::getFunctionSemanticResultIndices(
-      originalFnDeclRef.getAbstractFunctionDecl(),
-      derivativeId->getParameterIndices()
-    );
-  auto diffFn = SGF.B.createDifferentiableFunction(
-      loc, loweredParamIndices, loweredResultIndices, originalFn);
-  auto derivativeFn = SGF.B.createDifferentiableFunctionExtract(
-      loc, NormalDifferentiableFunctionTypeComponent(derivativeId->getKind()),
-      diffFn);
-  auto derivativeFnSILTy = SILType::getPrimitiveObjectType(constantTy);
-  SmallVector<SILValue, 4> args(thunk->getArguments().begin(),
-                                thunk->getArguments().end());
-  auto apply =
-      SGF.emitApplyWithRethrow(loc, derivativeFn, derivativeFnSILTy,
-                               SGF.getForwardingSubstitutionMap(), args);
-  // TODO: This is a bit crazy, but apparently address lowering expects this
-  // particular code pattern
-  SmallVector<SILValue, 2> results;
-  extractAllElements(apply, loc, SGF.B, results);
-  SGF.B.createReturn(loc, joinElements(results, SGF.B, loc));
-
+    auto originalFn = SGF.emitGlobalFunctionRef(loc, originalFnDeclRef);
+    auto *loweredParamIndices = autodiff::getLoweredParameterIndices(
+        derivativeId->getParameterIndices(),
+        derivativeFnDecl->getInterfaceType()->castTo<AnyFunctionType>());
+    // FIXME: Do we need to lower the result indices? Likely yes.
+    auto *loweredResultIndices =
+      autodiff::getFunctionSemanticResultIndices(
+        originalFnDeclRef.getAbstractFunctionDecl(),
+        derivativeId->getParameterIndices()
+      );
+    auto diffFn = SGF.B.createDifferentiableFunction(
+        loc, loweredParamIndices, loweredResultIndices, originalFn);
+    auto derivativeFn = SGF.B.createDifferentiableFunctionExtract(
+        loc, NormalDifferentiableFunctionTypeComponent(derivativeId->getKind()),
+        diffFn);
+    auto derivativeFnSILTy = SILType::getPrimitiveObjectType(constantTy);
+    SmallVector<SILValue, 4> args(thunk->getArguments().begin(),
+                                  thunk->getArguments().end());
+    auto apply =
+        SGF.emitApplyWithRethrow(loc, derivativeFn, derivativeFnSILTy,
+                                 SGF.getForwardingSubstitutionMap(), args);
+    // TODO: This is a bit crazy, but apparently address lowering expects this
+    // particular code pattern
+    SmallVector<SILValue, 2> results;
+    extractAllElements(apply, loc, SGF.B, results);
+    SGF.B.createReturn(loc, joinElements(results, SGF.B, loc));
+  }
+  emitLazyConformancesForFunction(thunk);
+  canonicalizeSynthesizedOnDemand(thunk);
   return thunk;
 }

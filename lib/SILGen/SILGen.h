@@ -773,6 +773,13 @@ public:
       SILFunction *F, GenericSignatureWithCapturedEnvironments sig);
 
 private:
+  /// Builds the thunk body; the public wrapper canonicalizes the result via
+  /// CanonicalSynthesizedFunctionRequest.
+  SILFunction *getOrCreateCustomDerivativeThunkImpl(
+      AbstractFunctionDecl *originalAFD, SILFunction *originalFn,
+      SILFunction *customDerivativeFn, const AutoDiffConfig &config,
+      AutoDiffDerivativeFunctionKind kind);
+
   /// The most recent declaration we considered for emission.
   SILDeclRef lastEmittedFunction;
 
