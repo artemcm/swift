@@ -274,6 +274,14 @@ public:
     recorder.clearRequest<Request>(request);
   }
 
+  /// Clear the cached results, and the recorded dependencies, of every request
+  /// in \p zone. Only for a zone whose results are valid for a bounded scope:
+  /// SILGen's point into the SILModule of one ASTLoweringRequest.
+  void clearCachedOutputs(Zone zone) {
+    cache.clearZone(zone);
+    recorder.clearZone(zone);
+  }
+
   /// Store a value in the request evaluator's cache for a split-cached request.
   /// The request chooses to do this itself for storing some suitable definition of
   /// "non-empty" value.
