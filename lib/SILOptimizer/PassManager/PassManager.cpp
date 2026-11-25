@@ -26,6 +26,7 @@
 #include "swift/SILOptimizer/Analysis/BasicCalleeAnalysis.h"
 #include "swift/SILOptimizer/Analysis/DominanceAnalysis.h"
 #include "swift/SILOptimizer/Analysis/FunctionOrder.h"
+#include "swift/SILOptimizer/Analysis/PassManagerVerifierAnalysis.h"
 #include "swift/SILOptimizer/PassManager/PrettyStackTrace.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
 #include "swift/SILOptimizer/Utils/ClosureGroupSchedule.h"
@@ -1129,6 +1130,283 @@ void SILPassManager::executePassPipelinePlan(const SILPassPipelinePlan &Plan) {
   }
 }
 
+void SILPassManager::executePassPipelinePlan(const SILPassPipelinePlan &Plan,
+                                             SILFunction *targetFn) {
+  executePassPipelinePlan(Plan, llvm::ArrayRef<SILFunction *>(targetFn));
+}
+
+void SILPassManager::executePassPipelinePlan(
+    const SILPassPipelinePlan &Plan, llvm::ArrayRef<SILFunction *> members) {
+  for (const SILPassPipeline &Pipeline : Plan.getPipelines()) {
+    setStageName(Pipeline.Name);
+    resetAndRemoveTransformations();
+    for (PassKind Kind : Plan.getPipelinePasses(Pipeline)) {
+      addPass(Kind);
+      assert((!Pipeline.isFunctionPassPipeline ||
+              isa<SILFunctionTransform>(Transformations.back()) ||
+              isa<SILClosureGroupTransform>(Transformations.back())) &&
+             "a function pass pipeline holds function and closure group "
+             "passes");
+    }
+    executeScoped(members);
+  }
+}
+
+/// The function that \p FAS calls, as CalleeCache resolves a function_ref
+/// callee: through the conversions that getCalleeOrigin looks through, and
+/// through a partial_apply to its callee operand
+/// (CalleeCache::getCalleeListForCalleeKind). Null for any other callee.
+static SILFunction *getStaticCallee(FullApplySite FAS) {
+  SILValue callee = FAS.getCalleeOrigin();
+  while (auto *PAI = dyn_cast<PartialApplyInst>(callee))
+    callee = PAI->getCallee();
+  if (auto *FRI = dyn_cast<FunctionRefInst>(callee))
+    return FRI->getReferencedFunctionOrNull();
+  return nullptr;
+}
+
+namespace {
+/// Tarjan's strongly connected components algorithm over the calls between
+/// the members of a closure component: the walk that
+/// BottomUpFunctionOrder::DFS makes over the module. A component is listed
+/// after the components it calls, and the functions of a component in the
+/// order that they pop off the stack.
+class ComponentOrder {
+  const llvm::SmallPtrSetImpl<SILFunction *> &isMember;
+  llvm::DenseMap<SILFunction *, unsigned> dfsNum;
+  llvm::DenseMap<SILFunction *, unsigned> minDfsNum;
+  llvm::SmallSetVector<SILFunction *, 4> dfsStack;
+  unsigned nextDfsNum = 0;
+
+public:
+  llvm::SmallVector<SILFunction *, 8> order;
+
+  explicit ComponentOrder(const llvm::SmallPtrSetImpl<SILFunction *> &isMember)
+      : isMember(isMember) {}
+
+  void visit(SILFunction *start) {
+    if (!dfsNum.insert({start, nextDfsNum}).second)
+      return;
+    unsigned minNum = nextDfsNum++;
+    dfsStack.insert(start);
+
+    // A function's callees, in instruction order.
+    for (auto &BB : *start) {
+      for (auto &I : BB) {
+        auto FAS = FullApplySite::isa(&I);
+        if (!FAS)
+          continue;
+        SILFunction *callee = getStaticCallee(FAS);
+        if (!callee || !isMember.count(callee))
+          continue;
+        if (!dfsNum.count(callee)) {
+          visit(callee);
+          minNum = std::min(minNum, minDfsNum.lookup(callee));
+        } else if (dfsStack.count(callee)) {
+          minNum = std::min(minNum, dfsNum.lookup(callee));
+        }
+      }
+    }
+    minDfsNum[start] = minNum;
+
+    // The first function of a component to be visited pops the component.
+    if (dfsNum.lookup(start) == minNum) {
+      SILFunction *popped;
+      do {
+        popped = dfsStack.pop_back_val();
+        order.push_back(popped);
+      } while (popped != start);
+    }
+  }
+};
+} // end anonymous namespace
+
+/// \p members in the order of the module's function list, which is the order
+/// in which BottomUpFunctionOrder starts its walk. SILGen builds the list in
+/// creation order, except that it moves a delayed function to where it would
+/// have been emitted, and a pass may insert a function before another one:
+/// CapturePromotion puts a clone before the closure it clones. The members of a
+/// component were created together, so this searches outward from the first,
+/// forward and backward by turns, and stops at the last, instead of walking
+/// the whole list.
+static llvm::SmallVector<SILFunction *, 8>
+inModuleOrder(llvm::ArrayRef<SILFunction *> members) {
+  llvm::SmallVector<SILFunction *, 8> sorted;
+  if (members.size() < 2) {
+    sorted.append(members.begin(), members.end());
+    return sorted;
+  }
+  SILFunction *anchor = members.front();
+  llvm::SmallPtrSet<SILFunction *, 8> pending(members.begin(), members.end());
+  pending.erase(anchor);
+  llvm::SmallVector<SILFunction *, 4> before, after;
+  auto &list = anchor->getModule().getFunctionList();
+  auto forward = std::next(anchor->getIterator());
+  auto backward = anchor->getIterator();
+  while (!pending.empty() && (forward != list.end() || backward != list.begin())) {
+    if (forward != list.end()) {
+      if (pending.erase(&*forward))
+        after.push_back(&*forward);
+      ++forward;
+    }
+    if (!pending.empty() && backward != list.begin()) {
+      --backward;
+      if (pending.erase(&*backward))
+        before.push_back(&*backward);
+    }
+  }
+  sorted.append(before.rbegin(), before.rend());
+  sorted.push_back(anchor);
+  sorted.append(after.begin(), after.end());
+  // Every function is in the module's list, so nothing is left. If something
+  // were, it would still be visited.
+  for (SILFunction *member : members)
+    if (pending.count(member))
+      sorted.push_back(member);
+  return sorted;
+}
+
+/// \p members in bottom-up order, as runFunctionPasses orders the module: the
+/// strongly connected components of the calls between members, each after the
+/// components it calls (see ComponentOrder). Legacy starts its walk from every
+/// function of the module in turn, in the order of the module's function list,
+/// and this starts it from each member in the same order (inModuleOrder). That
+/// order decides between functions that no call connects, such as a local
+/// function that is declared before the closure that passes it, or a clone that
+/// CapturePromotion made and put before the closure it clones.
+///
+/// The edges are the static ones, which CalleeCache resolves to a function_ref
+/// (see getStaticCallee). A closure that a function only passes to a call, or
+/// that a let binding holds, is not its callee, and runs after it. Passes that
+/// read a closure's body from the function that passes it depend on that:
+/// SendNonSendable looks for an ignored_use that a later pass of the span
+/// erases, and the move-only checker skips a value that a partial_apply passes
+/// to a closure it has diagnosed.
+///
+/// BottomUpFunctionOrder::visitCallees also follows dynamic dispatch, the
+/// destructors that a release may run, the initializer of a builtin "once",
+/// and callees outside the component. Following them would build the
+/// CalleeCache, which walks every vtable and witness table, for each request.
+/// Where such an edge closes a cycle with members, legacy's components are
+/// larger than these, and the order can differ.
+static llvm::SmallVector<SILFunction *, 8>
+getBottomUpOrder(llvm::ArrayRef<SILFunction *> members) {
+  llvm::SmallPtrSet<SILFunction *, 8> isMember(members.begin(), members.end());
+  ComponentOrder walk(isMember);
+  for (SILFunction *member : inModuleOrder(members))
+    walk.visit(member);
+  return std::move(walk.order);
+}
+
+void SILPassManager::executeScoped(llvm::ArrayRef<SILFunction *> members) {
+  // Recursive request evaluation during the pipeline may add new functions
+  // to the module that this PM's verifier analysis never saw at
+  // construction. Opt out of its module-wide check.
+  isScopedForFunction = true;
+
+  // The functions the run covers. notifyOfNewFunction adds the ones its
+  // passes create, so that later passes cover them too.
+  llvm::SmallSetVector<SILFunction *, 8> covered(members.begin(),
+                                                 members.end());
+  scopedMembers = &covered;
+  SWIFT_DEFER { scopedMembers = nullptr; };
+
+  unsigned Idx = 0, NumTransforms = Transformations.size();
+
+  while (Idx < NumTransforms && continueTransforming()) {
+    unsigned FirstFuncTrans = Idx;
+    while (Idx < NumTransforms &&
+           isa<SILFunctionTransform>(Transformations[Idx]))
+      ++Idx;
+
+    // Run the span over the members in the order of legacy's
+    // runFunctionPasses, callees before callers (getBottomUpOrder says where
+    // it differs). A pass may read a callee that the span has processed
+    // already: FlowIsolation analyzes the defer body that a function calls,
+    // and needs NoReturnFolding to have run on it. A pass may also read a
+    // closure that the span has not processed yet: SendNonSendable reads the
+    // closures that a function passes to a call. Copy the list: a member's
+    // run may add functions, which the run covers through the worklist
+    // instead.
+    if (Idx > FirstFuncTrans) {
+      llvm::SmallVector<SILFunction *, 8> current =
+          getBottomUpOrder(covered.getArrayRef());
+      for (SILFunction *F : current)
+        if (F->isDefinition() && !F->isAlreadyCanonical())
+          runFunctionPassesOnFunction(FirstFuncTrans, Idx, F);
+    }
+
+    unsigned FirstGroupTrans = Idx;
+    while (Idx < NumTransforms &&
+           isa<SILClosureGroupTransform>(Transformations[Idx]))
+      ++Idx;
+
+    // The members form one closure group: the caller passes a closure
+    // component, so every [closure] link between definitions stays inside it.
+    if (Idx > FirstGroupTrans) {
+      // Legacy lists a group's members bottom-up (ClosureGroupSchedule), and
+      // the group passes see them in that order.
+      llvm::SmallVector<SILFunction *, 4> group;
+      for (SILFunction *F : getBottomUpOrder(covered.getArrayRef()))
+        if (F->isDefinition() && !F->isAlreadyCanonical())
+          group.push_back(F);
+      if (!group.empty())
+        runClosureGroupBlock(FirstGroupTrans, Idx, {group});
+    }
+
+    // Module passes are not supported in scoped execution. Each must be
+    // converted to a function or closure group pass first.
+    ASSERT((Idx >= NumTransforms ||
+            isa<SILFunctionTransform>(Transformations[Idx])) &&
+           "scoped execution runs only function and closure group passes");
+  }
+}
+
+void SILPassManager::runFunctionPassesOnFunction(unsigned FromTransIdx,
+                                                 unsigned ToTransIdx,
+                                                 SILFunction *targetFn) {
+  if (ToTransIdx <= FromTransIdx)
+    return;
+
+  assert(FunctionWorklist.empty() && "Expected empty function worklist!");
+  FunctionWorklist.push_back(targetFn);
+
+  DerivationLevels.clear();
+
+  const unsigned MaxNumRestarts = 20;
+
+  if (SILPrintPassName)
+    llvm::dbgs() << "Start function passes at stage: " << StageName
+                 << " for " << targetFn->getName() << "\n";
+
+  while (!FunctionWorklist.empty() && continueTransforming()) {
+    unsigned TailIdx = FunctionWorklist.size() - 1;
+    unsigned PipelineIdx = FunctionWorklist[TailIdx].PipelineIdx;
+    SILFunction *F = FunctionWorklist[TailIdx].F;
+
+    if (PipelineIdx >= (ToTransIdx - FromTransIdx)) {
+      FunctionWorklist.pop_back();
+      continue;
+    }
+    assert(!shouldRestartPipeline() &&
+        "Did not expect function pipeline set up to restart!");
+
+    runPassOnFunction(FromTransIdx + PipelineIdx, F);
+
+    // Note: Don't get entry reference prior to runPassOnFunction().
+    // A pass can push a new function to the worklist which may cause a
+    // reallocation of the buffer and that would invalidate the reference.
+    WorklistEntry &Entry = FunctionWorklist[TailIdx];
+    if (shouldRestartPipeline() && Entry.NumRestarts < MaxNumRestarts) {
+      ++Entry.NumRestarts;
+      Entry.PipelineIdx = 0;
+    } else {
+      ++Entry.PipelineIdx;
+    }
+    clearRestartPipeline();
+  }
+}
+
 void SILPassManager::execute() {
   const SILOptions &Options = getOptions();
 
@@ -1227,6 +1505,15 @@ SILPassManager::~SILPassManager() {
   // either by changing the verifier or treating those asserts as signs of a
   // bug.
   for (auto *A : Analyses) {
+    // Skip the module-wide PassManagerVerifierAnalysis when running scoped
+    // to a single function. Nested request evaluation during the pipeline
+    // (e.g., OnDemandMandatoryInlining triggering
+    // CanonicalSILFunctionRequest on callees) can add new SILFunctions to
+    // the module that this PM's snapshot did not capture, which would
+    // trigger a false-positive assertion at destruction.
+    if (isScopedForFunction &&
+        isa<PassManagerVerifierAnalysis>(A))
+      continue;
     // We use verify full instead of just verify to ensure that passes that want
     // to run more expensive verification after a pass manager is destroyed
     // properly trigger.
@@ -1346,6 +1633,14 @@ void SILPassManager::notifyOfNewFunction(SILFunction *F, SILTransform *T) {
     dumpPassInfo("*** New SIL function in ", T, F);
     F->dump(getOptions().EmitVerboseSIL);
   }
+  if (scopedMembers) {
+    // A scoped run covers its members and the functions its passes create,
+    // which have no body when reported. A looked-up definition outside the
+    // run belongs to another run, so it joins neither the run nor a group.
+    if (F->isDefinition() && !scopedMembers->count(F))
+      return;
+    scopedMembers->insert(F);
+  }
   if (!closureGroupBlock)
     return;
 
@@ -1387,9 +1682,14 @@ void SILPassManager::runClosureGroupPasses(unsigned FromTransIdx,
   if (ToTransIdx <= FromTransIdx || !continueTransforming())
     return;
 
-  assert(!closureGroupBlock && "closure group blocks don't nest");
   ClosureGroupSchedule schedule(*Mod, getAnalysis<BasicCalleeAnalysis>());
-  ArrayRef<ClosureGroupSchedule::Group> groups = schedule.getGroups();
+  runClosureGroupBlock(FromTransIdx, ToTransIdx, schedule.getGroups());
+}
+
+void SILPassManager::runClosureGroupBlock(
+    unsigned FromTransIdx, unsigned ToTransIdx,
+    ArrayRef<ClosureGroupSchedule::Group> groups) {
+  assert(!closureGroupBlock && "closure group blocks don't nest");
   ClosureGroupBlock block(groups);
   llvm::SaveAndRestore runningBlock(closureGroupBlock, &block);
   if (SILPrintPassName)
@@ -1406,7 +1706,9 @@ void SILPassManager::runClosureGroupPasses(unsigned FromTransIdx,
 
   // A group pass verifies only its members, so verify the module once before
   // the block for verify-before options, as a module pass would.
-  if (anyGroupPassMatches(verifyBefore))
+  // A scoped run covers part of a module whose other functions may be at
+  // any stage, so it verifies only its members.
+  if (anyGroupPassMatches(verifyBefore) && !scopedMembers)
     verifyModule();
 
   for (unsigned index = 0, e = groups.size(); index != e; ++index) {
@@ -1420,14 +1722,14 @@ void SILPassManager::runClosureGroupPasses(unsigned FromTransIdx,
   // Per-member verification never checks module-level state, so verify the
   // module after the block, as runModulePass does after a module pass.
   if ((getOptions().VerifyAll || anyGroupPassMatches(verifyAfter)) &&
-      continueTransforming())
+      continueTransforming() && !scopedMembers)
     verifyModule();
 
   // A definition that appeared during the block without notifyOfNewFunction
   // belongs to no group and missed the block's passes. A body that is already
   // canonical, deserialized or advanced ahead of the stage floor, needs no
   // mandatory passes.
-  if (continueTransforming()) {
+  if (continueTransforming() && !scopedMembers) {
     for (SILFunction &F : *Mod)
       ASSERT((!F.isDefinition() || F.isAlreadyCanonical() ||
               block.hasGroup(&F)) &&

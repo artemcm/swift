@@ -302,8 +302,29 @@ linkEmbeddedRuntimeFunctionByName(#NAME, EFFECT, StringRef(#CC) == "C_CC");    \
 } // end anonymous namespace
 
 
+namespace {
+
+/// The function-pass counterpart of MandatorySILLinker, for the function-only
+/// diagnostic pipeline of on-demand SIL generation: deserializes what one
+/// function references, at the point of the pipeline where
+/// MandatorySILLinker would run over the whole module. It doesn't link the
+/// Embedded Swift runtime, which on demand doesn't support.
+class OnDemandSILLinker : public SILFunctionTransform {
+  void run() override {
+    SILFunction *F = getFunction();
+    if (F->getModule().linkFunction(F, SILModule::LinkingMode::LinkNormal))
+      invalidateAnalysis(SILAnalysis::InvalidationKind::Everything);
+  }
+};
+
+} // end anonymous namespace
+
 SILTransform *swift::createMandatorySILLinker() {
   return new SILLinker(SILModule::LinkingMode::LinkNormal);
+}
+
+SILTransform *swift::createOnDemandSILLinker() {
+  return new OnDemandSILLinker();
 }
 
 SILTransform *swift::createPerformanceSILLinker() {
