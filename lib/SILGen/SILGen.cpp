@@ -18,6 +18,7 @@
 #include "SILGenFunctionBuilder.h"
 #include "swift/AST/ConformanceLookup.h"
 #include "swift/AST/Decl.h"
+#include "swift/AST/DiagnosticsFrontend.h"
 #include "swift/AST/DiagnosticsSIL.h"
 #include "swift/AST/Evaluator.h"
 #include "swift/AST/GenericEnvironment.h"
@@ -53,6 +54,11 @@ using namespace Lowering;
 llvm::cl::list<std::string> PrintFunctionAST(
     "print-function-ast", llvm::cl::CommaSeparated,
     llvm::cl::desc("Only print out the ast for this function"));
+
+static llvm::cl::opt<bool> SILGenOnDemandEmission(
+    "sil-on-demand-emission", llvm::cl::init(false),
+    llvm::cl::desc("Use request-based on-demand emission instead of "
+                   "emitSourceFile (for testing the on-demand SILGen path)"));
 
 //===----------------------------------------------------------------------===//
 // SILGenModule Class implementation
@@ -2656,6 +2662,18 @@ static AbstractFunctionDecl *getGatedBodyDecl(SILDeclRef ref) {
   }
 }
 
+/// Whether legacy leaves \p ref a declaration because the body it would emit
+/// is missing: the declaration has none, like an @_silgen_name declaration of
+/// a C function (D10), or its body was skipped
+/// (-experimental-skip-non-inlinable-function-bodies). Ask hasBody() and
+/// isBodySkipped(), not shouldEmitFunctionBody: under lazy type checking that
+/// one type-checks the body, and every callee of a single root comes through
+/// here.
+static bool lacksBodyToEmit(SILDeclRef ref) {
+  auto *afd = getGatedBodyDecl(ref);
+  return afd && (!afd->hasBody() || afd->isBodySkipped());
+}
+
 bool SILGenModule::shouldEmitBodyOnDemand(SILDeclRef constant) {
   if (forcedFunctions.contains(constant))
     return true;
@@ -2667,6 +2685,386 @@ bool SILGenModule::shouldEmitBodyOnDemand(SILDeclRef constant) {
     llvm::dbgs() << "\n";
   });
   return emit;
+}
+
+/// Whether a function referenced from an emitted body, or forced, is defined in
+/// this unit: a function from one of the files being compiled, or a locally
+/// synthesized thunk for an imported declaration.
+static bool isEmittedHere(SILFunction *callee, SILDeclRef calleeRef,
+                          ArrayRef<FileUnit *> filesToEmit) {
+  // A global's accessor has a body only where emitGlobalInitialization ran
+  // (it fills delayedGlobals): the seeder of the global's file. There the
+  // seeder emits it at once, unless emitOrDelayFunction would delay it, as
+  // legacy does at -O with an implicit private global (a private wrapped
+  // property's backing storage); then a reference forces it, and the
+  // coordinator emits it. Another primary's stays a declaration.
+  if (calleeRef.kind == SILDeclRef::Kind::GlobalAccessor)
+    return callee->getModule().getASTContext().getActiveSILGenModule()
+        ->delayedGlobals.count(cast<VarDecl>(calleeRef.getDecl()));
+  if (!calleeRef.hasDecl())
+    return true;
+  // Every unit that references a function that is emitted on demand
+  // (isEmittedOnDemand) emits it, whichever file declares it: a witness thunk
+  // of a conformance in another file references an enum case's constructor
+  // (G-41), or the `_read` accessor that a `@_borrowed` requirement gives a
+  // stored property.
+  if (isEmittedOnDemand(callee->getModule(), calleeRef))
+    return true;
+  // The outermost file: a macro's expansion has a source file of its own.
+  auto *sf =
+      calleeRef.getDecl()->getDeclContext()->getOutermostParentSourceFile();
+  if (!sf) {
+    // No source file: skip cross-module/imported externals (no local body);
+    // locally-synthesized thunks have a body, so fall through.
+    return !callee->isExternalDeclaration() &&
+           !callee->isAvailableExternally() && !callee->isAlreadyCanonical();
+  }
+  return llvm::is_contained(filesToEmit, sf) && !lacksBodyToEmit(calleeRef);
+}
+
+/// Whether \p dc belongs to a file being emitted. The outermost file: a
+/// macro's expansion has a source file of its own.
+static bool isInFilesToEmit(const DeclContext *dc,
+                            ArrayRef<FileUnit *> filesToEmit) {
+  auto *sf = dc ? dc->getOutermostParentSourceFile() : nullptr;
+  return sf && llvm::is_contained(filesToEmit, sf);
+}
+
+/// Scan a function body for function_ref instructions and add discovered
+/// callees to the worklist if they need SILGen body emission and haven't
+/// been resolved yet. With -sil-on-demand-root, only the \p roots' own
+/// closures and local functions, and shared functions, which are emitted
+/// wherever they're referenced; the root's other callees stay declarations.
+static void discoverCallees(SILFunction *f,
+                            std::deque<SILDeclRef> &worklist,
+                            llvm::DenseSet<SILDeclRef> &resolved,
+                            ArrayRef<FileUnit *> filesToEmit) {
+  SmallVector<SILFunction *, 8> allRefs;
+  SmallVector<SILDeclRef, 4> queued;
+
+  for (auto &bb : *f) {
+    for (auto &inst : bb) {
+      auto *fri = dyn_cast<FunctionRefBaseInst>(&inst);
+      if (!fri)
+        continue;
+
+      SILFunction *callee = fri->getInitiallyReferencedFunction();
+      allRefs.push_back(callee);
+
+      // Only queue functions created by SILGen that need body emission.
+      // External declarations (stdlib, cross-module) are skipped.
+      auto calleeRef = callee->getDeclRef();
+      if (!calleeRef)
+        continue;
+
+      // Only emit functions from the files being compiled (primary files).
+      // Functions from other modules (no parent source file) or from
+      // non-primary files in the same module are skipped.
+      if (!isEmittedHere(callee, calleeRef, filesToEmit))
+        continue;
+
+      if (!resolved.count(calleeRef)) {
+        worklist.push_back(calleeRef);
+        queued.push_back(calleeRef);
+      }
+    }
+  }
+
+  DEBUG_WITH_TYPE("silgen-requests", {
+    if (!allRefs.empty()) {
+      llvm::dbgs() << "[body scan] found " << allRefs.size()
+                   << " callee ref(s):";
+      for (auto *callee : allRefs)
+        llvm::dbgs() << " " << callee->getName();
+      llvm::dbgs() << "\n";
+    }
+    if (!queued.empty()) {
+      llvm::dbgs() << "[body scan] queued " << queued.size()
+                   << " for worklist:";
+      for (auto ref : queued) {
+        llvm::dbgs() << " "; ref.print(llvm::dbgs());
+      }
+      llvm::dbgs() << "\n";
+    }
+  });
+}
+
+namespace {
+/// The on-demand counterpart of SILGenModule::visit, SILGenType, and
+/// SILGenExtension. It visits declarations and their members in the same
+/// order, and for each function that legacy emission would emit, it routes the
+/// auxiliaries through AuxiliaryDeclEmissionRequest and emits the body through
+/// SILFunctionBodyRequest at once, so that functions are created in legacy's
+/// order. The worklist then scans and canonicalizes each body.
+///
+/// After a type's members and an extension's, the witness tables of their
+/// conformances, through SILWitnessTableRequest. Globals, static stored
+/// properties, Objective-C entry points, @objcImplementation extensions, and
+/// the entry points as SILGenModule emits them.
+class OnDemandSeeder {
+  Evaluator &evaluator;
+  Lowering::SILGenModule &SGM;
+  std::deque<SILDeclRef> &worklist;
+
+public:
+  OnDemandSeeder(Evaluator &evaluator, Lowering::SILGenModule &SGM,
+                 std::deque<SILDeclRef> &worklist)
+      : evaluator(evaluator), SGM(SGM), worklist(worklist) {}
+
+  /// SILGenModule::visit, for a top-level declaration.
+  void visitTopLevel(Decl *D) {
+    if (SGM.shouldSkipDecl(D))
+      return;
+    if (auto *fd = dyn_cast<FuncDecl>(D))
+      seedFunc(fd, /*includeObjCThunk=*/false);
+    else if (auto *pbd = dyn_cast<PatternBindingDecl>(D))
+      seedGlobalInitialization(pbd);
+    else if (auto *vd = dyn_cast<VarDecl>(D))
+      seedGlobalVar(vd);
+  }
+
+  /// SILGenModule::emitSourceFile's entry points: a script's top-level code,
+  /// before the file's declarations, and an @main type's, after them.
+  void seedScriptEntryPoint(SourceFile *sf) {
+    if (!sf->isScriptMode() || SGM.getASTContext().SILOpts.SkipFunctionBodies !=
+                                   FunctionBodySkipping::None)
+      return;
+    seedBody(SILDeclRef::getMainFileEntryPoint(sf), /*mayDelay=*/false);
+  }
+  void seedMainDeclEntryPoint(SourceFile *sf) {
+    auto *mainDecl = sf->getMainDecl();
+    if (!mainDecl)
+      return;
+    if (isa<FuncDecl>(mainDecl) && cast<FuncDecl>(mainDecl)->hasAsync())
+      seedBody(SILDeclRef::getAsyncMainDeclEntryPoint(mainDecl),
+               /*mayDelay=*/false);
+    seedBody(SILDeclRef::getMainDeclEntryPoint(mainDecl), /*mayDelay=*/false);
+  }
+
+private:
+  /// emitOrDelayFunction: emit the body now, in legacy's order, unless legacy
+  /// would delay it until something references it.
+  void seedBody(SILDeclRef ref, bool mayDelay = true) {
+    if (mayDelay && SGM.delayFunctionOnDemand(ref)) {
+      DEBUG_WITH_TYPE("silgen-requests", llvm::dbgs() << "[delayed] ";
+                      ref.print(llvm::dbgs()); llvm::dbgs() << "\n");
+      return;
+    }
+    (void)evaluateOrFatal(evaluator, SILFunctionBodyRequest{ref});
+    worklist.push_back(ref);
+    DEBUG_WITH_TYPE("silgen-requests", llvm::dbgs() << "[worklist] seed: ";
+                    ref.print(llvm::dbgs()); llvm::dbgs() << "\n");
+  }
+
+  void seedAuxiliaries(ValueDecl *decl) {
+    DEBUG_WITH_TYPE("silgen-requests",
+                    llvm::dbgs() << "[emit auxiliary declarations] ";
+                    decl->getName().print(llvm::dbgs()); llvm::dbgs() << "\n");
+    (void)evaluateOrDefault(evaluator, AuxiliaryDeclEmissionRequest{decl}, {});
+  }
+
+  /// SILGenModule::emitFunction, plus visitFuncDecl's @objc thunk.
+  void seedFunc(FuncDecl *fd, bool includeObjCThunk = true) {
+    (void)includeObjCThunk;
+    // A body-less '@specialized' declaration has no body to emit; legacy
+    // prepares the imported bodies it names, which on demand doesn't do.
+    if (SpecializedAttr::isSpecializationDeclaration(fd))
+      return;
+    seedAuxiliaries(fd);
+    if (shouldEmitFunctionBody(fd)) {
+      // Match the legacy emitFunction prologue.
+      SGM.M.Types.setCaptureTypeExpansionContext(SILDeclRef(fd), SGM.M);
+      seedBody(SILDeclRef(fd, fd->hasOnlyCEntryPoint()));
+    }
+  }
+
+  /// SILGenModule::visitPatternBindingDecl, and a static property's in
+  /// SILGenType and SILGenExtension: the once-token, the lazy initializer, and
+  /// the accessors (emitGlobalInitialization).
+  void seedGlobalInitialization(PatternBindingDecl *pbd) {
+    for (auto i : range(pbd->getNumPatternEntries()))
+      if (pbd->getExecutableInit(i))
+        SGM.emitGlobalInitialization(pbd, i);
+  }
+
+  /// SILGenModule::visitVarDecl: the global, then its accessors and property
+  /// descriptor. A static stored property's are the same steps
+  /// (emitTypeMemberGlobalVariable, visitAccessors, tryEmitPropertyDescriptor).
+  void seedGlobalVar(VarDecl *vd) {
+    if (vd->hasStorage())
+      SGM.addGlobalVariable(vd);
+    SGM.visitEmittedAccessors(
+        vd, [&](AccessorDecl *accessor) { seedFunc(accessor); });
+    SGM.tryEmitPropertyDescriptor(vd);
+  }
+
+};
+} // end anonymous namespace
+
+/// Queue the functions that a reference forced since the last call: delayed
+/// functions (SILGenModule::delayFunctionOnDemand) and enum case
+/// constructors of this unit. Most are also found by the body scan; this
+/// catches those referenced from a body that isn't scanned, such as a witness
+/// thunk.
+static void queueForcedFunctions(Lowering::SILGenModule &SGM,
+                                 std::deque<SILDeclRef> &worklist,
+                                 llvm::DenseSet<SILDeclRef> &resolved,
+                                 ArrayRef<FileUnit *> filesToEmit) {
+  while (!SGM.pendingForcedFunctions.empty()) {
+    auto ref = SGM.pendingForcedFunctions.front();
+    SGM.pendingForcedFunctions.pop_front();
+    auto *f = SGM.emittedFunctions.lookup(ref);
+    if (!f || resolved.count(ref) || !isEmittedHere(f, ref, filesToEmit))
+      continue;
+    worklist.push_back(ref);
+  }
+}
+
+/// Request-based emission path for demand-driven SIL generation.
+/// Type-checks each source file, then processes functions via a body-scan
+/// worklist: for each function, fire SILFunctionBodyRequest (to get the
+/// raw body), scan it for function_ref instructions to discover callees,
+/// then fire CanonicalSILFunctionRequest (to run the mandatory pipeline).
+/// After all functions are canonicalized, sets the module-level flags
+/// so the legacy pipeline (runSILDiagnosticPasses) is a no-op.
+static void emitOnDemandViaRequests(Evaluator &evaluator,
+                                    ASTLoweringDescriptor desc,
+                                    Lowering::SILGenModule &SGM) {
+  std::deque<SILDeclRef> worklist;
+  llvm::DenseSet<SILDeclRef> resolved;
+
+  // Seed the worklist from the top-level declarations, in legacy order: for
+  // each function, AuxiliaryDeclEmissionRequest routes the auxiliary
+  // emissions (default args, @_cdecl thunks, @backDeployed variants,
+  // @derivative witnesses, etc.) through the request system, then the raw
+  // body is emitted and its SILDeclRef queued. Nominal types and extensions
+  // seed their members the same way.
+  //
+  // With -sil-on-demand-root, seed only the function it names. Under
+  // -experimental-lazy-typecheck, performTypeChecking does nothing, and
+  // seeding a function type-checks its body, so only the root's body is
+  // type-checked, and only what it uses besides.
+  OnDemandSeeder seeder(evaluator, SGM, worklist);
+  SGM.deferCanonicalization = true;
+  for (auto file : desc.getFilesToEmit()) {
+    if (auto *sf = dyn_cast<SourceFile>(file)) {
+      performTypeChecking(*sf);
+      seeder.seedScriptEntryPoint(sf);
+      for (auto *D : sf->getTopLevelDecls())
+        seeder.visitTopLevel(D);
+      seeder.seedMainDeclEntryPoint(sf);
+    }
+  }
+  DEBUG_WITH_TYPE("silgen-requests",
+                  llvm::dbgs() << "[seeding complete]\n");
+  // The tables of the conformances that seeding used, before the functions
+  // deferred while seeding are canonicalized: a thunk's linker needs the
+  // table of a synthesized conformance it uses. Then queue what the seeds and
+  // the witness thunks forced.
+  SGM.emitPendingConformancesOnDemand();
+  queueForcedFunctions(SGM, worklist, resolved, desc.getFilesToEmit());
+
+  // Process the worklist. The body scan finds only functions that a
+  // function_ref names. A function that a body emits but nothing references,
+  // such as a local function that is never called, is left out, and the
+  // terminal commitStage would advance its raw body unchecked. Legacy runs
+  // the mandatory pipeline on every function, so each time the worklist
+  // drains, queue every definition from the files being emitted that hasn't
+  // advanced, until none is left.
+  auto filesToEmit = desc.getFilesToEmit();
+  do {
+    while (!worklist.empty()) {
+      auto ref = worklist.front();
+      worklist.pop_front();
+      if (!resolved.insert(ref).second)
+        continue;
+
+      DEBUG_WITH_TYPE("silgen-requests",
+                      llvm::dbgs() << "\n[worklist] processing: ";
+                      ref.print(llvm::dbgs()); llvm::dbgs() << "\n");
+
+      // Step A: Emit the raw body.
+      auto *f = evaluateOrFatal(evaluator, SILFunctionBodyRequest{ref});
+
+      // Step B: Discover callees by scanning the raw body.
+      discoverCallees(f, worklist, resolved, filesToEmit);
+
+      // Step C: Canonicalize (body request cache-hits; pipelines run).
+      // evaluateOrDefault a cyclic @_transparent / @inline(__always) chain at
+      // the top level is diagnosed by the evaluator via
+      // CanonicalSILFunctionRequest::diagnoseCycle and the outer request
+      // returns its default.
+      (void)evaluateOrDefault(evaluator,
+                              CanonicalSILFunctionRequest{ref}, nullptr);
+
+      // Drain conformances discovered during body emission.
+      SGM.emitPendingConformancesOnDemand();
+      queueForcedFunctions(SGM, worklist, resolved, filesToEmit);
+    }
+    for (auto &f : SGM.M) {
+      auto ref = f.getDeclRef();
+      if (!ref || f.empty() || f.isAlreadyCanonical() || resolved.count(ref))
+        continue;
+      // Ask the SILDeclRef, not the function: a function's DeclContext comes
+      // from its debug scope, which for a default argument generator is an
+      // expression with no DeclContext.
+      if (isInFilesToEmit(ref.getInnermostDeclContext(), filesToEmit)) {
+        DEBUG_WITH_TYPE("silgen-requests", llvm::dbgs() << "[sweep] ";
+                        ref.print(llvm::dbgs()); llvm::dbgs() << "\n");
+        worklist.push_back(ref);
+      }
+    }
+  } while (!worklist.empty());
+
+  ASSERT(SGM.deferredCanonicalRefs.empty() &&
+         SGM.deferredSynthesizedFunctions.empty() &&
+         "deferred canonicalization queues not drained before stripping");
+
+  // Strip bodies from cross-primary functions that were SILGen'd on demand
+  // for @_transparent inlining. These functions have definition linkage
+  // (hidden) but should not produce symbols in this compilation unit; the
+  // real definition is emitted when their source file is the primary.
+  // Convert them back to hidden_external declarations.
+  //
+  // Match the files-we're-emitting check that `discoverCallees` uses:
+  // membership in `desc.getFilesToEmit()`. `SourceFile::isPrimary()` does
+  // not work here because it returns false under whole-module compilation,
+  // which would strip every body.
+  for (auto &f : SGM.M) {
+    if (f.empty() || isAvailableExternally(f.getLinkage()))
+      continue;
+    // Only a function with a SILDeclRef is emitted for another primary. A
+    // synthesized function, such as a witness thunk, belongs to the unit
+    // that made it, although its DeclContext, which comes from its debug
+    // scope, can be its witness's, in another file. And a function that is
+    // emitted on demand (isEmittedOnDemand) is emitted into every unit that
+    // references it, as on the legacy path.
+    auto ref = f.getDeclRef();
+    if (!ref)
+      continue;
+    auto *dc = f.getDeclContext();
+    auto *sf = dc ? dc->getOutermostParentSourceFile() : nullptr;
+    if (!sf || llvm::is_contained(filesToEmit, sf) ||
+        isEmittedOnDemand(SGM.M, ref))
+      continue;
+    f.convertToDeclaration();
+    f.setLinkage(SILLinkage::HiddenExternal);
+  }
+
+  // Commit the floor, so the legacy runSILGenPasses and runSILDiagnosticPasses,
+  // which skip a module that hasCommittedCanonical(), become no-ops. This is a
+  // second commit point beside runSILDiagnosticPasses: it also advances any
+  // function the request chain did not canonicalize.
+  SGM.M.commitStage(SILStage::Canonical);
+}
+
+/// Whether \p desc lowers a module interface: an implicit module build, or
+/// -compile-module-from-interface.
+static bool lowersModuleInterface(const ASTLoweringDescriptor &desc) {
+  return llvm::any_of(desc.getFilesToEmit(), [](const FileUnit *file) {
+    auto *sf = dyn_cast<SourceFile>(file);
+    return sf && sf->Kind == SourceFileKind::Interface;
+  });
 }
 
 std::unique_ptr<SILModule>
@@ -2701,60 +3099,98 @@ ASTLoweringRequest::evaluate(Evaluator &evaluator,
       ctx.LangOpts.AllowModuleWithCompilerErrors)
     return silMod;
 
+  // -Xllvm options are process-wide, so a module that this process builds
+  // from its interface (an implicit module build) sees
+  // -sil-on-demand-emission too. Lower an interface the legacy way: the
+  // coordinator doesn't emit all of a module (witness tables, protocols,
+  // globals), and the module cache keeps the module for later compiles.
+  bool onDemand = SILGenOnDemandEmission && !lowersModuleInterface(desc);
+
+  // Under -enable-lifetime-resolution, the SILGen pipeline runs a module pass,
+  // MandatoryAllocBoxToStack, which CleanedSILFunctionRequest can't run on one
+  // function and which has no per-function equivalent yet (D3).
+  if (onDemand && desc.opts.EnableLifetimeResolution) {
+    ctx.Diags.diagnose(SourceLoc(), diag::error_invalid_arg_combination,
+                       "-sil-on-demand-emission",
+                       "-enable-lifetime-resolution");
+    return silMod;
+  }
+
   SILGenModule SGM(*silMod, silMod->getSwiftModule());
+  SGM.emittingOnDemand = onDemand;
   ActiveSILGenModuleScope activeScope(ctx, SGM);
 
   // Emit a specific set of SILDeclRefs if needed.
   if (auto Sources = desc.SourcesToEmit) {
+    if (onDemand)
+      SGM.deferCanonicalization = true;
     for (auto Source : *Sources)
       SGM.emitSymbolSource(std::move(Source));
+    if (onDemand)
+      SGM.emitPendingConformancesOnDemand();
   }
 
-  // Emit any whole-files needed.
-  for (auto file : desc.getFilesToEmit()) {
-    if (auto *nextSF = dyn_cast<SourceFile>(file))
-      SGM.emitSourceFile(nextSF);
-  }
-
-  // Also make sure to process any intermediate files that may contain SIL.
-  bool shouldDeserialize =
-      llvm::any_of(desc.getFilesToEmit(), [](const FileUnit *File) -> bool {
-        return isa<SerializedASTFile>(File);
-      });
-  if (shouldDeserialize) {
-    auto *primary = desc.context.dyn_cast<FileUnit *>();
-    auto recordedFloor = silMod->getSILLoader()->getAllForModule(
-        silMod->getSwiftModule()->getName(), primary);
-
-    // A SIB records the stage floor its producing compilation committed to.
-    // That floor is the module's only when SIBs are all that is being lowered:
-    // SIL generated from source above is raw, and the floor must stay Raw for
-    // the mandatory pipeline to run over it. Among several SIBs the lowest
-    // floor wins, so a raw SIB still gets the mandatory pipeline next to a
-    // canonical one. Either way, each deserialized function keeps the stage
-    // recorded for it.
-    bool generatedFromSource =
-        desc.SourcesToEmit.has_value() ||
-        llvm::any_of(desc.getFilesToEmit(), [](const FileUnit *File) -> bool {
-          return isa<SourceFile>(File);
-        });
-    if (recordedFloor && !generatedFromSource &&
-        *recordedFloor > silMod->getStageFloor())
-      silMod->commitStage(*recordedFloor);
-  }
-
-  // Emit any delayed definitions that were forced.
-  // Emitting these may in turn force more definitions, so we have to take
-  // care to keep pumping the queues.
-  while (!SGM.pendingForcedFunctions.empty()
-         || !SGM.pendingConformances.empty()) {
-    while (!SGM.pendingForcedFunctions.empty()) {
-      auto &front = SGM.pendingForcedFunctions.front();
-      SGM.emitFunctionDefinition(
-          front, SGM.getEmittedFunction(front, ForDefinition));
-      SGM.pendingForcedFunctions.pop_front();
+  if (onDemand) {
+    emitOnDemandViaRequests(evaluator, desc, SGM);
+  } else {
+    // Normal emission path.
+    for (auto file : desc.getFilesToEmit()) {
+      if (auto *nextSF = dyn_cast<SourceFile>(file))
+        SGM.emitSourceFile(nextSF);
     }
-    SGM.emitPendingConformances();
+
+    // Also make sure to process any intermediate files that may contain SIL.
+    bool shouldDeserialize =
+        llvm::any_of(desc.getFilesToEmit(), [](const FileUnit *File) -> bool {
+          return isa<SerializedASTFile>(File);
+        });
+    if (shouldDeserialize) {
+      auto *primary = desc.context.dyn_cast<FileUnit *>();
+      auto recordedFloor = silMod->getSILLoader()->getAllForModule(
+          silMod->getSwiftModule()->getName(), primary);
+
+      // A SIB records the stage floor its producing compilation committed to.
+      // That floor is the module's only when SIBs are all that is being
+      // lowered: SIL generated from source above is raw, and the floor must
+      // stay Raw for the mandatory pipeline to run over it. Among several SIBs
+      // the lowest floor wins, so a raw SIB still gets the mandatory pipeline
+      // next to a canonical one. Either way, each deserialized function keeps
+      // the stage recorded for it.
+      bool generatedFromSource =
+          desc.SourcesToEmit.has_value() ||
+          llvm::any_of(desc.getFilesToEmit(),
+                       [](const FileUnit *File) -> bool {
+                         return isa<SourceFile>(File);
+                       });
+      if (recordedFloor && !generatedFromSource &&
+          *recordedFloor > silMod->getStageFloor())
+        silMod->commitStage(*recordedFloor);
+    }
+
+    // Emit any delayed definitions that were forced.
+    // Emitting these may in turn force more definitions, so we have to take
+    // care to keep pumping the queues.
+    while (!SGM.pendingForcedFunctions.empty()
+           || !SGM.pendingConformances.empty()) {
+      while (!SGM.pendingForcedFunctions.empty()) {
+        auto &front = SGM.pendingForcedFunctions.front();
+        SGM.emitFunctionDefinition(
+            front, SGM.getEmittedFunction(front, ForDefinition));
+        SGM.pendingForcedFunctions.pop_front();
+      }
+      SGM.emitPendingConformances();
+    }
+  }
+
+  // runSILGenPasses clears the pass-notification flags that SIL construction
+  // sets (needBreakInfiniteLoops, needCompleteLifetimes), but it skips a module
+  // whose floor is already Canonical. The on-demand path commits the floor, so
+  // clear the flags here for every function the request chain did not clean.
+  if (onDemand) {
+    for (auto &F : *silMod) {
+      F.setNeedBreakInfiniteLoops(false);
+      F.setNeedCompleteLifetimes(false);
+    }
   }
 
   return silMod;
