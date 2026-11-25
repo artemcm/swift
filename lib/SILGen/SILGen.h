@@ -28,6 +28,7 @@ namespace swift {
   class SILBasicBlock;
   class ForeignAsyncConvention;
   class SymbolSource;
+  class DerivativeAttr;
 
 namespace Lowering {
   class TypeConverter;
@@ -157,8 +158,14 @@ public:
   std::optional<SILVTable::Entry>
   emitVTableMethod(ClassDecl *theClass, SILDeclRef derived, SILDeclRef base);
 
+  /// Build the vtable of \p theClass, as SILGenType::emitType does.
+  SILVTable *emitVTable(ClassDecl *theClass);
+
   /// True if a function has been emitted for a given SILDeclRef.
   bool hasFunction(SILDeclRef constant);
+
+  /// Emits the witness table of every conformance in pendingConformances.
+  void emitPendingConformances();
 
   /// Get or create the declaration of a reabstraction thunk with the
   /// given signature.
@@ -439,6 +446,11 @@ public:
   /// Emit the self-conformance witness table for a protocol.
   SILWitnessTable *emitSelfConformanceWitnessTable(ProtocolDecl *protocol);
 
+  /// Emit a protocol's tables: a resilient protocol's default witness table,
+  /// and the self-conformance table of a protocol that needs one. Shared by
+  /// SILGenType::emitType and the on-demand seeder.
+  void emitProtocolTables(ProtocolDecl *protocol);
+
   /// Emit the lazy initializer function for a global pattern binding
   /// declaration.
   SILFunction *emitLazyGlobalInitializer(StringRef funcName,
@@ -490,13 +502,23 @@ public:
 
   /// Emit the differentiability witness for the given original function
   /// declaration and SIL function, autodiff configuration, and JVP and VJP
-  /// functions (null if undefined).
-  void emitDifferentiabilityWitness(AbstractFunctionDecl *originalAFD,
-                                    SILFunction *originalFunction,
-                                    DifferentiabilityKind diffKind,
-                                    const AutoDiffConfig &config,
-                                    SILFunction *jvp, SILFunction *vjp,
-                                    const DeclAttribute *diffAttr);
+  /// functions (null if undefined). Returns the resulting witness, or
+  /// nullptr if no witness was created.
+  SILDifferentiabilityWitness *
+  emitDifferentiabilityWitness(AbstractFunctionDecl *originalAFD,
+                               SILFunction *originalFunction,
+                               DifferentiabilityKind diffKind,
+                               const AutoDiffConfig &config,
+                               SILFunction *jvp, SILFunction *vjp,
+                               const DeclAttribute *diffAttr);
+
+  /// Emit the differentiability witness produced by a single
+  /// @derivative(of:) attribute attached to \p afd. \p afd is the
+  /// derivative declaration carrying the attribute. Returns the
+  /// witness, or nullptr if no witness was created.
+  SILDifferentiabilityWitness *
+  emitWitnessForDerivativeAttr(AbstractFunctionDecl *afd,
+                               DerivativeAttr *derivAttr);
 
   /// Emit a deinit table for a noncopyable type.
   void emitNonCopyableTypeDeinitTable(NominalTypeDecl *decl);

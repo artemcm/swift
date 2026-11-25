@@ -56,6 +56,13 @@ llvm::cl::list<std::string> PrintFunctionAST(
 // SILGenModule Class implementation
 //===----------------------------------------------------------------------===//
 
+void SILGenModule::emitPendingConformances() {
+  while (!pendingConformances.empty()) {
+    (void)getWitnessTable(pendingConformances.front());
+    pendingConformances.pop_front();
+  }
+}
+
 SILGenModule::SILGenModule(SILModule &M, ModuleDecl *SM)
     : M(M), Types(M.Types), SwiftModule(SM),
       FileIDsByFilePath(SM->computeFileIDMap(/*shouldDiagnose=*/true)) {
@@ -1372,21 +1379,27 @@ void SILGenModule::emitFunctionDefinition(SILDeclRef constant, SILFunction *f) {
   }
 }
 
+/// Whether emitOrDelayFunction may delay \p constant until something
+/// references it: an implicit declaration that can't be used externally. The
+/// generated C++ header may call implicit ones, such as synthesized accessors
+/// and memberwise initializers.
+static bool mayDelayEmission(SILModule &M, SILDeclRef constant) {
+  auto linkage = constant.getLinkage(ForDefinition);
+  return !constant.shouldBeEmittedForDebugger() &&
+         !constant.hasUserWrittenCode() &&
+         !constant.isDynamicallyReplaceable() &&
+         !isPossiblyUsedExternally(linkage, M.isWholeModule()) &&
+         !constant.mayBeCalledFromCxxHeader(M);
+}
+
 void SILGenModule::emitOrDelayFunction(SILDeclRef constant) {
   assert(!constant.isThunk());
   assert(!constant.isClangImported());
 
   auto emitAfter = lastEmittedFunction;
 
-  // Implicit decls may be delayed if they can't be used externally. The
-  // generated C++ header may call implicit ones, such as synthesized accessors
-  // and memberwise initializers.
-  auto linkage = constant.getLinkage(ForDefinition);;
-  bool mayDelay = !constant.shouldBeEmittedForDebugger() &&
-                  !constant.hasUserWrittenCode() &&
-                  !constant.isDynamicallyReplaceable() &&
-                  !isPossiblyUsedExternally(linkage, M.isWholeModule()) &&
-                  !constant.mayBeCalledFromCxxHeader(M);
+  // Implicit decls may be delayed if they can't be used externally.
+  bool mayDelay = mayDelayEmission(M, constant);
 
   if (!mayDelay) {
     // We may visit the same function multiple times in some cases. For
@@ -1529,7 +1542,7 @@ void SILGenModule::emitDifferentiabilityWitnessesForFunction(
   emitWitnesses(AFD->getAttrs());
 }
 
-void SILGenModule::emitDifferentiabilityWitness(
+SILDifferentiabilityWitness *SILGenModule::emitDifferentiabilityWitness(
     AbstractFunctionDecl *originalAFD, SILFunction *originalFunction,
     DifferentiabilityKind diffKind, const AutoDiffConfig &config,
     SILFunction *jvp, SILFunction *vjp, const DeclAttribute *attr) {
@@ -1603,6 +1616,7 @@ void SILGenModule::emitDifferentiabilityWitness(
   if (vjp)
     setDerivativeInDifferentiabilityWitness(AutoDiffDerivativeFunctionKind::VJP,
                                             vjp);
+  return diffWitness;
 }
 
 void SILGenModule::emitAbstractFuncDecl(AbstractFunctionDecl *AFD) {
@@ -1667,33 +1681,39 @@ void SILGenModule::emitAbstractFuncDecl(AbstractFunctionDecl *AFD) {
   // originating from @derivative(of:) is emitted even if we're not going to
   // emit body of the derivative.
   for (auto *derivAttr : AFD->getAttrs().getAttributes<DerivativeAttr>()) {
-      auto *f = getFunction(SILDeclRef(AFD), NotForDefinition);
-      SILFunction *jvp = nullptr, *vjp = nullptr;
-      switch (derivAttr->getDerivativeKind()) {
-      case AutoDiffDerivativeFunctionKind::JVP:
-        jvp = f;
-        break;
-      case AutoDiffDerivativeFunctionKind::VJP:
-        vjp = f;
-        break;
-      }
+    (void)emitWitnessForDerivativeAttr(AFD, derivAttr);
+  }
+}
 
-      for (auto *origAFD : derivAttr->getOriginalFunctions(getASTContext())) {
-        auto origDeclRef =
-            SILDeclRef(origAFD).asForeign(requiresForeignEntryPoint(origAFD));
-        auto *origFn = getFunction(origDeclRef, NotForDefinition);
-        auto witnessGenSig =
-            autodiff::getDifferentiabilityWitnessGenericSignature(
-                origAFD->getGenericSignature(), AFD->getGenericSignature());
-        auto *resultIndices = autodiff::getFunctionSemanticResultIndices(
-            origAFD, derivAttr->getParameterIndices());
-        AutoDiffConfig config(derivAttr->getParameterIndices(), resultIndices,
-                              witnessGenSig);
-        emitDifferentiabilityWitness(origAFD, origFn,
-                                     DifferentiabilityKind::Reverse, config,
-                                     jvp, vjp, derivAttr);
-      }
-    }
+SILDifferentiabilityWitness *
+SILGenModule::emitWitnessForDerivativeAttr(AbstractFunctionDecl *afd,
+                                            DerivativeAttr *derivAttr) {
+  auto *f = getFunction(SILDeclRef(afd), NotForDefinition);
+  SILFunction *jvp = nullptr, *vjp = nullptr;
+  switch (derivAttr->getDerivativeKind()) {
+  case AutoDiffDerivativeFunctionKind::JVP:
+    jvp = f;
+    break;
+  case AutoDiffDerivativeFunctionKind::VJP:
+    vjp = f;
+    break;
+  }
+  SILDifferentiabilityWitness *lastWitness = nullptr;
+  for (auto *origAFD : derivAttr->getOriginalFunctions(getASTContext())) {
+    auto origDeclRef =
+        SILDeclRef(origAFD).asForeign(requiresForeignEntryPoint(origAFD));
+    auto *origFn = getFunction(origDeclRef, NotForDefinition);
+    auto witnessGenSig = autodiff::getDifferentiabilityWitnessGenericSignature(
+        origAFD->getGenericSignature(), afd->getGenericSignature());
+    auto *resultIndices = autodiff::getFunctionSemanticResultIndices(
+        origAFD, derivAttr->getParameterIndices());
+    AutoDiffConfig config(derivAttr->getParameterIndices(), resultIndices,
+                          witnessGenSig);
+    lastWitness = emitDifferentiabilityWitness(origAFD, origFn,
+                                              DifferentiabilityKind::Reverse,
+                                              config, jvp, vjp, derivAttr);
+  }
+  return lastWitness;
 }
 
 void SILGenModule::emitFunction(FuncDecl *fd) {
@@ -2543,10 +2563,7 @@ ASTLoweringRequest::evaluate(Evaluator &evaluator,
           front, SGM.getEmittedFunction(front, ForDefinition));
       SGM.pendingForcedFunctions.pop_front();
     }
-    while (!SGM.pendingConformances.empty()) {
-      (void)SGM.getWitnessTable(SGM.pendingConformances.front());
-      SGM.pendingConformances.pop_front();
-    }
+    SGM.emitPendingConformances();
   }
 
   return silMod;
