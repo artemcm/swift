@@ -851,7 +851,7 @@ private:
     SILFunction *F = getFunction();
 
     // Don't rerun diagnostics on deserialized functions.
-    if (F->wasDeserializedCanonical())
+    if (F->isAlreadyCanonical())
       return;
 
     LLVM_DEBUG(llvm::dbgs() << "*** Diagnosing escaping captures in function: "

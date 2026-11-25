@@ -1252,7 +1252,7 @@ namespace {
 class NoReturnFolding : public SILFunctionTransform {
   void run() override {
     // Don't rerun diagnostics on deserialized functions.
-    if (getFunction()->wasDeserializedCanonical())
+    if (getFunction()->isAlreadyCanonical())
       return;
 
     performNoReturnFunctionProcessing(*getFunction(), this);

@@ -1424,11 +1424,12 @@ void SILPassManager::runClosureGroupPasses(unsigned FromTransIdx,
     verifyModule();
 
   // A definition that appeared during the block without notifyOfNewFunction
-  // belongs to no group and missed the block's passes. A body deserialized as
-  // canonical SIL needs no mandatory passes.
+  // belongs to no group and missed the block's passes. A body that is already
+  // canonical, deserialized or advanced ahead of the stage floor, needs no
+  // mandatory passes.
   if (continueTransforming()) {
     for (SILFunction &F : *Mod)
-      ASSERT((!F.isDefinition() || F.wasDeserializedCanonical() ||
+      ASSERT((!F.isDefinition() || F.isAlreadyCanonical() ||
               block.hasGroup(&F)) &&
              "a definition appeared during a closure group block outside any "
              "group");

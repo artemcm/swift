@@ -1761,7 +1761,7 @@ class ClosureLifetimeFixup : public SILFunctionTransform {
   /// The entry point to the transformation.
   void run() override {
     // Don't rerun diagnostics on deserialized functions.
-    if (getFunction()->wasDeserializedCanonical())
+    if (getFunction()->isAlreadyCanonical())
       return;
 
     // SILGen only emits OSSA, but raw SIL parsed from .sil files can contain

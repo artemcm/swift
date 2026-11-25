@@ -1126,7 +1126,7 @@ class MandatoryInlining : public SILModuleTransform {
       }
 
       // Skip deserialized functions.
-      if (F.wasDeserializedCanonical())
+      if (F.isAlreadyCanonical())
         continue;
 
       runOnFunctionRecursively(FuncBuilder, getPassManager()->getSwiftPassInvocation(),
